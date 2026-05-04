@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import type { DeviceMeasures, HistoryEntry, HueGroup } from '@/lib/types'
+import { AnimatePresence } from 'framer-motion'
+import type { DeviceMeasures, HistoryEntry, HueGroup, HueLight } from '@/lib/types'
 import { computeAqi, aqiToColor } from '@/lib/aqi'
 import type { StatusColor } from '@/lib/types'
 import {
@@ -11,6 +12,14 @@ import {
 import { PM_BATCHES, calibratePm25 } from '@/lib/pmCalibration'
 import { Chart } from './Chart'
 import { MetricCard } from './MetricCard'
+import {
+  type LightState,
+  briPct,
+  sliderFill,
+  Toggle,
+  RoomModal,
+  LightModal,
+} from './HueControls'
 
 interface HomeDashboardProps {
   measures: DeviceMeasures
@@ -21,7 +30,17 @@ interface HomeDashboardProps {
   pmBatchId: string | null
   outdoorAqi: number | null
   groups: HueGroup[]
+  lights: HueLight[]
+  selectedGroupId: string | null
+  selectedLightId: string | null
   onGroupToggle: (id: string, on: boolean) => void
+  onGroupBrightness: (id: string, bri: number) => void
+  onGroupSelect: (id: string) => void
+  onGroupClose: () => void
+  onLightToggle: (id: string, on: boolean) => void
+  onLightSetState: (id: string, state: LightState) => void
+  onLightSelect: (id: string) => void
+  onLightClose: () => void
 }
 
 const STATUS_HEX: Record<StatusColor, string> = {
@@ -56,32 +75,84 @@ function extract(history: HistoryEntry[], key: keyof DeviceMeasures): number[] {
   return history.map(h => h.measures[key] as number)
 }
 
-function briPct(bri: number) {
-  return Math.round((bri / 254) * 100)
-}
+function DashboardGroupRow({
+  group,
+  onToggle,
+  onBrightness,
+  onOpen,
+}: {
+  group: HueGroup
+  onToggle: (id: string, on: boolean) => void
+  onBrightness: (id: string, bri: number) => void
+  onOpen: (id: string) => void
+}) {
+  const [localBri, setLocalBri] = useState(group.brightness)
+  const [pending, setPending] = useState(false)
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-function Toggle({ on, disabled, onToggle }: { on: boolean; disabled: boolean; onToggle: () => void }) {
+  useEffect(() => {
+    if (!pending) setLocalBri(group.brightness)
+  }, [group.brightness, pending])
+
+  function handleBriChange(val: number) {
+    setLocalBri(val)
+    setPending(true)
+    if (commitTimer.current) clearTimeout(commitTimer.current)
+    commitTimer.current = setTimeout(() => {
+      onBrightness(group.id, val)
+      setPending(false)
+    }, 300)
+  }
+
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={onToggle}
-      disabled={disabled}
-      className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none disabled:opacity-40 ${
-        on ? 'bg-amber-400' : 'bg-zinc-700'
-      }`}
+    <div
+      onDoubleClick={() => onOpen(group.id)}
+      className="flex flex-col px-4 py-3 gap-2 select-none cursor-pointer"
     >
-      <span className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-        on ? 'translate-x-4' : 'translate-x-0'
-      }`} />
-    </button>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-zinc-200 truncate">{group.name}</p>
+          <p className="text-xs text-zinc-600 mt-0.5">
+            {group.on
+              ? `${group.lightIds.length} light${group.lightIds.length !== 1 ? 's' : ''}`
+              : 'Off'
+            }
+          </p>
+        </div>
+        <div
+          onDoubleClick={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+        >
+          <Toggle on={group.on} disabled={false} onToggle={() => onToggle(group.id, !group.on)} />
+        </div>
+      </div>
+      {group.on && (
+        <div
+          className="flex items-center gap-2"
+          onDoubleClick={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+        >
+          <input
+            type="range"
+            min={1}
+            max={254}
+            value={localBri}
+            onChange={e => handleBriChange(Number(e.target.value))}
+            style={sliderFill(localBri, 1, 254)}
+            className="flex-1 accent-slider"
+          />
+          <span className="text-xs font-mono text-zinc-400 w-9 text-right">{briPct(localBri)}</span>
+        </div>
+      )}
+    </div>
   )
 }
 
-
 export function HomeDashboard({
-  measures, history, lastUpdated, error, tempUnit, pmBatchId, outdoorAqi, groups, onGroupToggle,
+  measures, history, lastUpdated, error, tempUnit, pmBatchId, outdoorAqi,
+  groups, lights, selectedGroupId, selectedLightId,
+  onGroupToggle, onGroupBrightness, onGroupSelect, onGroupClose,
+  onLightToggle, onLightSetState, onLightSelect, onLightClose,
 }: HomeDashboardProps) {
   const pmBatch = PM_BATCHES.find(b => b.id === pmBatchId) ?? null
 
@@ -108,6 +179,9 @@ export function HomeDashboard({
   const dow    = now?.toLocaleDateString([], { weekday: 'long' }) ?? ''
   const mmdd   = now?.toLocaleDateString([], { month: 'long', day: 'numeric' }) ?? ''
 
+  const selectedGroup = groups.find(g => g.id === selectedGroupId) ?? null
+  const selectedLight = lights.find(l => l.id === selectedLightId) ?? null
+
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col">
       <main className="flex-1 p-6 max-w-6xl mx-auto w-full">
@@ -118,19 +192,16 @@ export function HomeDashboard({
 
             {/* Time · Date · AQI */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* Time */}
               <div className="flex items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
                 <div className="flex items-baseline gap-1.5">
                   <span className="text-4xl font-bold tabular-nums leading-none text-zinc-100">{hhmm}</span>
                   <span className="text-2xl font-bold tabular-nums leading-none text-zinc-600">{ss}</span>
                 </div>
               </div>
-              {/* Date */}
               <div className="flex flex-col items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
                 <p className="text-xl font-semibold text-zinc-100 leading-tight">{dow}</p>
                 <p className="mt-1 text-sm text-zinc-500">{mmdd}</p>
               </div>
-              {/* AQI */}
               <div className="flex flex-col justify-center gap-2 px-5 py-4 rounded-2xl border border-zinc-800 bg-zinc-900/40">
                 <div className="flex items-center gap-3">
                   <span className={`text-4xl font-bold tabular-nums leading-none ${AQI_VALUE[aqi.color]}`}>
@@ -158,7 +229,7 @@ export function HomeDashboard({
               </div>
             </div>
 
-            {/* Metric cards — 2×2 on mobile, single row of 4 on md+ */}
+            {/* Metric cards */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <MetricCard
                 label="Temperature"
@@ -224,33 +295,49 @@ export function HomeDashboard({
               </div>
             ) : (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden divide-y divide-zinc-800">
-                {groups.map(group => {
-                  const lightsOnCount = group.on ? group.lightIds.length : 0
-                  return (
-                    <div key={group.id} className="flex items-center justify-between px-4 py-3 gap-3">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-zinc-200 truncate">{group.name}</p>
-                        <p className="text-xs text-zinc-600 mt-0.5">
-                          {group.on
-                            ? `${lightsOnCount} light${lightsOnCount !== 1 ? 's' : ''} · ${briPct(group.brightness)}%`
-                            : 'Off'
-                          }
-                        </p>
-                      </div>
-                      <Toggle
-                        on={group.on}
-                        disabled={false}
-                        onToggle={() => onGroupToggle(group.id, !group.on)}
-                      />
-                    </div>
-                  )
-                })}
+                {groups.map(group => (
+                  <DashboardGroupRow
+                    key={group.id}
+                    group={group}
+                    onToggle={onGroupToggle}
+                    onBrightness={onGroupBrightness}
+                    onOpen={onGroupSelect}
+                  />
+                ))}
               </div>
             )}
           </div>
 
         </div>
       </main>
+
+      <AnimatePresence>
+        {selectedGroup && (
+          <RoomModal
+            key={selectedGroup.id}
+            group={selectedGroup}
+            lights={lights.filter(l => selectedGroup.lightIds.includes(l.id))}
+            selectedLightId={selectedLightId}
+            onClose={onGroupClose}
+            onGroupToggle={onGroupToggle}
+            onGroupBrightness={onGroupBrightness}
+            onLightToggle={onLightToggle}
+            onLightSelect={onLightSelect}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedLight && (
+          <LightModal
+            key={selectedLight.id}
+            light={selectedLight}
+            onClose={onLightClose}
+            onSetState={state => onLightSetState(selectedLight.id, state)}
+            onToggle={() => onLightToggle(selectedLight.id, !selectedLight.on)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

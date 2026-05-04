@@ -59,8 +59,6 @@ export function DashboardShell() {
     <Dashboard
       measures={displayMeasures}
       history={history}
-      lastUpdated={displayLastUpdated}
-      error={error}
       tempUnit={tempUnit}
       onTempToggle={() => setTempUnit(tempUnit === 'C' ? 'F' : 'C')}
       pmBatchId={pmBatchId}

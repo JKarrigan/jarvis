@@ -209,11 +209,6 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col">
-      <header className="h-14 flex items-center justify-between px-6 border-b border-zinc-800 shrink-0">
-        <h1 className="text-base font-semibold text-zinc-100 tracking-tight">Settings</h1>
-        <span className="text-xs text-zinc-600 font-mono">{deviceIp}</span>
-      </header>
-
       <main className="p-6 space-y-6 max-w-2xl mx-auto w-full">
 
         <Section title="Display">

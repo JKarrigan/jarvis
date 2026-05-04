@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { AnimatePresence, motion } from 'framer-motion'
 import { METRICS } from '@/lib/metrics'
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
@@ -62,7 +63,7 @@ export function Sidebar() {
     <>
       {/* ── Mobile top bar ── */}
       <header className="md:hidden sticky top-0 z-30 h-14 shrink-0 flex items-center justify-between px-4 border-b border-zinc-800 bg-zinc-950">
-        <span className="text-base font-semibold text-zinc-100 tracking-tight">AirGradient</span>
+        <span className="text-base font-semibold text-zinc-100 tracking-tight">Home</span>
         <button
           type="button"
           onClick={() => setIsOpen(true)}
@@ -80,7 +81,7 @@ export function Sidebar() {
       {/* ── Desktop sidebar ── */}
       <aside className="hidden md:flex sticky top-0 h-screen w-44 shrink-0 border-r border-zinc-800 bg-zinc-950 flex-col">
         <div className="h-14 flex items-center px-6 border-b border-zinc-800">
-          <span className="text-base font-semibold text-zinc-100 tracking-tight">AirGradient</span>
+          <span className="text-base font-semibold text-zinc-100 tracking-tight">Home</span>
         </div>
         <nav className="flex flex-col gap-0.5 px-2 pt-2 flex-1 pb-4">
           <NavLinks />
@@ -88,35 +89,45 @@ export function Sidebar() {
       </aside>
 
       {/* ── Mobile drawer overlay ── */}
-      {isOpen && (
-        <div className="md:hidden fixed inset-0 z-50 flex">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-            onClick={() => setIsOpen(false)}
-          />
-          {/* Drawer panel */}
-          <div className="relative w-64 h-full bg-zinc-950 border-r border-zinc-800 flex flex-col shadow-2xl">
-            <div className="h-14 flex items-center justify-between px-5 border-b border-zinc-800 shrink-0">
-              <span className="text-base font-semibold text-zinc-100 tracking-tight">AirGradient</span>
-              <button
-                type="button"
-                onClick={() => setIsOpen(false)}
-                aria-label="Close menu"
-                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
-              >
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
-                  <line x1="4" y1="4" x2="14" y2="14" />
-                  <line x1="14" y1="4" x2="4" y2="14" />
-                </svg>
-              </button>
-            </div>
-            <nav className="flex flex-col gap-0.5 px-2 pt-2 flex-1 pb-4 overflow-y-auto">
-              <NavLinks onNavigate={() => setIsOpen(false)} />
-            </nav>
+      <AnimatePresence>
+        {isOpen && (
+          <div className="md:hidden fixed inset-0 z-50 flex">
+            <motion.div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.22, ease: 'easeIn' } }}
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+              onClick={() => setIsOpen(false)}
+            />
+            <motion.div
+              className="relative w-64 h-full bg-zinc-950 border-r border-zinc-800 flex flex-col shadow-2xl"
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%', transition: { duration: 0.28, ease: [0.32, 0, 0.67, 0] } }}
+              transition={{ type: 'spring', bounce: 0.15, duration: 0.5 }}
+            >
+              <div className="h-14 flex items-center justify-between px-5 border-b border-zinc-800 shrink-0">
+                <span className="text-base font-semibold text-zinc-100 tracking-tight">Home</span>
+                <button
+                  type="button"
+                  onClick={() => setIsOpen(false)}
+                  aria-label="Close menu"
+                  className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round">
+                    <line x1="4" y1="4" x2="14" y2="14" />
+                    <line x1="14" y1="4" x2="4" y2="14" />
+                  </svg>
+                </button>
+              </div>
+              <nav className="flex flex-col gap-0.5 px-2 pt-2 flex-1 pb-4 overflow-y-auto">
+                <NavLinks onNavigate={() => setIsOpen(false)} />
+              </nav>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
     </>
   )
 }

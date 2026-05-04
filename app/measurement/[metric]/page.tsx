@@ -91,23 +91,22 @@ export default function MetricDetailPage() {
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col">
-      <header className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
-        <div className="flex items-center gap-3">
-          <Link href="/" className="text-zinc-600 hover:text-zinc-400 transition-colors text-sm">←</Link>
-          <h1 className="text-base font-semibold text-zinc-100 tracking-tight">{config.label}</h1>
-          <span className="text-xs text-zinc-600">{unit}</span>
-        </div>
-        {config.isTempLike && (
-          <button
-            onClick={() => setTempUnit(u => u === 'C' ? 'F' : 'C')}
-            className="px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors font-mono text-xs"
-          >
-            °C / °F
-          </button>
-        )}
-      </header>
-
       <main className="flex-1 p-6 space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="text-zinc-600 hover:text-zinc-400 transition-colors text-sm">←</Link>
+            <h1 className="text-base font-semibold text-zinc-100 tracking-tight">{config.label}</h1>
+            <span className="text-xs text-zinc-600">{unit}</span>
+          </div>
+          {config.isTempLike && (
+            <button
+              onClick={() => setTempUnit(u => u === 'C' ? 'F' : 'C')}
+              className="px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors font-mono text-xs"
+            >
+              °C / °F
+            </button>
+          )}
+        </div>
         {/* Description */}
         <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
           <div className="space-y-1">

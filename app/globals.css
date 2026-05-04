@@ -11,6 +11,7 @@
   --font-mono: var(--font-geist-mono);
 }
 
+
 body {
   background: #0a0a0a;
   color: #f4f4f5;
@@ -78,4 +79,105 @@ body {
   cursor: pointer;
   border: none;
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
+/* Brightness sliders — amber fill, mobile-first sizing */
+.accent-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+.accent-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(to right, #fbbf24 var(--fill, 50%), #3f3f46 var(--fill, 50%));
+}
+.accent-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 28px;
+  width: 28px;
+  border-radius: 50%;
+  background: #fbbf24;
+  cursor: pointer;
+  margin-top: -10px;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+.accent-slider:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(251, 191, 36, 0.4);
+}
+.accent-slider::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: #3f3f46;
+}
+.accent-slider::-moz-range-progress {
+  height: 8px;
+  border-radius: 9999px;
+  background: #fbbf24;
+}
+.accent-slider::-moz-range-thumb {
+  height: 28px;
+  width: 28px;
+  border-radius: 50%;
+  background: #fbbf24;
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+}
+
+/* Desktop: shrink sliders to standard size */
+@media (min-width: 640px) {
+  .accent-slider {
+    height: 6px;
+  }
+  .accent-slider::-webkit-slider-runnable-track {
+    height: 6px;
+  }
+  .accent-slider::-webkit-slider-thumb {
+    height: 18px;
+    width: 18px;
+    margin-top: -5px;
+  }
+  .accent-slider::-moz-range-track {
+    height: 6px;
+  }
+  .accent-slider::-moz-range-progress {
+    height: 6px;
+  }
+  .accent-slider::-moz-range-thumb {
+    height: 18px;
+    width: 18px;
+  }
+
+  .gradient-slider::-webkit-slider-thumb {
+    height: 18px;
+    width: 18px;
+    margin-top: -6px;
+  }
+  .gradient-slider::-moz-range-thumb {
+    height: 18px;
+    width: 18px;
+  }
+}
+
+/* Mobile: upsize gradient-slider thumb to match accent-slider */
+@media (max-width: 639px) {
+  .gradient-slider {
+    height: 8px;
+  }
+  .gradient-slider::-webkit-slider-runnable-track {
+    height: 8px;
+  }
+  .gradient-slider::-webkit-slider-thumb {
+    height: 28px;
+    width: 28px;
+    margin-top: -10px;
+  }
+  .gradient-slider::-moz-range-thumb {
+    height: 28px;
+    width: 28px;
+  }
 }

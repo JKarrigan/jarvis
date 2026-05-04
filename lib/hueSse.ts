@@ -40,6 +40,7 @@ interface SseState {
   req: ClientRequest | null
   readyPromise: Promise<void> | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
+  pendingGroupOnActions: Map<string, number>  // groupId → expiry timestamp
 }
 
 declare global {
@@ -56,9 +57,14 @@ function state(): SseState {
       req: null,
       readyPromise: null,
       reconnectTimer: null,
+      pendingGroupOnActions: new Map(),
     }
   }
-  return globalThis.__hueSse
+  // Patch singletons created before pendingGroupOnActions was added
+  if (!globalThis.__hueSse.pendingGroupOnActions) {
+    globalThis.__hueSse.pendingGroupOnActions = new Map()
+  }
+  return globalThis.__hueSse!
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -66,6 +72,16 @@ function state(): SseState {
 export function getLightsAndGroups(): { lights: HueLight[]; groups: HueGroup[] } {
   const s = state()
   return { lights: s.lights, groups: s.groups }
+}
+
+/**
+ * Call this before PUT-ing an on/off action to a group so the SSE handler
+ * knows to propagate the group's on state down to individual lights.
+ * Without this, a grouped_light event triggered by an individual light change
+ * would incorrectly override all lights in the group.
+ */
+export function notifyGroupOnAction(groupId: string): void {
+  state().pendingGroupOnActions.set(groupId, Date.now() + 3000)
 }
 
 /** Subscribe to state broadcasts. Returns an unsubscribe function. */
@@ -147,8 +163,14 @@ function openSseConnection(s: SseState) {
 function scheduleReconnect(s: SseState, delayMs = 5000) {
   if (s.reconnectTimer) clearTimeout(s.reconnectTimer)
   s.req = null
-  s.reconnectTimer = setTimeout(() => {
+  s.reconnectTimer = setTimeout(async () => {
     s.reconnectTimer = null
+    try {
+      const [lights, groups] = await Promise.all([getLights(), getGroups()])
+      s.lights = lights
+      s.groups = groups
+      broadcast(s)
+    } catch { /* bridge still unreachable; SSE will sync state going forward */ }
     openSseConnection(s)
   }, delayMs)
 }
@@ -182,6 +204,7 @@ function applyUpdates(s: SseState, messages: V2SseMessage[]) {
       } else if (item.type === 'grouped_light' && item.id_v1?.startsWith('/groups/')) {
         const ev = item as V2GroupedLightUpdate
         const id = lastSegment(ev.id_v1)
+        const existingGroup = s.groups.find(g => g.id === id)
         s.groups = s.groups.map(g => {
           if (g.id !== id) return g
           const u = { ...g }
@@ -189,6 +212,16 @@ function applyUpdates(s: SseState, messages: V2SseMessage[]) {
           if (ev.dimming !== undefined) u.brightness = scaleBri(ev.dimming.brightness)
           return u
         })
+        // Only propagate on/off to individual lights when we explicitly sent a
+        // group action. Without this guard a grouped_light event fired by an
+        // individual-light change (group still "on") overwrites all siblings.
+        const groupOnPending = (s.pendingGroupOnActions.get(id) ?? 0) > Date.now()
+        if (ev.on !== undefined && existingGroup && groupOnPending) {
+          const onVal = ev.on.on
+          s.lights = s.lights.map(l =>
+            existingGroup.lightIds.includes(l.id) ? { ...l, on: onVal } : l
+          )
+        }
         changed = true
       }
     }
@@ -226,7 +259,7 @@ function xyToHueSat(x: number, y: number, bri: number): { hue: number; saturatio
   const X = y > 1e-6 ? (Y / y) * x : 0
   const Z = y > 1e-6 ? (Y / y) * z : 0
 
-  let r =  X * 1.656492 - Y * 0.354851 - Z * 0.255038
+  let r = X * 1.656492 - Y * 0.354851 - Z * 0.255038
   let g = -X * 0.707196 + Y * 1.655397 + Z * 0.036152
   let b2 = X * 0.051713 - Y * 0.121364 + Z * 1.011530
 
@@ -243,9 +276,9 @@ function xyToHueSat(x: number, y: number, bri: number): { hue: number; saturatio
 
   let h = 0
   if (delta > 1e-6) {
-    if (cmax === r)       h = ((g - b2) / delta) % 6
-    else if (cmax === g)  h = (b2 - r)  / delta + 2
-    else                  h = (r - g)   / delta + 4
+    if (cmax === r) h = ((g - b2) / delta) % 6
+    else if (cmax === g) h = (b2 - r) / delta + 2
+    else h = (r - g) / delta + 4
     h *= 60
   }
   if (h < 0) h += 360

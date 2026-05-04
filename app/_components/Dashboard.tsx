@@ -16,8 +16,6 @@ import { MetricCard } from './MetricCard'
 interface DashboardProps {
   measures: DeviceMeasures
   history: HistoryEntry[]
-  lastUpdated: Date
-  error: string | null
   tempUnit: 'C' | 'F'
   onTempToggle: () => void
   pmBatchId: string | null
@@ -48,11 +46,6 @@ const AQI_VALUE: Record<string, string> = {
   hazardous: 'text-rose-400',
 }
 
-function secondsAgo(date: Date): string {
-  const s = Math.round((Date.now() - date.getTime()) / 1000)
-  if (s < 60) return `${s}s ago`
-  return `${Math.floor(s / 60)}m ago`
-}
 
 function formatTemp(celsius: number, unit: 'C' | 'F'): string {
   if (unit === 'F') return (celsius * 9 / 5 + 32).toFixed(1)
@@ -63,7 +56,7 @@ function extract(history: HistoryEntry[], key: keyof DeviceMeasures): number[] {
   return history.map(h => h.measures[key] as number)
 }
 
-export function Dashboard({ measures, history, lastUpdated, error, tempUnit, onTempToggle, pmBatchId, outdoorAqi, dailySummaries }: DashboardProps) {
+export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId, outdoorAqi, dailySummaries }: DashboardProps) {
   const pmBatch = PM_BATCHES.find(b => b.id === pmBatchId) ?? null
 
   // If a calibration batch is selected, derive PM2.5 from the raw particle count,
@@ -84,24 +77,12 @@ export function Dashboard({ measures, history, lastUpdated, error, tempUnit, onT
     return () => clearInterval(id)
   }, [])
   const hhmm = now?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) ?? '--:--'
-  const ss   = now ? String(now.getSeconds()).padStart(2, '0') : '--'
-  const dow  = now?.toLocaleDateString([], { weekday: 'long' }) ?? ''
+  const ss = now ? String(now.getSeconds()).padStart(2, '0') : '--'
+  const dow = now?.toLocaleDateString([], { weekday: 'long' }) ?? ''
   const mmdd = now?.toLocaleDateString([], { month: 'long', day: 'numeric' }) ?? ''
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col">
-      {/* Header */}
-      <header className="h-14 flex items-center justify-end px-6 border-b border-zinc-800">
-        <div className="flex items-center gap-4">
-          {error && (
-            <span className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-1 rounded-md">
-              Live data unavailable
-            </span>
-          )}
-          <span className="text-xs text-zinc-600">Updated {secondsAgo(lastUpdated)}</span>
-        </div>
-      </header>
-
       <main className="flex-1 p-6 space-y-6 max-w-5xl mx-auto w-full">
         {/* Clock · AQI · Heatmap */}
         <div className="flex flex-col sm:flex-row gap-3">
@@ -141,7 +122,7 @@ export function Dashboard({ measures, history, lastUpdated, error, tempUnit, onT
           </section>
           {dailySummaries.length > 0 && (
             <section className="w-1/4 shrink-0 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-<AqiHeatMap summaries={dailySummaries} />
+              <AqiHeatMap summaries={dailySummaries} />
             </section>
           )}
         </div>
