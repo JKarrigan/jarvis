@@ -1,5 +1,4 @@
 import { setGroupAction } from '@/lib/hue'
-import { notifyGroupOnAction } from '@/lib/hueSse'
 
 export async function PUT(
   request: Request,
@@ -7,8 +6,6 @@ export async function PUT(
 ) {
   const { id } = await params
   const body = await request.json() as { on?: boolean; brightness?: number; colorTemp?: number }
-
-  if (body.on !== undefined) notifyGroupOnAction(id)
 
   try {
     await setGroupAction(id, body)

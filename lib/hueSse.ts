@@ -40,7 +40,9 @@ interface SseState {
   req: ClientRequest | null
   readyPromise: Promise<void> | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
-  pendingGroupOnActions: Map<string, number>  // groupId → expiry timestamp
+  // lightId → expiry: set when a `light` event arrives so the subsequent
+  // `grouped_light` side-effect event is not mistakenly treated as a group action.
+  pendingIndividualChanges: Map<string, number>
 }
 
 declare global {
@@ -57,12 +59,12 @@ function state(): SseState {
       req: null,
       readyPromise: null,
       reconnectTimer: null,
-      pendingGroupOnActions: new Map(),
+      pendingIndividualChanges: new Map(),
     }
   }
-  // Patch singletons created before pendingGroupOnActions was added
-  if (!globalThis.__hueSse.pendingGroupOnActions) {
-    globalThis.__hueSse.pendingGroupOnActions = new Map()
+  // Patch singletons created before pendingIndividualChanges was added
+  if (!globalThis.__hueSse.pendingIndividualChanges) {
+    globalThis.__hueSse.pendingIndividualChanges = new Map()
   }
   return globalThis.__hueSse!
 }
@@ -72,16 +74,6 @@ function state(): SseState {
 export function getLightsAndGroups(): { lights: HueLight[]; groups: HueGroup[] } {
   const s = state()
   return { lights: s.lights, groups: s.groups }
-}
-
-/**
- * Call this before PUT-ing an on/off action to a group so the SSE handler
- * knows to propagate the group's on state down to individual lights.
- * Without this, a grouped_light event triggered by an individual light change
- * would incorrectly override all lights in the group.
- */
-export function notifyGroupOnAction(groupId: string): void {
-  state().pendingGroupOnActions.set(groupId, Date.now() + 3000)
 }
 
 /** Subscribe to state broadcasts. Returns an unsubscribe function. */
@@ -187,6 +179,11 @@ function applyUpdates(s: SseState, messages: V2SseMessage[]) {
       if (item.type === 'light' && item.id_v1?.startsWith('/lights/')) {
         const ev = item as V2LightUpdate
         const id = lastSegment(ev.id_v1)
+        // Record that this individual light just changed. If a grouped_light
+        // event arrives for a group containing this light within the next 500 ms,
+        // it is a side-effect of this change — not a direct group action — and
+        // must not be propagated back to all siblings.
+        s.pendingIndividualChanges.set(id, Date.now() + 500)
         s.lights = s.lights.map(l => {
           if (l.id !== id) return l
           const u = { ...l }
@@ -212,11 +209,14 @@ function applyUpdates(s: SseState, messages: V2SseMessage[]) {
           if (ev.dimming !== undefined) u.brightness = scaleBri(ev.dimming.brightness)
           return u
         })
-        // Only propagate on/off to individual lights when we explicitly sent a
-        // group action. Without this guard a grouped_light event fired by an
-        // individual-light change (group still "on") overwrites all siblings.
-        const groupOnPending = (s.pendingGroupOnActions.get(id) ?? 0) > Date.now()
-        if (ev.on !== undefined && existingGroup && groupOnPending) {
+        // Propagate on/off to individual lights unless a recent `light` event
+        // for one of the members arrived in the same batch — that means the
+        // grouped_light event is a side-effect of an individual change, not a
+        // direct group action, and propagating would wrongly override siblings.
+        const triggeredByIndividual = existingGroup?.lightIds.some(
+          lid => (s.pendingIndividualChanges.get(lid) ?? 0) > Date.now()
+        ) ?? false
+        if (ev.on !== undefined && existingGroup && !triggeredByIndividual) {
           const onVal = ev.on.on
           s.lights = s.lights.map(l =>
             existingGroup.lightIds.includes(l.id) ? { ...l, on: onVal } : l
