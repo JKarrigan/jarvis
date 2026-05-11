@@ -56,6 +56,8 @@ export interface DailySummary {
   color: StatusColor
 }
 
+export type { AirQualityEvent, AirGradientReading, EventType, Severity, LocalBaseline } from './eventTypes'
+
 export interface HueLight {
   id: string
   name: string

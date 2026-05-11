@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import type { StatusColor } from '@/lib/types'
+import type { AirQualityEvent, Severity } from '@/lib/eventTypes'
 
 const strokeColor: Record<StatusColor, string> = {
   good: '#34d399',
@@ -19,6 +20,20 @@ const statusLabel: Record<StatusColor, string> = {
   unhealthy: 'Unhealthy',
   'very-unhealthy': 'Very Unhealthy',
   hazardous: 'Hazardous',
+}
+
+const EVENT_COLOR: Record<Severity, string> = {
+  critical: '#dc2626',
+  warning: '#f59e0b',
+  notable: '#3b82f6',
+  info: '#9ca3af',
+}
+
+const EVENT_OPACITY: Record<Severity, number> = {
+  critical: 0.15,
+  warning: 0.10,
+  notable: 0.06,
+  info: 0,
 }
 
 const VW = 800
@@ -43,11 +58,13 @@ interface ChartProps {
   timestamps: number[]
   status: StatusColor
   statusFn?: (value: number) => StatusColor
+  events?: AirQualityEvent[]
 }
 
-export function Chart({ label, unit, values, timestamps, status, statusFn }: ChartProps) {
+export function Chart({ label, unit, values, timestamps, status, statusFn, events }: ChartProps) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [colorMode, setColorMode] = useState<'uniform' | 'by-range'>('uniform')
+  const [hoveredEvent, setHoveredEvent] = useState<AirQualityEvent | null>(null)
 
   // Drop entries where the value is missing or non-finite so downstream math never sees NaN
   const { vals, ts } = values.reduce<{ vals: number[]; ts: number[] }>(
@@ -65,6 +82,14 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
 
   const toX = (i: number) => PAD.l + (i / (vals.length - 1)) * CW
   const toY = (v: number) => PAD.t + CH - ((v - lo) / (hi - lo)) * CH
+
+  // Map a UTC ms timestamp to SVG x, clamped to the chart bounds
+  const tsToX = (eventTs: number) => {
+    const tMin = ts[0]
+    const tMax = ts[ts.length - 1]
+    const frac = (eventTs - tMin) / (tMax - tMin)
+    return PAD.l + Math.max(0, Math.min(1, frac)) * CW
+  }
 
   const points = vals.map((v, i) => `${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(' ')
   const color = strokeColor[status]
@@ -95,6 +120,22 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
   }, [])
   const isMultiDay = dayBoundaries.length > 0
 
+  const chartEnd = ts[ts.length - 1]
+
+  // Events visible in this chart's time window (confidence >= 0.5 to avoid low-confidence noise)
+  const visibleEvents = (events ?? []).filter(e => {
+    if (e.confidence < 0.5) return false
+    const start = e.startTime.getTime()
+    const end = e.endTime?.getTime() ?? chartEnd
+    return end >= ts[0] && start <= chartEnd
+  })
+
+  // Sort events so critical renders on top (last = highest z-order in SVG)
+  const severityOrder: Severity[] = ['info', 'notable', 'warning', 'critical']
+  const sortedEvents = [...visibleEvents].sort(
+    (a, b) => severityOrder.indexOf(a.severity) - severityOrder.indexOf(b.severity),
+  )
+
   function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
     const rect = e.currentTarget.getBoundingClientRect()
     const svgX = ((e.clientX - rect.left) / rect.width) * VW
@@ -111,7 +152,7 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 pt-4 pb-2">
-      <div className="flex items-center gap-2 mb-1">
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
         <span className="text-xs font-semibold uppercase tracking-widest text-zinc-500">{label}</span>
         <span className="text-xs text-zinc-600">{unit}</span>
         <span
@@ -120,6 +161,23 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
         >
           {statusLabel[status]}
         </span>
+        {visibleEvents.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap">
+            {visibleEvents.map(e => (
+              <span
+                key={e.id}
+                className="text-xs px-1.5 py-0.5 rounded-md border font-medium"
+                style={{
+                  color: EVENT_COLOR[e.severity],
+                  borderColor: `${EVENT_COLOR[e.severity]}40`,
+                  backgroundColor: `${EVENT_COLOR[e.severity]}18`,
+                }}
+              >
+                {e.title}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {statusFn && (
             <button
@@ -141,7 +199,7 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
         width="100%"
         className="overflow-visible"
         onMouseMove={handleMouseMove}
-        onMouseLeave={() => setHovered(null)}
+        onMouseLeave={() => { setHovered(null); setHoveredEvent(null) }}
       >
         {yTicks.map((t, i) => (
           <g key={i}>
@@ -151,6 +209,41 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
             </text>
           </g>
         ))}
+
+        {/* Event range overlays — rendered before the data line so they sit behind it */}
+        {sortedEvents.map(event => {
+          if (event.severity === 'info') return null
+          const x1 = tsToX(event.startTime.getTime())
+          const x2 = tsToX(event.endTime?.getTime() ?? (ts[ts.length - 1] + 60000))
+          const eColor = EVENT_COLOR[event.severity]
+          const opacity = EVENT_OPACITY[event.severity]
+          const isDashed = event.severity === 'notable'
+          return (
+            <g
+              key={event.id}
+              onMouseEnter={() => setHoveredEvent(event)}
+              onMouseLeave={() => setHoveredEvent(null)}
+            >
+              <rect
+                x={x1}
+                y={PAD.t}
+                width={Math.max(2, x2 - x1)}
+                height={CH}
+                fill={eColor}
+                fillOpacity={opacity}
+              />
+              {isDashed ? (
+                <>
+                  <line x1={x1} y1={PAD.t} x2={x1} y2={PAD.t + CH} stroke={eColor} strokeWidth="1" strokeOpacity="0.5" strokeDasharray="3 3" />
+                  <line x1={x2} y1={PAD.t} x2={x2} y2={PAD.t + CH} stroke={eColor} strokeWidth="1" strokeOpacity="0.5" strokeDasharray="3 3" />
+                </>
+              ) : (
+                <line x1={x1} y1={PAD.t} x2={x2} y2={PAD.t} stroke={eColor} strokeWidth="2" strokeOpacity="0.8" />
+              )}
+            </g>
+          )
+        })}
+
         {colorMode === 'uniform'
           ? <path d={areaPath} fill={color} fillOpacity={0.1} />
           : <path d={areaPath} fill="#52525b" fillOpacity={0.05} />
@@ -188,6 +281,31 @@ export function Chart({ label, unit, values, timestamps, status, statusFn }: Cha
             {fmtTime(ts[idx])}
           </text>
         ))}
+
+        {/* Hovered event tooltip */}
+        {hoveredEvent && (() => {
+          const eColor = EVENT_COLOR[hoveredEvent.severity]
+          const midTs = hoveredEvent.startTime.getTime() + ((hoveredEvent.endTime?.getTime() ?? chartEnd) - hoveredEvent.startTime.getTime()) / 2
+          const tx = Math.max(PAD.l + 10, Math.min(VW - PAD.r - 10, tsToX(midTs)))
+          const TW = 200
+          const TH = 56
+          const TX = Math.max(PAD.l, Math.min(VW - PAD.r - TW, tx - TW / 2))
+          const TY = PAD.t + 4
+          return (
+            <g>
+              <rect x={TX} y={TY} width={TW} height={TH} rx="4" fill="#18181b" stroke={eColor} strokeWidth="1" strokeOpacity="0.6" />
+              <text x={TX + TW / 2} y={TY + 14} textAnchor="middle" fill={eColor} fontSize="12" fontWeight="600">
+                {hoveredEvent.title}
+              </text>
+              <text x={TX + TW / 2} y={TY + 28} textAnchor="middle" fill="#a1a1aa" fontSize="10">
+                NOx {hoveredEvent.peak.noxIndex} · PM2.5 {hoveredEvent.peak.pm02.toFixed(1)} · VOC {hoveredEvent.peak.tvocIndex}
+              </text>
+              <text x={TX + TW / 2} y={TY + 42} textAnchor="middle" fill="#71717a" fontSize="10">
+                {Math.round(hoveredEvent.durationMinutes)} min · confidence {Math.round(hoveredEvent.confidence * 100)}%
+              </text>
+            </g>
+          )
+        })()}
 
         {hovered !== null && (() => {
           const tx = toX(hovered)

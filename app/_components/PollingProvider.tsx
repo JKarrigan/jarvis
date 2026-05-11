@@ -2,9 +2,33 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { DeviceMeasures, HistoryEntry } from '@/lib/types'
+import type { AirGradientReading, AirQualityEvent } from '@/lib/eventTypes'
+import { AirQualityDetector } from '@/lib/eventDetection'
 
 const HISTORY_MAX = 3600
 const POLL_MS = 10_000
+
+function persistEvent(event: AirQualityEvent) {
+  fetch('/api/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event }),
+  }).catch(() => {})
+}
+
+function toDetectorReading(entry: HistoryEntry): AirGradientReading {
+  return {
+    timestamp: new Date(entry.timestamp),
+    pm01: entry.measures.pm01,
+    pm02: entry.measures.pm02,
+    pm10: entry.measures.pm10,
+    rco2: entry.measures.rco2,
+    tvocIndex: entry.measures.tvocIndex,
+    noxIndex: entry.measures.noxIndex,
+    atmp: entry.measures.atmpCompensated ?? entry.measures.atmp,
+    rhum: entry.measures.rhumCompensated ?? entry.measures.rhum,
+  }
+}
 
 interface PollingState {
   ready: boolean
@@ -22,6 +46,9 @@ interface PollingState {
   setOutdoorLocation: (loc: { lat: string; lon: string } | null) => void
   handleIpSave: (ip: string) => void
   handleReset: () => void
+  activeEvents: AirQualityEvent[]
+  allEvents: AirQualityEvent[]
+  acknowledgeEvent: (id: string) => void
 }
 
 const PollingContext = createContext<PollingState | null>(null)
@@ -43,9 +70,14 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
   const [pmBatchId, setPmBatchIdState] = useState<string | null>(null)
   const [outdoorAqi, setOutdoorAqi] = useState<number | null>(null)
   const [outdoorLocation, setOutdoorLocationState] = useState<{ lat: string; lon: string } | null>(null)
+  const [activeEvents, setActiveEvents] = useState<AirQualityEvent[]>([])
+  const [allEvents, setAllEvents] = useState<AirQualityEvent[]>([])
 
   // Tracks the latest reading timestamp we've already applied to avoid duplicates
   const lastTimestamp = useRef<number>(0)
+  const detector = useRef<AirQualityDetector>(new AirQualityDetector())
+  // IDs of events already saved to the DB (avoids redundant POSTs for ongoing events)
+  const savedEventIds = useRef<Set<string>>(new Set())
 
   function registerWithServer(ip: string) {
     fetch('/api/device', {
@@ -81,6 +113,14 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
         lastTimestamp.current = latest.timestamp
         setMeasures(latest.measures)
         setLastUpdated(new Date(latest.timestamp))
+
+        // Run event detection over the full history
+        detector.current.loadHistory(data.map(toDetectorReading))
+        setActiveEvents(detector.current.getActiveEvents())
+        setAllEvents([
+          ...detector.current.getActiveEvents(),
+          ...detector.current.getHistory(new Date(0)),
+        ])
       })
       .catch(() => {})
   }, [])
@@ -102,11 +142,31 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       lastTimestamp.current = data.timestamp
 
       setMeasures(data.measures)
+      const entry: HistoryEntry = { timestamp: data.timestamp, measures: data.measures }
       setHistory(prev => {
-        const next = [...prev, { timestamp: data.timestamp, measures: data.measures }]
+        const next = [...prev, entry]
         return next.length > HISTORY_MAX ? next.slice(next.length - HISTORY_MAX) : next
       })
       setLastUpdated(new Date(data.timestamp))
+
+      // Feed the new reading to the streaming detector
+      const changed = detector.current.ingest(toDetectorReading(entry))
+      const active = detector.current.getActiveEvents()
+      setActiveEvents([...active])
+      setAllEvents([
+        ...active,
+        ...detector.current.getHistory(new Date(0)),
+      ])
+
+      // Persist new events and closures to the DB
+      for (const ev of changed) {
+        const isNew = !savedEventIds.current.has(ev.id)
+        const justClosed = ev.endTime !== null
+        if (isNew || justClosed) {
+          persistEvent(ev)
+          savedEventIds.current.add(ev.id)
+        }
+      }
     } catch {
       // transient network error — server poller keeps running regardless
     }
@@ -154,6 +214,18 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(id)
   }, [fetchOutdoorAqi])
 
+  function acknowledgeEvent(id: string) {
+    localStorage.setItem(`aq-ack-${id}`, '1')
+    detector.current.acknowledge(id)
+    setActiveEvents(prev => prev.map(e => e.id === id ? { ...e, acknowledged: true } : e))
+    setAllEvents(prev => prev.map(e => e.id === id ? { ...e, acknowledged: true } : e))
+    fetch('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acknowledgeId: id }),
+    }).catch(() => {})
+  }
+
   function handleIpSave(ip: string) {
     registerWithServer(ip)
     setMeasures(null)
@@ -181,6 +253,7 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       pmBatchId, setPmBatchId,
       outdoorAqi, outdoorLocation, setOutdoorLocation,
       handleIpSave, handleReset,
+      activeEvents, allEvents, acknowledgeEvent,
     }}>
       {children}
     </PollingContext.Provider>
