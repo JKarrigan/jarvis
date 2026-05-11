@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { AirQualityEvent, Severity, EventType } from '@/lib/eventTypes'
+import { EventTimeline, TIMELINE_RANGES } from './EventTimeline'
 
 const SEVERITY_STYLES: Record<Severity, string> = {
   critical: 'bg-red-500/15 text-red-300 border-red-500/30',
@@ -184,6 +185,7 @@ function Legend() {
 export function EventsLog() {
   const [events, setEvents] = useState<AirQualityEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [timelineRange, setTimelineRange] = useState<typeof TIMELINE_RANGES[number]['key']>('7d')
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessResult, setReprocessResult] = useState<{ readingsProcessed: number; eventsFound: number; span: { from: string; to: string } | null } | null>(null)
 
@@ -257,6 +259,14 @@ export function EventsLog() {
 
         <Legend />
 
+        {events.length > 0 && (
+          <EventTimeline
+            events={events}
+            range={timelineRange}
+            onRangeChange={setTimelineRange}
+          />
+        )}
+
         {events.length === 0 && (
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center">
             <p className="text-sm text-zinc-500">No events recorded yet.</p>
@@ -280,10 +290,10 @@ export function EventsLog() {
                     {GROUP_LABEL[g](now)}
                   </h2>
                   {grouped.get(g)!.map(event => (
-                    <div
+                    <Link
                       key={event.id}
-                      className={`rounded-xl border bg-zinc-900/40 px-4 py-3 space-y-2 transition-opacity ${event.acknowledged ? 'opacity-40 border-zinc-800' : SEVERITY_BORDER[event.severity]
-                        }`}
+                      href={`/events/${event.id}`}
+                      className={`block rounded-xl border bg-zinc-900/40 px-4 py-3 space-y-2 transition-opacity hover:bg-zinc-900/60 ${event.acknowledged ? 'opacity-40 border-zinc-800' : SEVERITY_BORDER[event.severity]}`}
                     >
                       {/* Title row */}
                       <div className="flex items-start justify-between gap-3">
@@ -291,12 +301,9 @@ export function EventsLog() {
                           <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-md border ${SEVERITY_STYLES[event.severity]}`}>
                             {event.severity}
                           </span>
-                          <Link
-                            href={`/events/${event.id}`}
-                            className="text-sm font-semibold text-zinc-100 leading-snug hover:text-white hover:underline underline-offset-2 decoration-zinc-600"
-                          >
+                          <span className="text-sm font-semibold text-zinc-100 leading-snug">
                             {event.title}
-                          </Link>
+                          </span>
                           <span className="text-xs text-zinc-500">{TYPE_LABEL[event.type]}</span>
                         </div>
                         {event.acknowledged && <span className="shrink-0 text-xs text-zinc-600">dismissed</span>}
@@ -333,7 +340,7 @@ export function EventsLog() {
                         <span>NOx <span className="text-zinc-500">{event.baseline.noxIndex}</span></span>
                         <span>PM2.5 <span className="text-zinc-500">{event.baseline.pm02.toFixed(1)}</span></span>
                       </div>
-                    </div>
+                    </Link>
                   ))}
                 </div>
               ))}

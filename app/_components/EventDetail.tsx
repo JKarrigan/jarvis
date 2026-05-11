@@ -167,7 +167,7 @@ export function EventDetail({ id }: { id: string }) {
             <Chart label="NOx" unit="idx" values={extract(readings, 'noxIndex')} timestamps={timestamps} status={noxStatus(lastReading?.noxIndex ?? 0)} statusFn={noxStatus} events={[event]} />
             <Chart label="PM1" unit="μg/m³" values={extract(readings, 'pm01')} timestamps={timestamps} status={pm1Status(lastReading?.pm01 ?? 0)} statusFn={pm1Status} events={[event]} />
             <Chart label="PM10" unit="μg/m³" values={extract(readings, 'pm10')} timestamps={timestamps} status={pm10Status(lastReading?.pm10 ?? 0)} statusFn={pm10Status} events={[event]} />
-            <Chart label="Temperature" unit="°C" values={extract(readings, 'atmp')} timestamps={timestamps} status={tempStatus(temp)} statusFn={tempStatus} />
+            <Chart label="Temperature" unit="°F" values={extract(readings, 'atmp').map(v => v * 9 / 5 + 32)} timestamps={timestamps} status={tempStatus(temp)} statusFn={v => tempStatus((v - 32) * 5 / 9)} />
             <Chart label="Humidity" unit="%" values={extract(readings, 'rhum')} timestamps={timestamps} status={humidityStatus(hum)} statusFn={humidityStatus} />
           </section>
         ) : (

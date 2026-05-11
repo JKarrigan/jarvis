@@ -15,6 +15,16 @@ import { Chart } from './Chart'
 import { MetricCard } from './MetricCard'
 import { EventBanner } from './EventBanner'
 
+type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d'
+
+const RANGES: { key: RangeKey; label: string; ms: number }[] = [
+  { key: '1h',  label: '1h',  ms: 60 * 60 * 1000 },
+  { key: '6h',  label: '6h',  ms: 6 * 60 * 60 * 1000 },
+  { key: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
+  { key: '7d',  label: '7d',  ms: 7 * 24 * 60 * 60 * 1000 },
+  { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
+]
+
 interface DevControls {
   onSimulate: () => void
   onClear: () => void
@@ -88,6 +98,22 @@ export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId
   const temp = measures.atmpCompensated ?? measures.atmp
   const hum = measures.rhumCompensated ?? measures.rhum
 
+  const [range, setRange] = useState<RangeKey>('24h')
+  const [chartHistory, setChartHistory] = useState<HistoryEntry[]>(history)
+  const [loadingChart, setLoadingChart] = useState(false)
+
+  useEffect(() => {
+    const rangeMs = RANGES.find(r => r.key === range)!.ms
+    const to = Date.now()
+    const from = to - rangeMs
+    setLoadingChart(true)
+    fetch(`/api/history?from=${from}&to=${to}`)
+      .then(r => r.ok ? r.json() : [])
+      .then((data: HistoryEntry[]) => { if (Array.isArray(data)) setChartHistory(data) })
+      .catch(() => {})
+      .finally(() => setLoadingChart(false))
+  }, [range])
+
   const [now, setNow] = useState<Date | null>(null)
   useEffect(() => {
     setNow(new Date())
@@ -101,7 +127,7 @@ export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId
 
   const criticalEvents = activeEvents.filter(e => e.severity === 'critical' && !e.acknowledged)
 
-  const chartTimestamps = history.map(h => h.timestamp)
+  const chartTimestamps = chartHistory.map(h => h.timestamp)
 
   const tMin = chartTimestamps[0] ?? 0
   const tMax = chartTimestamps[chartTimestamps.length - 1] ?? 0
@@ -230,7 +256,27 @@ export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId
         {history.length > 1 && (
           <section className="space-y-3">
             <div className="px-1 space-y-2">
-              <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">History</h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">History</h2>
+                <div className="flex items-center gap-1.5">
+                  {RANGES.map(r => (
+                    <button
+                      key={r.key}
+                      onClick={() => setRange(r.key)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
+                        range === r.key
+                          ? 'bg-zinc-700 text-zinc-100'
+                          : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                  {loadingChart && (
+                    <div className="w-3.5 h-3.5 rounded-full border border-zinc-700 border-t-zinc-400 animate-spin ml-1" />
+                  )}
+                </div>
+              </div>
               {chartEvents.length > 0 && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 divide-y divide-zinc-800/60">
                   <div className="px-3 py-2 flex items-center gap-2">
@@ -268,31 +314,31 @@ export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId
                 </div>
               )}
             </div>
-            <Chart label="CO₂" unit="ppm" values={extract(history, 'rco2')} timestamps={chartTimestamps} status={co2Status(measures.rco2)} statusFn={co2Status} events={activeEvents} />
+            <Chart label="CO₂" unit="ppm" values={extract(chartHistory, 'rco2')} timestamps={chartTimestamps} status={co2Status(measures.rco2)} statusFn={co2Status} events={activeEvents} />
             <Chart
               label="PM2.5"
               unit="μg/m³"
               values={pmBatch
-                ? history.map(h => Number.isFinite(h.measures.pm003Count) ? calibratePm25(h.measures.pm003Count, pmBatch) : h.measures.pm02)
-                : extract(history, 'pm02')}
+                ? chartHistory.map(h => Number.isFinite(h.measures.pm003Count) ? calibratePm25(h.measures.pm003Count, pmBatch) : h.measures.pm02)
+                : extract(chartHistory, 'pm02')}
               timestamps={chartTimestamps}
               status={pm25Status(pm02)}
               statusFn={pm25Status}
               events={activeEvents}
             />
-            <Chart label="PM1" unit="μg/m³" values={extract(history, 'pm01')} timestamps={chartTimestamps} status={pm1Status(measures.pm01)} statusFn={pm1Status} events={activeEvents} />
-            <Chart label="PM10" unit="μg/m³" values={extract(history, 'pm10')} timestamps={chartTimestamps} status={pm10Status(measures.pm10)} statusFn={pm10Status} events={activeEvents} />
+            <Chart label="PM1" unit="μg/m³" values={extract(chartHistory, 'pm01')} timestamps={chartTimestamps} status={pm1Status(measures.pm01)} statusFn={pm1Status} events={activeEvents} />
+            <Chart label="PM10" unit="μg/m³" values={extract(chartHistory, 'pm10')} timestamps={chartTimestamps} status={pm10Status(measures.pm10)} statusFn={pm10Status} events={activeEvents} />
             <Chart
               label="Temperature"
               unit={`°${tempUnit}`}
-              values={extract(history, measures.atmpCompensated != null ? 'atmpCompensated' : 'atmp').map(v => tempUnit === 'F' ? v * 9 / 5 + 32 : v)}
+              values={extract(chartHistory, measures.atmpCompensated != null ? 'atmpCompensated' : 'atmp').map(v => tempUnit === 'F' ? v * 9 / 5 + 32 : v)}
               timestamps={chartTimestamps}
               status={tempStatus(temp)}
               statusFn={v => tempStatus(tempUnit === 'F' ? (v - 32) * 5 / 9 : v)}
             />
-            <Chart label="Humidity" unit="%" values={extract(history, measures.rhumCompensated != null ? 'rhumCompensated' : 'rhum')} timestamps={chartTimestamps} status={humidityStatus(hum)} statusFn={humidityStatus} />
-            <Chart label="TVOC" unit="idx" values={extract(history, 'tvocIndex')} timestamps={chartTimestamps} status={tvocStatus(measures.tvocIndex)} statusFn={tvocStatus} events={activeEvents} />
-            <Chart label="NOx" unit="idx" values={extract(history, 'noxIndex')} timestamps={chartTimestamps} status={noxStatus(measures.noxIndex)} statusFn={noxStatus} events={activeEvents} />
+            <Chart label="Humidity" unit="%" values={extract(chartHistory, measures.rhumCompensated != null ? 'rhumCompensated' : 'rhum')} timestamps={chartTimestamps} status={humidityStatus(hum)} statusFn={humidityStatus} />
+            <Chart label="TVOC" unit="idx" values={extract(chartHistory, 'tvocIndex')} timestamps={chartTimestamps} status={tvocStatus(measures.tvocIndex)} statusFn={tvocStatus} events={activeEvents} />
+            <Chart label="NOx" unit="idx" values={extract(chartHistory, 'noxIndex')} timestamps={chartTimestamps} status={noxStatus(measures.noxIndex)} statusFn={noxStatus} events={activeEvents} />
           </section>
         )}
       </main>

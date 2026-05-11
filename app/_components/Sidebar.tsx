@@ -9,25 +9,28 @@ import { METRICS } from '@/lib/metrics'
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname()
 
-  const link = (href: string, label: string) => (
-    <Link
-      key={href}
-      href={href}
-      onClick={onNavigate}
-      className={`px-3 py-2 rounded-lg text-sm transition-colors ${pathname === href
-        ? 'bg-zinc-800 text-zinc-100'
-        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
-        }`}
-    >
-      {label}
-    </Link>
-  )
+  const link = (href: string, label: string, matchPrefix = false) => {
+    const active = matchPrefix ? pathname.startsWith(href) : pathname === href
+    return (
+      <Link
+        key={href}
+        href={href}
+        onClick={onNavigate}
+        className={`px-3 py-2 rounded-lg text-sm transition-colors ${active
+          ? 'bg-zinc-800 text-zinc-100'
+          : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
+          }`}
+      >
+        {label}
+      </Link>
+    )
+  }
 
   return (
     <>
       {link('/', 'Dashboard')}
       {link('/air-quality', 'Air Quality')}
-      {link('/events', 'AQ Events')}
+      {link('/events', 'AQ Events', true)}
       {link('/lights', 'Lights')}
       {link('/files', 'Files')}
       {link('/logs', 'Logs')}
