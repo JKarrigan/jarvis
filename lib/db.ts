@@ -155,6 +155,13 @@ function rowToEvent(r: EventRow): AirQualityEvent {
   }
 }
 
+export function getEventById(id: string): AirQualityEvent | null {
+  const row = getDb()
+    .prepare('SELECT * FROM events WHERE id = ?')
+    .get(id) as EventRow | undefined
+  return row ? rowToEvent(row) : null
+}
+
 export function getEvents(limit = 200, since?: number): AirQualityEvent[] {
   const rows = since != null
     ? getDb()
@@ -168,4 +175,15 @@ export function getEvents(limit = 200, since?: number): AirQualityEvent[] {
 
 export function acknowledgeEventInDb(id: string): void {
   getDb().prepare('UPDATE events SET acknowledged = 1 WHERE id = ?').run(id)
+}
+
+export function deleteAllEvents(): void {
+  getDb().prepare('DELETE FROM events').run()
+}
+
+export function getAllReadings(): HistoryEntry[] {
+  const rows = getDb()
+    .prepare('SELECT timestamp, data FROM readings ORDER BY timestamp ASC')
+    .all() as { timestamp: number; data: string }[]
+  return rows.map(r => ({ timestamp: r.timestamp, measures: JSON.parse(r.data) as DeviceMeasures }))
 }

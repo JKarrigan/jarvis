@@ -14,11 +14,10 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       key={href}
       href={href}
       onClick={onNavigate}
-      className={`px-3 py-2 rounded-lg text-sm transition-colors ${
-        pathname === href
-          ? 'bg-zinc-800 text-zinc-100'
-          : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
-      }`}
+      className={`px-3 py-2 rounded-lg text-sm transition-colors ${pathname === href
+        ? 'bg-zinc-800 text-zinc-100'
+        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
+        }`}
     >
       {label}
     </Link>
@@ -28,17 +27,17 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
     <>
       {link('/', 'Dashboard')}
       {link('/air-quality', 'Air Quality')}
-      {link('/events', 'Events')}
+      {link('/events', 'AQ Events')}
       {link('/lights', 'Lights')}
       {link('/files', 'Files')}
+      {link('/logs', 'Logs')}
       <Link
         href="/settings"
         onClick={onNavigate}
-        className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${
-          pathname === '/settings'
-            ? 'bg-zinc-800 text-zinc-100'
-            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
-        }`}
+        className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${pathname === '/settings'
+          ? 'bg-zinc-800 text-zinc-100'
+          : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
+          }`}
       >
         Settings
       </Link>

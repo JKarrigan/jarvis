@@ -161,32 +161,14 @@ export function Chart({ label, unit, values, timestamps, status, statusFn, event
         >
           {statusLabel[status]}
         </span>
-        {visibleEvents.length > 0 && (
-          <div className="flex items-center gap-1 flex-wrap">
-            {visibleEvents.map(e => (
-              <span
-                key={e.id}
-                className="text-xs px-1.5 py-0.5 rounded-md border font-medium"
-                style={{
-                  color: EVENT_COLOR[e.severity],
-                  borderColor: `${EVENT_COLOR[e.severity]}40`,
-                  backgroundColor: `${EVENT_COLOR[e.severity]}18`,
-                }}
-              >
-                {e.title}
-              </span>
-            ))}
-          </div>
-        )}
         <div className="ml-auto flex items-center gap-2">
           {statusFn && (
             <button
               onClick={() => setColorMode(m => m === 'uniform' ? 'by-range' : 'uniform')}
-              className={`text-xs px-2 py-0.5 rounded-md border transition-colors ${
-                colorMode === 'by-range'
-                  ? 'bg-zinc-700 border-zinc-600 text-zinc-200'
-                  : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'
-              }`}
+              className={`text-xs px-2 py-0.5 rounded-md border transition-colors ${colorMode === 'by-range'
+                ? 'bg-zinc-700 border-zinc-600 text-zinc-200'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                }`}
             >
               {colorMode === 'by-range' ? 'By Range' : 'Uniform'}
             </button>

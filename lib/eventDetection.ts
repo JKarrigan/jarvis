@@ -1,6 +1,6 @@
 import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline, Severity } from './eventTypes'
 
-const SAMPLE_WINDOW_MS = 5 * 60 * 1000
+const SAMPLE_WINDOW_MS = 3 * 60 * 1000
 const BASELINE_WINDOW_MS = 30 * 60 * 1000
 const MERGE_WINDOW_MS = 15 * 60 * 1000
 const WARM_UP_MS = 60 * 60 * 1000
@@ -37,9 +37,11 @@ function persistsFor(
   predicateFn: (r: AirGradientReading) => boolean,
   minMs: number,
 ): boolean {
-  if (readings.length === 0) return false
-  const span = readings[readings.length - 1].timestamp.getTime() - readings[0].timestamp.getTime()
-  if (span < minMs) return false
+  // Count-based minimum: the endpoint-exclusive window filter makes the actual span
+  // slightly shorter than minMs for regularly-sampled data, so a span check always fails.
+  // Assume 10–15 s polling; require at least minMs/15s readings.
+  const minCount = Math.max(5, Math.floor(minMs / 15_000))
+  if (readings.length < minCount) return false
   const passing = readings.filter(predicateFn).length
   return passing / readings.length >= 0.8
 }
@@ -122,13 +124,13 @@ function computeConfidence(
 ): number {
   let score = 0.5
 
-  // +0.15 for each metric exceeding its threshold by ≥ 50%
-  const noxThreshold = baseline.noxIndex + 80
-  const tvocThreshold = baseline.tvocIndex + 100
-  const pm02Threshold = baseline.pm02 + 8
-  if (peak.noxIndex >= noxThreshold * 1.5) score += 0.15
-  if (peak.tvocIndex >= tvocThreshold * 1.5) score += 0.15
-  if (peak.pm02 >= pm02Threshold * 1.5) score += 0.15
+  // +0.15 for each metric at least 2× its trigger threshold above baseline
+  const noxTrigger = Math.max(4, baseline.noxIndex * 3)
+  const tvocTrigger = baseline.tvocIndex + 60
+  const pm02Trigger = baseline.pm02 + 6
+  if (peak.noxIndex >= noxTrigger * 2) score += 0.15
+  if (peak.tvocIndex >= tvocTrigger * 1.5) score += 0.15
+  if (peak.pm02 >= pm02Trigger * 1.5) score += 0.15
 
   if (durationMs >= 15 * 60 * 1000) score += 0.10
   if (durationMs >= 30 * 60 * 1000) score += 0.10
@@ -148,18 +150,24 @@ function peakValues(readings: AirGradientReading[]): AirQualityEvent['peak'] {
   }
 }
 
+const VENT_WINDOW_MS = 30 * 60 * 1000
+
 function tryDetectWindow(
   window: AirGradientReading[],
   baseline: LocalBaseline,
+  allReadings: AirGradientReading[],
+  currentMs: number,
 ): EventType | null {
   const b = baseline
 
+  // NOx threshold is ratio-based: 3× baseline (floor of 4) to handle sensors that sit at 1.
+  // Multi-channel correlation (NOx + PM2.5 + VOC together) provides specificity.
+  const noxCombustionThreshold = Math.max(4, b.noxIndex * 3)
   const isCombustion = persistsFor(window, r =>
-    r.noxIndex >= 200 &&
-    r.noxIndex >= b.noxIndex + 80 &&
-    r.pm02 >= 15 &&
-    r.pm02 >= b.pm02 + 8 &&
-    r.tvocIndex >= b.tvocIndex + 100,
+    r.noxIndex >= noxCombustionThreshold &&
+    r.pm02 >= 12 &&
+    r.pm02 >= b.pm02 + 6 &&
+    r.tvocIndex >= b.tvocIndex + 60,
     SAMPLE_WINDOW_MS,
   )
   if (isCombustion) return 'combustion_exhaust'
@@ -168,14 +176,15 @@ function tryDetectWindow(
     r.tvocIndex >= 250 &&
     r.tvocIndex >= b.tvocIndex + 150 &&
     r.noxIndex < b.noxIndex + 50 &&
-    r.pm02 < b.pm02 + 5,
+    r.pm02 < b.pm02 + 10,
     SAMPLE_WINDOW_MS,
   )
   if (isFuelVapor) return 'fuel_vapor'
 
+  // outdoor_drift: same ratio-based NOx gate, but distinguished from combustion by flat CO₂
+  const noxDriftThreshold = Math.max(4, b.noxIndex * 3)
   const isOutdoorDrift = persistsFor(window, r =>
-    r.noxIndex >= 200 &&
-    r.noxIndex >= b.noxIndex + 80 &&
+    r.noxIndex >= noxDriftThreshold &&
     r.pm02 >= 10 &&
     r.pm02 >= b.pm02 + 5 &&
     (r.rco2 - b.rco2) < 100,
@@ -183,12 +192,12 @@ function tryDetectWindow(
   )
   if (isOutdoorDrift) return 'outdoor_drift'
 
-  // voc_event: must not match fuel_vapor
+  // voc_event: high VOC without combustion signature.
+  // No per-sample exclusion — priority order (fuel_vapor checked first) handles disambiguation.
   const isVoc = persistsFor(window, r =>
     r.tvocIndex >= 200 &&
     r.tvocIndex >= b.tvocIndex + 75 &&
-    r.noxIndex < b.noxIndex + 30 &&
-    !(r.tvocIndex >= 250 && r.tvocIndex >= b.tvocIndex + 150),
+    r.noxIndex < b.noxIndex + 30,
     SAMPLE_WINDOW_MS,
   )
   if (isVoc) return 'voc_event'
@@ -201,7 +210,12 @@ function tryDetectWindow(
   )
   if (isParticulateSpike) return 'particulate_spike'
 
-  const isVentilationPoor = persistsFor(window, r => r.rco2 >= 1000, 30 * 60 * 1000)
+  // ventilation_poor requires 30 min of sustained CO₂ — use the full readings buffer,
+  // not the 3-min sample window, or the span check would never be satisfied.
+  const ventWindow = allReadings.filter(
+    r => r.timestamp.getTime() >= currentMs - VENT_WINDOW_MS && r.timestamp.getTime() < currentMs,
+  )
+  const isVentilationPoor = persistsFor(ventWindow, r => r.rco2 >= 1000, VENT_WINDOW_MS)
   if (isVentilationPoor) return 'ventilation_poor'
 
   return null
@@ -281,7 +295,7 @@ export function detectEvents(
   rawReadings: AirGradientReading[],
   options?: DetectOptions,
 ): AirQualityEvent[] {
-  const sampleWindowMs = (options?.sampleWindowMin ?? 5) * 60 * 1000
+  const sampleWindowMs = options?.sampleWindowMin != null ? options.sampleWindowMin * 60 * 1000 : SAMPLE_WINDOW_MS
   const baselineWindowMs = (options?.baselineWindowMin ?? 30) * 60 * 1000
 
   // Filter samples missing critical fields
@@ -322,7 +336,7 @@ export function detectEvents(
       if (!frozenBaseline || !eventStart) frozenBaseline = baseline
     }
 
-    const detectedType = tryDetectWindow(sampleWindow, baseline)
+    const detectedType = tryDetectWindow(sampleWindow, baseline, readings, t)
 
     if (detectedType && prevType === null) {
       // Event starts

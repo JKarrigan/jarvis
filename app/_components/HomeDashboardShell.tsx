@@ -10,7 +10,7 @@ import type { LightState } from './HueControls'
 type PendingState = Partial<Pick<HueLight, 'on' | 'brightness' | 'colorTemp' | 'hue' | 'saturation'>>
 
 export function HomeDashboardShell() {
-  const { ready, deviceIp, measures, history, lastUpdated, error, tempUnit, pmBatchId, outdoorAqi, handleIpSave } = usePolling()
+  const { ready, deviceIp, measures, history, lastUpdated, error, tempUnit, pmBatchId, outdoorAqi, handleIpSave, allEvents } = usePolling()
   const [, setTick] = useState(0)
   const [groups, setGroups] = useState<HueGroup[]>([])
   const [lights, setLights] = useState<HueLight[]>([])
@@ -181,6 +181,7 @@ export function HomeDashboardShell() {
       onGroupBrightness={handleGroupBrightness}
       onGroupSelect={setSelectedGroupId}
       onGroupClose={() => { setSelectedGroupId(null); setSelectedLightId(null) }}
+      recentEvents={allEvents}
       onLightToggle={handleLightToggle}
       onLightSetState={handleLightSetState}
       onLightSelect={setSelectedLightId}

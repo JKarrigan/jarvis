@@ -6,6 +6,7 @@ import { AnimatePresence } from 'framer-motion'
 import type { DeviceMeasures, HistoryEntry, HueGroup, HueLight } from '@/lib/types'
 import { computeAqi, aqiToColor } from '@/lib/aqi'
 import type { StatusColor } from '@/lib/types'
+import type { AirQualityEvent } from '@/lib/eventTypes'
 import {
   co2Status, tempStatus, humidityStatus, tvocStatus,
 } from '@/lib/thresholds'
@@ -37,10 +38,18 @@ interface HomeDashboardProps {
   onGroupBrightness: (id: string, bri: number) => void
   onGroupSelect: (id: string) => void
   onGroupClose: () => void
+  recentEvents: AirQualityEvent[]
   onLightToggle: (id: string, on: boolean) => void
   onLightSetState: (id: string, state: LightState) => void
   onLightSelect: (id: string) => void
   onLightClose: () => void
+}
+
+const EVENT_COLOR: Record<string, string> = {
+  critical: '#dc2626',
+  warning: '#f59e0b',
+  notable: '#3b82f6',
+  info: '#9ca3af',
 }
 
 const STATUS_HEX: Record<StatusColor, string> = {
@@ -150,6 +159,7 @@ function DashboardGroupRow({
 
 export function HomeDashboard({
   measures, history, lastUpdated, error, tempUnit, pmBatchId, outdoorAqi,
+  recentEvents,
   groups, lights, selectedGroupId, selectedLightId,
   onGroupToggle, onGroupBrightness, onGroupSelect, onGroupClose,
   onLightToggle, onLightSetState, onLightSelect, onLightClose,
@@ -174,10 +184,10 @@ export function HomeDashboard({
     const id = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(id)
   }, [])
-  const hhmm   = now?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) ?? '--:--'
-  const ss     = now ? String(now.getSeconds()).padStart(2, '0') : '--'
-  const dow    = now?.toLocaleDateString([], { weekday: 'long' }) ?? ''
-  const mmdd   = now?.toLocaleDateString([], { month: 'long', day: 'numeric' }) ?? ''
+  const hhmm = now?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) ?? '--:--'
+  const ss = now ? String(now.getSeconds()).padStart(2, '0') : '--'
+  const dow = now?.toLocaleDateString([], { weekday: 'long' }) ?? ''
+  const mmdd = now?.toLocaleDateString([], { month: 'long', day: 'numeric' }) ?? ''
 
   const selectedGroup = groups.find(g => g.id === selectedGroupId) ?? null
   const selectedLight = lights.find(l => l.id === selectedLightId) ?? null
@@ -275,6 +285,44 @@ export function HomeDashboard({
                 />
               </section>
             )}
+
+            {/* Recent AQ events — last 24 h, max 5 */}
+            {(() => {
+              const cutoff = Date.now() - 24 * 60 * 60 * 1000
+              const events = recentEvents
+                .filter(e => e.startTime.getTime() >= cutoff && e.confidence >= 0.5)
+                .sort((a, b) => b.startTime.getTime() - a.startTime.getTime())
+                .filter((e, i, arr) => arr.findIndex(x => x.id === e.id) === i)
+                .slice(0, 5)
+              if (events.length === 0) return null
+              return (
+                <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 divide-y divide-zinc-800/60">
+                  <div className="px-4 py-2">
+                    <span className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Events · last 24 h</span>
+                  </div>
+                  {events.map(e => {
+                    const eColor = EVENT_COLOR[e.severity]
+                    const mins = Math.round((Date.now() - e.startTime.getTime()) / 60000)
+                    const ago = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`
+                    return (
+                      <div key={e.id} className="px-4 py-3 flex gap-3">
+                        <span className="w-1.5 h-1.5 rounded-full shrink-0 mt-1.5" style={{ backgroundColor: eColor }} />
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium text-zinc-200 truncate">{e.title}</span>
+                            {!e.endTime && <span className="text-xs text-emerald-500 animate-pulse shrink-0">ongoing</span>}
+                            <span className="text-xs text-zinc-600 shrink-0 tabular-nums ml-auto">{ago}</span>
+                          </div>
+                          {e.description && (
+                            <p className="text-xs text-zinc-500 leading-relaxed line-clamp-2">{e.description}</p>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </section>
+              )
+            })()}
           </div>
 
           {/* ── Right: Lights ── */}

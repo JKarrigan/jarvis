@@ -34,6 +34,13 @@ interface DashboardProps {
   devControls?: DevControls
 }
 
+const EVENT_COLOR: Record<string, string> = {
+  critical: '#dc2626',
+  warning: '#f59e0b',
+  notable: '#3b82f6',
+  info: '#9ca3af',
+}
+
 const STATUS_HEX: Record<StatusColor, string> = {
   good: '#34d399', moderate: '#facc15', sensitive: '#fb923c',
   unhealthy: '#ef4444', 'very-unhealthy': '#a855f7', hazardous: '#9f1239',
@@ -93,7 +100,17 @@ export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId
   const mmdd = now?.toLocaleDateString([], { month: 'long', day: 'numeric' }) ?? ''
 
   const criticalEvents = activeEvents.filter(e => e.severity === 'critical' && !e.acknowledged)
+
   const chartTimestamps = history.map(h => h.timestamp)
+
+  const tMin = chartTimestamps[0] ?? 0
+  const tMax = chartTimestamps[chartTimestamps.length - 1] ?? 0
+  const chartEvents = activeEvents.filter(e => {
+    if (e.confidence < 0.5) return false
+    const start = e.startTime.getTime()
+    const end = e.endTime?.getTime() ?? tMax
+    return end >= tMin && start <= tMax
+  })
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col">
@@ -212,7 +229,45 @@ export function Dashboard({ measures, history, tempUnit, onTempToggle, pmBatchId
         {/* History Charts */}
         {history.length > 1 && (
           <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 px-1">History</h2>
+            <div className="px-1 space-y-2">
+              <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">History</h2>
+              {chartEvents.length > 0 && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 divide-y divide-zinc-800/60">
+                  <div className="px-3 py-2 flex items-center gap-2">
+                    <span className="text-xs text-zinc-600">Events in this view</span>
+                    <span className="text-xs text-zinc-700">· chart overlays highlight these periods</span>
+                  </div>
+                  {chartEvents.map(e => {
+                    const eColor = EVENT_COLOR[e.severity]
+                    const isOngoing = !e.endTime
+                    const startStr = e.startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    const endStr = e.endTime
+                      ? e.endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      : null
+                    const dur = e.durationMinutes < 60
+                      ? `${Math.round(e.durationMinutes)} min`
+                      : `${(e.durationMinutes / 60).toFixed(1)} hr`
+                    return (
+                      <div key={e.id} className="px-3 py-2 flex items-center gap-3 flex-wrap">
+                        <span
+                          className="shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded border"
+                          style={{ color: eColor, borderColor: `${eColor}35`, backgroundColor: `${eColor}12` }}
+                        >
+                          {e.severity}
+                        </span>
+                        <span className="text-xs font-medium text-zinc-200">{e.title}</span>
+                        <span className="text-xs text-zinc-600">
+                          {startStr}{endStr ? ` → ${endStr}` : ''} · {dur}
+                        </span>
+                        {isOngoing && (
+                          <span className="text-xs text-emerald-500 animate-pulse">ongoing</span>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
             <Chart label="CO₂" unit="ppm" values={extract(history, 'rco2')} timestamps={chartTimestamps} status={co2Status(measures.rco2)} statusFn={co2Status} events={activeEvents} />
             <Chart
               label="PM2.5"

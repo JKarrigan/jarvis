@@ -13,7 +13,7 @@ function persistEvent(event: AirQualityEvent) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ event }),
-  }).catch(() => {})
+  }).catch(() => { })
 }
 
 function toDetectorReading(entry: HistoryEntry): AirGradientReading {
@@ -84,7 +84,7 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ip }),
-    }).catch(() => {})
+    }).catch(() => { })
   }
 
   useEffect(() => {
@@ -116,13 +116,19 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
 
         // Run event detection over the full history
         detector.current.loadHistory(data.map(toDetectorReading))
-        setActiveEvents(detector.current.getActiveEvents())
-        setAllEvents([
-          ...detector.current.getActiveEvents(),
-          ...detector.current.getHistory(new Date(0)),
-        ])
+
+        // Re-apply acknowledgment state from localStorage so banners don't
+        // reappear after a page refresh
+        const applyAck = (e: AirQualityEvent): AirQualityEvent => ({
+          ...e,
+          acknowledged: !!localStorage.getItem(`aq-ack-${e.id}`),
+        })
+        const active = detector.current.getActiveEvents().map(applyAck)
+        const hist = detector.current.getHistory(new Date(0)).map(applyAck)
+        setActiveEvents(active)
+        setAllEvents([...active, ...hist])
       })
-      .catch(() => {})
+      .catch(() => { })
   }, [])
 
   const fetchLatest = useCallback(async () => {
@@ -223,7 +229,7 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ acknowledgeId: id }),
-    }).catch(() => {})
+    }).catch(() => { })
   }
 
   function handleIpSave(ip: string) {
