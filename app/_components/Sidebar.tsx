@@ -29,6 +29,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       {link('/', 'Dashboard')}
       {link('/air-quality', 'Air Quality')}
       {link('/lights', 'Lights')}
+      {link('/files', 'Files')}
       <Link
         href="/settings"
         onClick={onNavigate}
