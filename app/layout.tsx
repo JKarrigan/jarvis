@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "./_components/Sidebar";
 import { PollingProvider } from "./_components/PollingProvider";
+import { RootWrapper } from "./_components/RootWrapper";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -31,10 +32,10 @@ export default function RootLayout({
     >
       <body className="h-full">
         <PollingProvider>
-          <div className="md:flex">
+          <RootWrapper>
             <Sidebar />
             <div className="flex-1 min-w-0">{children}</div>
-          </div>
+          </RootWrapper>
         </PollingProvider>
       </body>
     </html>

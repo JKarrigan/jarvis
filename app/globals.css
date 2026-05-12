@@ -18,6 +18,14 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
+.scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
 /* react-colorful overrides */
 .react-colorful {
   border-radius: 0.75rem;

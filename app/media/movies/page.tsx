@@ -1,0 +1,34 @@
+'use client'
+
+import { useState } from 'react'
+import { MediaGrid } from '@/app/_components/media/MediaCard'
+import { MOCK_MOVIES } from '@/app/_components/media/mockData'
+
+export default function MoviesPage() {
+  const [search, setSearch] = useState('')
+  const filtered = MOCK_MOVIES.filter(m =>
+    m.title.toLowerCase().includes(search.toLowerCase())
+  )
+
+  return (
+    <main className="py-6 space-y-6">
+      <div className="flex items-center justify-between gap-4 px-4 md:px-6">
+        <div>
+          <h1 className="text-2xl font-bold text-zinc-100">Movies</h1>
+          <p className="text-sm text-zinc-500 mt-1">{MOCK_MOVIES.length} titles</p>
+        </div>
+        <input
+          type="search"
+          placeholder="Search movies…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 focus:outline-none transition-colors w-48"
+        />
+      </div>
+      {filtered.length > 0
+        ? <MediaGrid items={filtered} />
+        : <p className="text-sm text-zinc-500 px-4 md:px-6">No results for &ldquo;{search}&rdquo;</p>
+      }
+    </main>
+  )
+}
