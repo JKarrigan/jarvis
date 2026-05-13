@@ -1,21 +1,7 @@
-export type FileEntry = {
-  name: string
-  kind: 'file'
-  size: number
-  modified: Date
-  ext: string
-}
+export type { FileEntry, DirEntry, Entry, SortKey, FileTypeInfo } from '@/lib/fileTypes'
+export { sortEntries, formatSize, formatDate, fileTypeInfo } from '@/lib/fileTypes'
 
-export type DirEntry = {
-  name: string
-  kind: 'dir'
-  modified: Date
-  children: Entry[]
-}
-
-export type Entry = FileEntry | DirEntry
-
-export type SortKey = 'name' | 'size' | 'modified'
+import type { DirEntry } from '@/lib/fileTypes'
 
 const KB = 1024
 const MB = 1024 * KB
@@ -89,7 +75,7 @@ const ROOT: DirEntry = {
   ],
 }
 
-export function getEntries(path: string[]): Entry[] {
+export function getEntries(path: string[]): DirEntry['children'] {
   let node: DirEntry = ROOT
   for (const seg of path) {
     const next = node.children.find((e): e is DirEntry => e.kind === 'dir' && e.name === seg)
@@ -97,55 +83,6 @@ export function getEntries(path: string[]): Entry[] {
     node = next
   }
   return node.children
-}
-
-export function sortEntries(entries: Entry[], key: SortKey): Entry[] {
-  const dirs = entries.filter((e): e is DirEntry => e.kind === 'dir')
-  const files = entries.filter((e): e is FileEntry => e.kind === 'file')
-
-  const cmp = (a: Entry, b: Entry): number => {
-    if (key === 'name') return a.name.localeCompare(b.name)
-    if (key === 'size') {
-      const aSize = a.kind === 'file' ? a.size : 0
-      const bSize = b.kind === 'file' ? b.size : 0
-      return bSize - aSize
-    }
-    return b.modified.getTime() - a.modified.getTime()
-  }
-
-  return [...dirs.sort(cmp), ...files.sort(cmp)]
-}
-
-export function formatSize(bytes: number): string {
-  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`
-  if (bytes >= MB) return `${(bytes / MB).toFixed(1)} MB`
-  if (bytes >= KB) return `${Math.round(bytes / KB)} KB`
-  return `${bytes} B`
-}
-
-export function formatDate(date: Date): string {
-  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
-export type FileTypeInfo = { label: string; color: string; iconKind: 'doc' | 'image' | 'video' | 'archive' | 'sheet' | 'text' | 'generic' }
-
-export function fileTypeInfo(ext: string): FileTypeInfo {
-  const e = ext.toLowerCase()
-  if (['jpg', 'jpeg', 'png', 'gif', 'heic', 'webp', 'avif'].includes(e))
-    return { label: 'Image', color: 'text-sky-400', iconKind: 'image' }
-  if (['mp4', 'mov', 'avi', 'mkv', 'm4v'].includes(e))
-    return { label: 'Video', color: 'text-purple-400', iconKind: 'video' }
-  if (['zip', 'gz', 'tar', 'rar', '7z', 'bz2'].includes(e))
-    return { label: 'Archive', color: 'text-orange-400', iconKind: 'archive' }
-  if (['xlsx', 'xls', 'csv', 'numbers'].includes(e))
-    return { label: 'Spreadsheet', color: 'text-emerald-400', iconKind: 'sheet' }
-  if (['docx', 'doc', 'odt', 'pages'].includes(e))
-    return { label: 'Document', color: 'text-blue-400', iconKind: 'doc' }
-  if (['txt', 'md', 'log', 'rtf'].includes(e))
-    return { label: 'Text', color: 'text-zinc-400', iconKind: 'text' }
-  if (e === 'pdf')
-    return { label: 'PDF', color: 'text-red-400', iconKind: 'doc' }
-  return { label: ext.toUpperCase(), color: 'text-zinc-500', iconKind: 'generic' }
 }
 
 export const MOCK_USED_GB = 64.2

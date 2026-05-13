@@ -1,11 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  getEntries, sortEntries, formatSize, formatDate, fileTypeInfo,
-  MOCK_USED_GB, MOCK_TOTAL_TB,
-  type Entry, type FileEntry, type SortKey,
-} from '@/lib/mockFiles'
+  sortEntries, formatSize, formatDate, fileTypeInfo,
+  type ApiEntry, type ApiFileEntry, type SortKey,
+} from '@/lib/fileTypes'
 import { useToast, Toast } from '@/app/_components/Toast'
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -82,7 +81,7 @@ function TextIcon({ className }: { className?: string }) {
   )
 }
 
-function FileIcon({ entry, className }: { entry: Entry; className?: string }) {
+function FileIcon({ entry, className }: { entry: ApiEntry; className?: string }) {
   if (entry.kind === 'dir') return <FolderIcon className={`text-amber-400 ${className ?? ''}`} />
   const { iconKind, color } = fileTypeInfo(entry.ext)
   const cls = `${color} ${className ?? ''}`
@@ -169,6 +168,15 @@ function ChevronRight() {
   )
 }
 
+function XIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  )
+}
+
 // ─── Breadcrumb ───────────────────────────────────────────────────────────────
 
 function Breadcrumb({ path, onNavigate }: { path: string[]; onNavigate: (idx: number) => void }) {
@@ -197,9 +205,22 @@ function Breadcrumb({ path, onNavigate }: { path: string[]; onNavigate: (idx: nu
 
 // ─── Storage Bar ──────────────────────────────────────────────────────────────
 
-function StorageBar() {
-  const totalGB = MOCK_TOTAL_TB * 1024
-  const pct = (MOCK_USED_GB / totalGB) * 100
+function StorageBar({ disk }: { disk: { usedBytes: number; totalBytes: number } | null }) {
+  if (!disk || disk.totalBytes === 0) {
+    return (
+      <div className="space-y-1.5">
+        <div className="h-1 w-full rounded-full bg-zinc-800 animate-pulse" />
+        <p className="text-xs text-zinc-700">Loading storage info…</p>
+      </div>
+    )
+  }
+
+  const pct = (disk.usedBytes / disk.totalBytes) * 100
+  const usedGB = disk.usedBytes / (1024 ** 3)
+  const totalGB = disk.totalBytes / (1024 ** 3)
+  const totalLabel = totalGB >= 1024
+    ? `${(totalGB / 1024).toFixed(1)} TB`
+    : `${totalGB.toFixed(0)} GB`
 
   return (
     <div className="space-y-1.5">
@@ -210,8 +231,76 @@ function StorageBar() {
         />
       </div>
       <p className="text-xs text-zinc-600">
-        {MOCK_USED_GB} GB used of {MOCK_TOTAL_TB} TB
+        {usedGB.toFixed(1)} GB used of {totalLabel}
       </p>
+    </div>
+  )
+}
+
+// ─── Preview Modal ────────────────────────────────────────────────────────────
+
+function PreviewModal({
+  entry,
+  filePath,
+  onClose,
+}: {
+  entry: ApiFileEntry
+  filePath: string
+  onClose: () => void
+}) {
+  const [textContent, setTextContent] = useState<string | null>(null)
+  const src = `/api/files/content?path=${encodeURIComponent(filePath)}`
+  const { iconKind } = fileTypeInfo(entry.ext)
+
+  useEffect(() => {
+    if (iconKind !== 'text') return
+    fetch(src).then(r => r.text()).then(setTextContent).catch(() => setTextContent('Failed to load file.'))
+  }, [src, iconKind])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="relative max-w-5xl max-h-[90vh] w-full mx-4 flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-sm text-zinc-300 truncate">{entry.name}</p>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors shrink-0"
+          >
+            <XIcon />
+          </button>
+        </div>
+
+        {iconKind === 'image' && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={src}
+            alt={entry.name}
+            className="max-h-[80vh] max-w-full mx-auto rounded-lg object-contain"
+          />
+        )}
+
+        {iconKind === 'video' && (
+          <video
+            src={src}
+            controls
+            autoPlay
+            className="max-h-[80vh] max-w-full mx-auto rounded-lg"
+          />
+        )}
+
+        {iconKind === 'text' && (
+          <pre className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs p-4 rounded-lg overflow-auto max-h-[80vh] whitespace-pre-wrap break-words">
+            {textContent ?? 'Loading…'}
+          </pre>
+        )}
+      </div>
     </div>
   )
 }
@@ -223,16 +312,18 @@ function ListRow({
   selected,
   onActivate,
   onSelect,
-  onAction,
+  onDownload,
+  onDelete,
 }: {
-  entry: Entry
+  entry: ApiEntry
   selected: boolean
   onActivate: () => void
   onSelect: () => void
-  onAction: (action: 'download' | 'delete') => void
+  onDownload: () => void
+  onDelete: () => void
 }) {
   const isDir = entry.kind === 'dir'
-  const info = isDir ? null : fileTypeInfo((entry as FileEntry).ext)
+  const info = isDir ? null : fileTypeInfo((entry as ApiFileEntry).ext)
 
   return (
     <div
@@ -249,33 +340,29 @@ function ListRow({
         {entry.name}
       </span>
 
-      {/* type */}
       <span className="hidden sm:block w-28 shrink-0 text-xs text-zinc-600 truncate">
         {isDir ? 'Folder' : info?.label}
       </span>
 
-      {/* size */}
       <span className="hidden md:block w-20 shrink-0 text-xs font-mono text-zinc-600 text-right">
-        {isDir ? '—' : formatSize((entry as FileEntry).size)}
+        {isDir ? '—' : formatSize((entry as ApiFileEntry).size)}
       </span>
 
-      {/* date */}
       <span className="hidden lg:block w-28 shrink-0 text-xs text-zinc-600 text-right">
         {formatDate(entry.modified)}
       </span>
 
-      {/* actions */}
       {!isDir && (
         <div className={`flex items-center gap-0.5 shrink-0 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
           <button
-            onClick={e => { e.stopPropagation(); onAction('download') }}
+            onClick={e => { e.stopPropagation(); onDownload() }}
             title="Download"
             className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
           >
             <DownloadIcon />
           </button>
           <button
-            onClick={e => { e.stopPropagation(); onAction('delete') }}
+            onClick={e => { e.stopPropagation(); onDelete() }}
             title="Delete"
             className="p-1.5 rounded-md text-zinc-500 hover:text-red-400 hover:bg-zinc-700 transition-colors"
           >
@@ -295,13 +382,13 @@ function GridCell({
   onActivate,
   onSelect,
 }: {
-  entry: Entry
+  entry: ApiEntry
   selected: boolean
   onActivate: () => void
   onSelect: () => void
 }) {
   const isDir = entry.kind === 'dir'
-  const info = isDir ? null : fileTypeInfo((entry as FileEntry).ext)
+  const info = isDir ? null : fileTypeInfo((entry as ApiFileEntry).ext)
 
   return (
     <button
@@ -316,7 +403,7 @@ function GridCell({
       <div className="w-full space-y-0.5">
         <p className="text-xs font-medium text-zinc-100 truncate text-center">{entry.name}</p>
         <p className="text-xs text-zinc-600 text-center">
-          {isDir ? 'Folder' : `${info?.label} · ${formatSize((entry as FileEntry).size)}`}
+          {isDir ? 'Folder' : `${info?.label} · ${formatSize((entry as ApiFileEntry).size)}`}
         </p>
       </div>
     </button>
@@ -345,9 +432,34 @@ export function FileBrowser() {
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [selected, setSelected] = useState<string | null>(null)
+  const [entries, setEntries] = useState<ApiEntry[]>([])
+  const [diskInfo, setDiskInfo] = useState<{ usedBytes: number; totalBytes: number } | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [previewEntry, setPreviewEntry] = useState<{ entry: ApiFileEntry; filePath: string } | null>(null)
+  const uploadRef = useRef<HTMLInputElement>(null)
   const { toast, showToast } = useToast()
 
-  const entries = getEntries(currentPath)
+  const refresh = useCallback(async (path: string[]) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/files/list?path=${encodeURIComponent(path.join('/'))}`)
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      setEntries(data.entries)
+      setDiskInfo(data.disk)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh(currentPath)
+  }, [currentPath, refresh])
+
   const sorted = sortEntries(entries, sortKey)
 
   function navigateInto(name: string) {
@@ -360,21 +472,72 @@ export function FileBrowser() {
     setSelected(null)
   }
 
-  function handleSelect(name: string) {
-    setSelected(s => s === name ? null : name)
+  function handleSelect(entry: ApiFileEntry) {
+    const { iconKind } = fileTypeInfo(entry.ext)
+    if (['image', 'video', 'text'].includes(iconKind)) {
+      setPreviewEntry({ entry, filePath: [...currentPath, entry.name].join('/') })
+    } else {
+      setSelected(s => s === entry.name ? null : entry.name)
+    }
   }
 
-  function handleAction(action: 'download' | 'delete') {
-    if (action === 'download') showToast('success', 'Downloads will work once storage is connected.')
-    if (action === 'delete') showToast('error', 'Deletion will work once storage is connected.')
+  function handleDownload(entry: ApiFileEntry) {
+    const filePath = [...currentPath, entry.name].join('/')
+    const url = `/api/files/content?path=${encodeURIComponent(filePath)}&download=true`
+    const a = document.createElement('a')
+    a.href = url
+    a.download = entry.name
+    a.click()
+  }
+
+  async function handleDelete(entry: ApiEntry) {
+    const entryPath = [...currentPath, entry.name].join('/')
+    try {
+      const res = await fetch(`/api/files/delete?path=${encodeURIComponent(entryPath)}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(await res.text())
+      showToast('success', `Deleted "${entry.name}"`)
+      setSelected(null)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
   }
 
   function handleUpload() {
-    showToast('success', 'Upload will work once storage is connected.')
+    uploadRef.current?.click()
   }
 
-  function handleNewFolder() {
-    showToast('success', 'New folder will work once storage is connected.')
+  async function handleUploadFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files?.length) return
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    try {
+      const res = await fetch(`/api/files/upload?path=${encodeURIComponent(currentPath.join('/'))}`, {
+        method: 'POST',
+        body: fd,
+      })
+      if (!res.ok) throw new Error(await res.text())
+      showToast('success', `Uploaded ${files.length} file${files.length !== 1 ? 's' : ''}`)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
+    e.target.value = ''
+  }
+
+  async function handleNewFolder() {
+    const name = window.prompt('Folder name:')
+    if (!name?.trim()) return
+    const newPath = [...currentPath, name.trim()].join('/')
+    try {
+      const res = await fetch(`/api/files/mkdir?path=${encodeURIComponent(newPath)}`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      showToast('success', `Created "${name.trim()}"`)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
   }
 
   const sortLabels: { key: SortKey; label: string }[] = [
@@ -389,7 +552,6 @@ export function FileBrowser() {
 
         {/* ── Toolbar ── */}
         <div className="space-y-3">
-          {/* Row 1: breadcrumb + actions */}
           <div className="flex items-center justify-between gap-4">
             <Breadcrumb path={currentPath} onNavigate={navigateTo} />
             <div className="flex items-center gap-1 shrink-0">
@@ -410,7 +572,6 @@ export function FileBrowser() {
             </div>
           </div>
 
-          {/* Row 2: sort tabs + count + view toggle */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-0.5">
               <span className="text-xs text-zinc-600 mr-2">Sort</span>
@@ -449,14 +610,22 @@ export function FileBrowser() {
         </div>
 
         {/* ── Storage Bar ── */}
-        <StorageBar />
+        <StorageBar disk={diskInfo} />
 
         {/* ── File Listing ── */}
-        {sorted.length === 0 ? (
+        {loading ? (
+          <div className="flex justify-center py-20">
+            <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-center py-20 gap-2">
+            <p className="text-sm text-red-400">Failed to load files</p>
+            <p className="text-xs text-zinc-600">{error}</p>
+          </div>
+        ) : sorted.length === 0 ? (
           <EmptyState />
         ) : viewMode === 'list' ? (
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
-            {/* Column headers */}
             <div className="flex items-center gap-3 px-3 py-2 border-b border-zinc-800/60">
               <span className="w-5 shrink-0" />
               <span className="flex-1 text-xs font-semibold uppercase tracking-widest text-zinc-600">Name</span>
@@ -465,7 +634,6 @@ export function FileBrowser() {
               <span className="hidden lg:block w-28 shrink-0 text-xs font-semibold uppercase tracking-widest text-zinc-600 text-right">Modified</span>
               <span className="w-16 shrink-0" />
             </div>
-            {/* Rows */}
             <div className="divide-y divide-zinc-800/40">
               {sorted.map(entry => (
                 <ListRow
@@ -473,8 +641,9 @@ export function FileBrowser() {
                   entry={entry}
                   selected={selected === entry.name}
                   onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
-                  onSelect={() => handleSelect(entry.name)}
-                  onAction={handleAction}
+                  onSelect={() => entry.kind === 'file' && handleSelect(entry)}
+                  onDownload={() => entry.kind === 'file' && handleDownload(entry)}
+                  onDelete={() => handleDelete(entry)}
                 />
               ))}
             </div>
@@ -487,12 +656,29 @@ export function FileBrowser() {
                 entry={entry}
                 selected={selected === entry.name}
                 onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
-                onSelect={() => handleSelect(entry.name)}
+                onSelect={() => entry.kind === 'file' && handleSelect(entry)}
               />
             ))}
           </div>
         )}
       </main>
+
+      {/* Hidden file input for uploads */}
+      <input
+        ref={uploadRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleUploadFiles}
+      />
+
+      {previewEntry && (
+        <PreviewModal
+          entry={previewEntry.entry}
+          filePath={previewEntry.filePath}
+          onClose={() => setPreviewEntry(null)}
+        />
+      )}
 
       <Toast toast={toast} />
     </div>

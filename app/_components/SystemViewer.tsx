@@ -186,14 +186,17 @@ export function SystemViewer() {
             <Card title="Sensor">
               {data.sensor ? (
                 <>
-                  {data.sensor.wifi !== null && (
-                    <BarRow
-                      label="WiFi signal"
-                      value={data.sensor.wifi}
-                      max={100}
-                      display={`${data.sensor.wifi}%`}
-                    />
-                  )}
+                  {data.sensor.wifi !== null && (() => {
+                    const quality = Math.min(100, Math.max(0, 2 * (data.sensor.wifi! + 100)))
+                    return (
+                      <BarRow
+                        label="WiFi signal"
+                        value={quality}
+                        max={100}
+                        display={`${quality}% (${data.sensor.wifi} dBm)`}
+                      />
+                    )
+                  })()}
                   <div className="pt-1 divide-y divide-zinc-800/60">
                     <Row label="Serial" value={data.sensor.serialno ?? '—'} />
                     <Row label="Model" value={data.sensor.model ?? '—'} />

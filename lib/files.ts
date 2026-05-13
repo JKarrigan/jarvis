@@ -1,0 +1,74 @@
+import 'server-only'
+import fs from 'fs'
+import path from 'path'
+import { execSync } from 'child_process'
+import type { ApiEntry } from '@/lib/fileTypes'
+
+export const FILES_ROOT = process.env.FILES_ROOT ?? '/mnt/storage'
+
+export function resolveSafe(relPath: string): string {
+  const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, '')
+  const abs = path.join(FILES_ROOT, normalized)
+  if (!abs.startsWith(FILES_ROOT + path.sep) && abs !== FILES_ROOT) {
+    throw new Error('Path traversal detected')
+  }
+  return abs
+}
+
+export function listDirectory(relPath: string): ApiEntry[] {
+  const abs = resolveSafe(relPath)
+  const dirents = fs.readdirSync(abs, { withFileTypes: true })
+  const entries: ApiEntry[] = []
+
+  for (const dirent of dirents) {
+    if (dirent.name.startsWith('.')) continue
+    try {
+      const entryAbs = path.join(abs, dirent.name)
+      const stat = fs.statSync(entryAbs)
+      if (dirent.isDirectory()) {
+        entries.push({
+          name: dirent.name,
+          kind: 'dir',
+          modified: stat.mtime.toISOString(),
+        })
+      } else if (dirent.isFile()) {
+        const ext = path.extname(dirent.name).slice(1)
+        entries.push({
+          name: dirent.name,
+          kind: 'file',
+          size: stat.size,
+          modified: stat.mtime.toISOString(),
+          ext,
+        })
+      }
+    } catch {
+      // skip entries we can't stat
+    }
+  }
+
+  return entries
+}
+
+export function getDiskInfo(mountPath: string): { usedBytes: number; totalBytes: number } {
+  try {
+    const out = execSync(`df -B1 "${mountPath}"`, { encoding: 'utf8', timeout: 3000 })
+    const line = out.trim().split('\n')[1]
+    const parts = line.split(/\s+/)
+    return {
+      totalBytes: parseInt(parts[1], 10),
+      usedBytes: parseInt(parts[2], 10),
+    }
+  } catch {
+    return { usedBytes: 0, totalBytes: 0 }
+  }
+}
+
+export function deleteEntry(relPath: string): void {
+  const abs = resolveSafe(relPath)
+  fs.rmSync(abs, { recursive: true, force: true })
+}
+
+export function createDirectory(relPath: string): void {
+  const abs = resolveSafe(relPath)
+  fs.mkdirSync(abs, { recursive: true })
+}
