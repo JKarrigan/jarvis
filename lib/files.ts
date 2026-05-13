@@ -86,6 +86,16 @@ export function moveEntry(fromRel: string, toDirRel: string): void {
   fs.renameSync(absFrom, dest)
 }
 
+export function renameEntry(relPath: string, newName: string): void {
+  if (!newName || newName.includes('/') || newName.includes('\\') || newName === '.' || newName === '..') {
+    throw new Error('Invalid name')
+  }
+  const abs = resolveSafe(relPath)
+  const dest = path.join(path.dirname(abs), newName)
+  if (!dest.startsWith(FILES_ROOT)) throw new Error('Path traversal detected')
+  fs.renameSync(abs, dest)
+}
+
 export function searchEntries(rootRel: string, query: string): SearchResult[] {
   const abs = resolveSafe(rootRel)
   const lowerQ = query.toLowerCase()

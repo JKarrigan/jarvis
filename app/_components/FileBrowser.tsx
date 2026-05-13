@@ -159,6 +159,15 @@ function DownloadIcon() {
   )
 }
 
+function PencilIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  )
+}
+
 function TrashIcon({ size = 14, className }: { size?: number; className?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
@@ -551,6 +560,70 @@ function DeleteFolderModal({
   )
 }
 
+// ─── Rename Modal ─────────────────────────────────────────────────────────────
+
+function RenameModal({
+  entry,
+  onConfirm,
+  onClose,
+}: {
+  entry: ApiEntry
+  onConfirm: (newName: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(entry.name)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+
+  function submit() {
+    const trimmed = name.trim()
+    if (trimmed && trimmed !== entry.name) onConfirm(trimmed)
+    else onClose()
+  }
+
+  return (
+    <Sheet onClose={onClose}>
+      <div className="p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-100">Rename</h2>
+          <button onClick={onClose} className="p-1 rounded-md text-zinc-500 hover:text-zinc-300 transition-colors">
+            <XIcon size={16} />
+          </button>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') onClose() }}
+          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500 transition-colors"
+        />
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!name.trim() || name.trim() === entry.name}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Rename
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  )
+}
+
 // ─── Breadcrumb ───────────────────────────────────────────────────────────────
 
 function Breadcrumb({ path, onNavigate }: { path: string[]; onNavigate: (idx: number) => void }) {
@@ -813,7 +886,7 @@ function ParentRow({
 
 // Uses CSS grid to lock column widths regardless of content length.
 // Columns: icon(20px) | name(1fr) | type(112px, sm+) | size(80px, md+) | modified(112px, lg+) | actions(64px)
-const ROW_GRID = 'grid grid-cols-[20px_minmax(0,1fr)_64px] sm:grid-cols-[20px_minmax(0,1fr)_112px_64px] md:grid-cols-[20px_minmax(0,1fr)_112px_80px_64px] lg:grid-cols-[20px_minmax(0,1fr)_112px_80px_112px_64px]'
+const ROW_GRID = 'grid grid-cols-[20px_minmax(0,1fr)_80px] sm:grid-cols-[20px_minmax(0,1fr)_112px_80px] md:grid-cols-[20px_minmax(0,1fr)_112px_80px_80px] lg:grid-cols-[20px_minmax(0,1fr)_112px_80px_112px_80px]'
 
 function ListRow({
   entry,
@@ -823,6 +896,7 @@ function ListRow({
   onActivate,
   onSelect,
   onDownload,
+  onRename,
   onDelete,
   onDragStart,
   onDragEnd,
@@ -837,6 +911,7 @@ function ListRow({
   onActivate: () => void
   onSelect: () => void
   onDownload: () => void
+  onRename: () => void
   onDelete: () => void
   onDragStart: () => void
   onDragEnd: () => void
@@ -889,7 +964,7 @@ function ListRow({
       </span>
 
       {/* actions (always last col) */}
-      <div className={`flex items-center justify-end gap-0.5 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+      <div className={`flex items-center justify-end gap-0 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
         {!isDir && (
           <button
             onClick={e => { e.stopPropagation(); onDownload() }}
@@ -899,6 +974,13 @@ function ListRow({
             <DownloadIcon />
           </button>
         )}
+        <button
+          onClick={e => { e.stopPropagation(); onRename() }}
+          title="Rename"
+          className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
+        >
+          <PencilIcon />
+        </button>
         <button
           onClick={e => { e.stopPropagation(); onDelete() }}
           title="Delete"
@@ -935,6 +1017,7 @@ function GridCell({
   isDragging,
   onActivate,
   onSelect,
+  onRename,
   onDelete,
   onDragStart,
   onDragEnd,
@@ -948,6 +1031,7 @@ function GridCell({
   isDragging: boolean
   onActivate: () => void
   onSelect: () => void
+  onRename: () => void
   onDelete: () => void
   onDragStart: () => void
   onDragEnd: () => void
@@ -987,13 +1071,22 @@ function GridCell({
           </p>
         </div>
       </button>
-      <button
-        onClick={e => { e.stopPropagation(); onDelete() }}
-        title="Delete"
-        className="absolute top-2 right-2 p-1 rounded-md text-zinc-600 hover:text-red-400 hover:bg-zinc-700 opacity-0 group-hover:opacity-100 transition-all"
-      >
-        <TrashIcon size={12} />
-      </button>
+      <div className="absolute top-2 right-2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all">
+        <button
+          onClick={e => { e.stopPropagation(); onRename() }}
+          title="Rename"
+          className="p-1 rounded-md text-zinc-600 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+        >
+          <PencilIcon size={12} />
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          title="Delete"
+          className="p-1 rounded-md text-zinc-600 hover:text-red-400 hover:bg-zinc-700 transition-colors"
+        >
+          <TrashIcon size={12} />
+        </button>
+      </div>
     </div>
   )
 }
@@ -1123,6 +1216,7 @@ export function FileBrowser() {
   const [uploadOpen, setUploadOpen] = useState(false)
   const [deleteFileTarget, setDeleteFileTarget] = useState<ApiFileEntry | null>(null)
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiDirEntry | null>(null)
+  const [renameTarget, setRenameTarget] = useState<ApiEntry | null>(null)
   const [dragEntry, setDragEntry] = useState<ApiEntry | null>(null)
   const [dragOverName, setDragOverName] = useState<string | null>(null)
   const [dragOverParent, setDragOverParent] = useState(false)
@@ -1297,6 +1391,25 @@ export function FileBrowser() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? res.statusText)
       showToast('success', `Moved "${dragged.name}" to parent folder`)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
+  }
+
+  async function handleRename(newName: string) {
+    if (!renameTarget) return
+    const entryPath = [...currentPath, renameTarget.name].join('/')
+    const target = renameTarget
+    setRenameTarget(null)
+    try {
+      const res = await fetch(
+        `/api/files/rename?path=${encodeURIComponent(entryPath)}&name=${encodeURIComponent(newName)}`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? res.statusText)
+      showToast('success', `Renamed "${target.name}" to "${newName}"`)
       refresh(currentPath)
     } catch (e) {
       showToast('error', String(e))
@@ -1537,6 +1650,7 @@ export function FileBrowser() {
                     onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                     onSelect={() => entry.kind === 'file' && handleSelect(entry)}
                     onDownload={() => entry.kind === 'file' && handleDownload(entry)}
+                    onRename={() => setRenameTarget(entry)}
                     onDelete={() => handleDeleteAny(entry)}
                     onDragStart={() => setDragEntry(entry)}
                     onDragEnd={clearDrag}
@@ -1574,6 +1688,7 @@ export function FileBrowser() {
                   isDragging={dragEntry?.name === entry.name}
                   onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                   onSelect={() => entry.kind === 'file' && handleSelect(entry)}
+                  onRename={() => setRenameTarget(entry)}
                   onDelete={() => handleDeleteAny(entry)}
                   onDragStart={() => setDragEntry(entry)}
                   onDragEnd={clearDrag}
@@ -1634,6 +1749,17 @@ export function FileBrowser() {
               deleteEntry(target)
             }}
             onClose={() => setDeleteFolderTarget(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {renameTarget && (
+          <RenameModal
+            key="rename"
+            entry={renameTarget}
+            onConfirm={handleRename}
+            onClose={() => setRenameTarget(null)}
           />
         )}
       </AnimatePresence>
