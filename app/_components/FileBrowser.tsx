@@ -748,7 +748,7 @@ function PreviewModal({
 
         {/* Content — keyed so FileContent remounts (resets text fetch) on navigation */}
         <div className="overflow-hidden">
-          <AnimatePresence mode="wait" custom={slideDir}>
+          <AnimatePresence mode="wait" custom={slideDir} initial={false}>
             <motion.div
               key={entry.name}
               custom={slideDir}
@@ -1101,6 +1101,13 @@ function EmptyState() {
 // ─── FileBrowser ──────────────────────────────────────────────────────────────
 
 type ViewMode = 'list' | 'grid'
+type FilterKind = 'dir' | 'image' | 'video' | 'doc' | 'sheet' | 'archive' | 'text' | 'generic'
+
+const FILTER_LABELS: Record<FilterKind, string> = {
+  dir: 'Folders', image: 'Images', video: 'Videos', doc: 'Documents',
+  sheet: 'Sheets', archive: 'Archives', text: 'Text', generic: 'Other',
+}
+const FILTER_ORDER: FilterKind[] = ['dir', 'image', 'video', 'doc', 'sheet', 'archive', 'text', 'generic']
 
 export function FileBrowser() {
   const [currentPath, setCurrentPath] = useState<string[]>([])
@@ -1119,6 +1126,7 @@ export function FileBrowser() {
   const [dragEntry, setDragEntry] = useState<ApiEntry | null>(null)
   const [dragOverName, setDragOverName] = useState<string | null>(null)
   const [dragOverParent, setDragOverParent] = useState(false)
+  const [filterType, setFilterType] = useState<FilterKind | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
@@ -1168,19 +1176,37 @@ export function FileBrowser() {
   const sorted = sortEntries(entries, sortKey)
   const isSearching = searchQuery.trim().length > 0
 
+  const availableTypes = new Set<FilterKind>()
+  for (const e of entries) {
+    if (e.kind === 'dir') availableTypes.add('dir')
+    else availableTypes.add(fileTypeInfo((e as ApiFileEntry).ext).iconKind as FilterKind)
+  }
+  const showFilter = !isSearching && availableTypes.size > 1
+
+  const filtered = filterType
+    ? sorted.filter(e => {
+        if (filterType === 'dir') return e.kind === 'dir'
+        if (e.kind !== 'file') return false
+        return fileTypeInfo((e as ApiFileEntry).ext).iconKind === filterType
+      })
+    : sorted
+
   function navigateInto(name: string) {
     setCurrentPath(p => [...p, name])
     setSelected(null)
+    setFilterType(null)
   }
 
   function navigateTo(idx: number) {
     setCurrentPath(p => idx < 0 ? [] : p.slice(0, idx + 1))
     setSelected(null)
+    setFilterType(null)
   }
 
   function navigateUp() {
     setCurrentPath(p => p.slice(0, -1))
     setSelected(null)
+    setFilterType(null)
   }
 
   function handleSelect(entry: ApiFileEntry) {
@@ -1385,7 +1411,7 @@ export function FileBrowser() {
                 ))}
               </div>
               <div className="flex items-center gap-1">
-                <span className="text-xs text-zinc-700 mr-2">{sorted.length} item{sorted.length !== 1 ? 's' : ''}</span>
+                <span className="text-xs text-zinc-700 mr-2">{filtered.length} item{filtered.length !== 1 ? 's' : ''}</span>
                 <button
                   onClick={() => setViewMode('list')}
                   className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'}`}
@@ -1403,6 +1429,45 @@ export function FileBrowser() {
               </div>
             </div>
           )}
+
+          <AnimatePresence>
+            {showFilter && (
+              <motion.div
+                key="filter-bar"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.18, ease: 'easeOut' }}
+                className="overflow-hidden"
+              >
+                <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                  <button
+                    onClick={() => setFilterType(null)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                      filterType === null
+                        ? 'bg-zinc-700 border-zinc-600 text-zinc-100'
+                        : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {FILTER_ORDER.filter(k => availableTypes.has(k)).map(kind => (
+                    <button
+                      key={kind}
+                      onClick={() => setFilterType(f => f === kind ? null : kind)}
+                      className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                        filterType === kind
+                          ? 'bg-zinc-700 border-zinc-600 text-zinc-100'
+                          : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      {FILTER_LABELS[kind]}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* ── Storage Bar ── */}
@@ -1462,7 +1527,7 @@ export function FileBrowser() {
                     onDrop={handleMoveToParent}
                   />
                 )}
-                {sorted.map(entry => (
+                {filtered.map(entry => (
                   <ListRow
                     key={entry.name}
                     entry={entry}
@@ -1480,9 +1545,11 @@ export function FileBrowser() {
                     onDrop={() => entry.kind === 'dir' && handleMove(entry.name)}
                   />
                 ))}
-                {sorted.length === 0 && (
+                {filtered.length === 0 && (
                   <div className="px-3 py-10 text-center">
-                    <p className="text-sm text-zinc-600">This folder is empty</p>
+                    <p className="text-sm text-zinc-600">
+                      {filterType ? `No ${FILTER_LABELS[filterType].toLowerCase()} in this folder` : 'This folder is empty'}
+                    </p>
                   </div>
                 )}
               </div>
@@ -1498,7 +1565,7 @@ export function FileBrowser() {
                   onDrop={handleMoveToParent}
                 />
               )}
-              {sorted.map(entry => (
+              {filtered.map(entry => (
                 <GridCell
                   key={entry.name}
                   entry={entry}
