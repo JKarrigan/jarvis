@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   sortEntries, formatSize, formatDate, fileTypeInfo,
-  type ApiEntry, type ApiFileEntry, type SortKey,
+  type ApiEntry, type ApiFileEntry, type ApiDirEntry, type SortKey,
 } from '@/lib/fileTypes'
 import { useToast, Toast } from '@/app/_components/Toast'
 
@@ -95,9 +95,9 @@ function FileIcon({ entry, className }: { entry: ApiEntry; className?: string })
 
 // ─── Toolbar Icons ─────────────────────────────────────────────────────────────
 
-function UploadIcon() {
+function UploadIcon({ size = 15 }: { size?: number }) {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
       <polyline points="17 8 12 3 7 8" />
       <line x1="12" y1="3" x2="12" y2="15" />
@@ -149,9 +149,9 @@ function DownloadIcon() {
   )
 }
 
-function TrashIcon() {
+function TrashIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="3 6 5 6 21 6" />
       <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
       <path d="M10 11v6M14 11v6" />
@@ -168,12 +168,236 @@ function ChevronRight() {
   )
 }
 
-function XIcon() {
+function XIcon({ size = 18 }: { size?: number }) {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
+  )
+}
+
+function WarnIcon() {
+  return (
+    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="text-red-400">
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  )
+}
+
+// ─── Modal Shell ──────────────────────────────────────────────────────────────
+
+function ModalShell({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-md sm:mx-4 bg-zinc-900 border border-zinc-800 border-b-0 sm:border-b rounded-t-2xl sm:rounded-2xl shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
+
+// ─── New Folder Modal ─────────────────────────────────────────────────────────
+
+function NewFolderModal({
+  onConfirm,
+  onClose,
+}: {
+  onConfirm: (name: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  function submit() {
+    const trimmed = name.trim()
+    if (trimmed) onConfirm(trimmed)
+  }
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div className="p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-100">New Folder</h2>
+          <button onClick={onClose} className="p-1 rounded-md text-zinc-500 hover:text-zinc-300 transition-colors">
+            <XIcon size={16} />
+          </button>
+        </div>
+
+        <input
+          ref={inputRef}
+          type="text"
+          placeholder="Folder name"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') submit() }}
+          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-zinc-500 transition-colors"
+        />
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!name.trim()}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Create
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// ─── Upload Modal ─────────────────────────────────────────────────────────────
+
+function UploadModal({
+  onConfirm,
+  onClose,
+}: {
+  onConfirm: (files: FileList) => void
+  onClose: () => void
+}) {
+  const [files, setFiles] = useState<FileList | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragging(false)
+    if (e.dataTransfer.files.length) setFiles(e.dataTransfer.files)
+  }
+
+  const fileList = files ? Array.from(files) : []
+
+  return (
+    <ModalShell onClose={onClose}>
+      <div className="p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-zinc-100">Upload Files</h2>
+          <button onClick={onClose} className="p-1 rounded-md text-zinc-500 hover:text-zinc-300 transition-colors">
+            <XIcon size={16} />
+          </button>
+        </div>
+
+        {/* Drop zone */}
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true) }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+          onClick={() => inputRef.current?.click()}
+          className={`border-2 border-dashed rounded-xl px-6 py-8 flex flex-col items-center gap-2 cursor-pointer transition-colors ${
+            dragging
+              ? 'border-zinc-500 bg-zinc-800/60'
+              : 'border-zinc-700 hover:border-zinc-600 hover:bg-zinc-800/30'
+          }`}
+        >
+          <UploadIcon size={22} />
+          <p className="text-sm text-zinc-400">Drop files here or <span className="text-zinc-200 underline underline-offset-2">browse</span></p>
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={e => e.target.files?.length && setFiles(e.target.files)}
+          />
+        </div>
+
+        {/* Selected file list */}
+        {fileList.length > 0 && (
+          <div className="space-y-1 max-h-40 overflow-y-auto">
+            {fileList.map((f, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg bg-zinc-800/60">
+                <span className="text-xs text-zinc-300 truncate">{f.name}</span>
+                <span className="text-xs text-zinc-600 shrink-0">{formatSize(f.size)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => files && onConfirm(files)}
+            disabled={!fileList.length}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Upload {fileList.length > 0 && `${fileList.length} file${fileList.length !== 1 ? 's' : ''}`}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
+// ─── Delete Folder Modal ──────────────────────────────────────────────────────
+
+function DeleteFolderModal({
+  folder,
+  onConfirm,
+  onClose,
+}: {
+  folder: ApiDirEntry
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <ModalShell onClose={onClose}>
+      <div className="p-6 space-y-5">
+        <div className="flex items-start gap-3">
+          <div className="shrink-0 mt-0.5"><WarnIcon /></div>
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-zinc-100">Delete folder?</h2>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              <span className="text-zinc-200 font-medium">{folder.name}</span> contains{' '}
+              {folder.childCount} item{folder.childCount !== 1 ? 's' : ''}. All contents will be
+              permanently deleted and cannot be recovered.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-500 transition-colors"
+          >
+            Delete Everything
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   )
 }
 
@@ -253,6 +477,12 @@ function PreviewModal({
   const { iconKind } = fileTypeInfo(entry.ext)
 
   useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  useEffect(() => {
     if (iconKind !== 'text') return
     fetch(src).then(r => r.text()).then(setTextContent).catch(() => setTextContent('Failed to load file.'))
   }, [src, iconKind])
@@ -266,7 +496,6 @@ function PreviewModal({
         className="relative max-w-5xl max-h-[90vh] w-full mx-4 flex flex-col"
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <p className="text-sm text-zinc-300 truncate">{entry.name}</p>
           <button
@@ -352,8 +581,8 @@ function ListRow({
         {formatDate(entry.modified)}
       </span>
 
-      {!isDir && (
-        <div className={`flex items-center gap-0.5 shrink-0 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+      <div className={`flex items-center gap-0.5 shrink-0 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+        {!isDir && (
           <button
             onClick={e => { e.stopPropagation(); onDownload() }}
             title="Download"
@@ -361,15 +590,15 @@ function ListRow({
           >
             <DownloadIcon />
           </button>
-          <button
-            onClick={e => { e.stopPropagation(); onDelete() }}
-            title="Delete"
-            className="p-1.5 rounded-md text-zinc-500 hover:text-red-400 hover:bg-zinc-700 transition-colors"
-          >
-            <TrashIcon />
-          </button>
-        </div>
-      )}
+        )}
+        <button
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          title="Delete"
+          className="p-1.5 rounded-md text-zinc-500 hover:text-red-400 hover:bg-zinc-700 transition-colors"
+        >
+          <TrashIcon />
+        </button>
+      </div>
     </div>
   )
 }
@@ -381,32 +610,43 @@ function GridCell({
   selected,
   onActivate,
   onSelect,
+  onDelete,
 }: {
   entry: ApiEntry
   selected: boolean
   onActivate: () => void
   onSelect: () => void
+  onDelete: () => void
 }) {
   const isDir = entry.kind === 'dir'
   const info = isDir ? null : fileTypeInfo((entry as ApiFileEntry).ext)
 
   return (
-    <button
-      onClick={isDir ? onActivate : onSelect}
-      className={`flex flex-col items-center gap-2 p-4 rounded-xl border transition-colors text-left w-full ${
-        selected
-          ? 'border-zinc-500 bg-zinc-800'
-          : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900'
-      }`}
-    >
-      <FileIcon entry={entry} className="w-9 h-9" />
-      <div className="w-full space-y-0.5">
-        <p className="text-xs font-medium text-zinc-100 truncate text-center">{entry.name}</p>
-        <p className="text-xs text-zinc-600 text-center">
-          {isDir ? 'Folder' : `${info?.label} · ${formatSize((entry as ApiFileEntry).size)}`}
-        </p>
-      </div>
-    </button>
+    <div className="relative group">
+      <button
+        onClick={isDir ? onActivate : onSelect}
+        className={`flex flex-col items-center gap-2 p-4 rounded-xl border transition-colors text-left w-full ${
+          selected
+            ? 'border-zinc-500 bg-zinc-800'
+            : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900'
+        }`}
+      >
+        <FileIcon entry={entry} className="w-9 h-9" />
+        <div className="w-full space-y-0.5">
+          <p className="text-xs font-medium text-zinc-100 truncate text-center">{entry.name}</p>
+          <p className="text-xs text-zinc-600 text-center">
+            {isDir ? 'Folder' : `${info?.label} · ${formatSize((entry as ApiFileEntry).size)}`}
+          </p>
+        </div>
+      </button>
+      <button
+        onClick={e => { e.stopPropagation(); onDelete() }}
+        title="Delete"
+        className="absolute top-2 right-2 p-1 rounded-md text-zinc-600 hover:text-red-400 hover:bg-zinc-700 opacity-0 group-hover:opacity-100 transition-all"
+      >
+        <TrashIcon size={12} />
+      </button>
+    </div>
   )
 }
 
@@ -437,7 +677,9 @@ export function FileBrowser() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [previewEntry, setPreviewEntry] = useState<{ entry: ApiFileEntry; filePath: string } | null>(null)
-  const uploadRef = useRef<HTMLInputElement>(null)
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiDirEntry | null>(null)
   const { toast, showToast } = useToast()
 
   const refresh = useCallback(async (path: string[]) => {
@@ -445,8 +687,8 @@ export function FileBrowser() {
     setError(null)
     try {
       const res = await fetch(`/api/files/list?path=${encodeURIComponent(path.join('/'))}`)
-      if (!res.ok) throw new Error(await res.text())
       const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? res.statusText)
       setEntries(data.entries)
       setDiskInfo(data.disk)
     } catch (e) {
@@ -490,7 +732,7 @@ export function FileBrowser() {
     a.click()
   }
 
-  async function handleDelete(entry: ApiEntry) {
+  async function deleteEntry(entry: ApiEntry) {
     const entryPath = [...currentPath, entry.name].join('/')
     try {
       const res = await fetch(`/api/files/delete?path=${encodeURIComponent(entryPath)}`, { method: 'DELETE' })
@@ -503,13 +745,38 @@ export function FileBrowser() {
     }
   }
 
-  function handleUpload() {
-    uploadRef.current?.click()
+  function handleDeleteFile(entry: ApiFileEntry) {
+    deleteEntry(entry)
   }
 
-  async function handleUploadFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files
-    if (!files?.length) return
+  function handleDeleteFolder(entry: ApiDirEntry) {
+    if (entry.childCount === 0) {
+      deleteEntry(entry)
+    } else {
+      setDeleteFolderTarget(entry)
+    }
+  }
+
+  function handleDeleteAny(entry: ApiEntry) {
+    if (entry.kind === 'dir') handleDeleteFolder(entry)
+    else handleDeleteFile(entry)
+  }
+
+  async function handleNewFolder(name: string) {
+    setNewFolderOpen(false)
+    const newPath = [...currentPath, name].join('/')
+    try {
+      const res = await fetch(`/api/files/mkdir?path=${encodeURIComponent(newPath)}`, { method: 'POST' })
+      if (!res.ok) throw new Error(await res.text())
+      showToast('success', `Created "${name}"`)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
+  }
+
+  async function handleUpload(files: FileList) {
+    setUploadOpen(false)
     const fd = new FormData()
     for (const f of files) fd.append('files', f)
     try {
@@ -519,21 +786,6 @@ export function FileBrowser() {
       })
       if (!res.ok) throw new Error(await res.text())
       showToast('success', `Uploaded ${files.length} file${files.length !== 1 ? 's' : ''}`)
-      refresh(currentPath)
-    } catch (e) {
-      showToast('error', String(e))
-    }
-    e.target.value = ''
-  }
-
-  async function handleNewFolder() {
-    const name = window.prompt('Folder name:')
-    if (!name?.trim()) return
-    const newPath = [...currentPath, name.trim()].join('/')
-    try {
-      const res = await fetch(`/api/files/mkdir?path=${encodeURIComponent(newPath)}`, { method: 'POST' })
-      if (!res.ok) throw new Error(await res.text())
-      showToast('success', `Created "${name.trim()}"`)
       refresh(currentPath)
     } catch (e) {
       showToast('error', String(e))
@@ -556,14 +808,14 @@ export function FileBrowser() {
             <Breadcrumb path={currentPath} onNavigate={navigateTo} />
             <div className="flex items-center gap-1 shrink-0">
               <button
-                onClick={handleUpload}
+                onClick={() => setUploadOpen(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 transition-colors"
               >
                 <UploadIcon />
                 Upload
               </button>
               <button
-                onClick={handleNewFolder}
+                onClick={() => setNewFolderOpen(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 transition-colors"
               >
                 <NewFolderIcon />
@@ -643,7 +895,7 @@ export function FileBrowser() {
                   onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                   onSelect={() => entry.kind === 'file' && handleSelect(entry)}
                   onDownload={() => entry.kind === 'file' && handleDownload(entry)}
-                  onDelete={() => handleDelete(entry)}
+                  onDelete={() => handleDeleteAny(entry)}
                 />
               ))}
             </div>
@@ -657,20 +909,38 @@ export function FileBrowser() {
                 selected={selected === entry.name}
                 onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                 onSelect={() => entry.kind === 'file' && handleSelect(entry)}
+                onDelete={() => handleDeleteAny(entry)}
               />
             ))}
           </div>
         )}
       </main>
 
-      {/* Hidden file input for uploads */}
-      <input
-        ref={uploadRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={handleUploadFiles}
-      />
+      {newFolderOpen && (
+        <NewFolderModal
+          onConfirm={handleNewFolder}
+          onClose={() => setNewFolderOpen(false)}
+        />
+      )}
+
+      {uploadOpen && (
+        <UploadModal
+          onConfirm={handleUpload}
+          onClose={() => setUploadOpen(false)}
+        />
+      )}
+
+      {deleteFolderTarget && (
+        <DeleteFolderModal
+          folder={deleteFolderTarget}
+          onConfirm={() => {
+            const target = deleteFolderTarget
+            setDeleteFolderTarget(null)
+            deleteEntry(target)
+          }}
+          onClose={() => setDeleteFolderTarget(null)}
+        />
+      )}
 
       {previewEntry && (
         <PreviewModal

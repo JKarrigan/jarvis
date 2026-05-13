@@ -10,6 +10,9 @@ export async function GET(request: Request) {
     const disk = getDiskInfo(FILES_ROOT)
     return Response.json({ entries, disk })
   } catch (e) {
-    return Response.json({ error: String(e) }, { status: 500 })
+    const msg = e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT'
+      ? `Storage not found at ${FILES_ROOT} — is the SD card mounted?`
+      : String(e)
+    return Response.json({ error: msg }, { status: 500 })
   }
 }

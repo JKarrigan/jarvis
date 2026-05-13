@@ -26,10 +26,15 @@ export function listDirectory(relPath: string): ApiEntry[] {
       const entryAbs = path.join(abs, dirent.name)
       const stat = fs.statSync(entryAbs)
       if (dirent.isDirectory()) {
+        let childCount = 0
+        try {
+          childCount = fs.readdirSync(entryAbs).filter(n => !n.startsWith('.')).length
+        } catch { /* ignore */ }
         entries.push({
           name: dirent.name,
           kind: 'dir',
           modified: stat.mtime.toISOString(),
+          childCount,
         })
       } else if (dirent.isFile()) {
         const ext = path.extname(dirent.name).slice(1)

@@ -27,6 +27,7 @@ export type ApiDirEntry = {
   name: string
   kind: 'dir'
   modified: string
+  childCount: number
 }
 
 export type ApiEntry = ApiFileEntry | ApiDirEntry
