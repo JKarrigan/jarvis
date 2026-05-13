@@ -10,7 +10,7 @@ interface SystemStats {
     osRelease: string
     uptime: number
     loadAvg: [number, number, number]
-    cpu: { model: string; cores: number }
+    cpu: { model: string; cores: { id: number; usagePct: number }[] }
     memory: { total: number; free: number }
     disk: { total: string; used: string; available: string; usedPercent: string } | null
     cpuTemp: number | null
@@ -158,8 +158,20 @@ export function SystemViewer() {
                 )
               })()}
 
+              <div className="space-y-1 pt-1">
+                <p className="text-xs text-zinc-500 pb-0.5">{data.pi.cpu.model} · {data.pi.cpu.cores.length} cores</p>
+                {data.pi.cpu.cores.map(core => (
+                  <BarRow
+                    key={core.id}
+                    label={`CPU ${core.id}`}
+                    value={core.usagePct}
+                    max={100}
+                    display={`${core.usagePct}%`}
+                  />
+                ))}
+              </div>
+
               <div className="pt-1 divide-y divide-zinc-800/60">
-                <Row label="CPU" value={`${data.pi.cpu.model} · ${data.pi.cpu.cores} cores`} />
                 <Row label="Load avg" value={`${data.pi.loadAvg[0].toFixed(2)} · ${data.pi.loadAvg[1].toFixed(2)} · ${data.pi.loadAvg[2].toFixed(2)}`} />
                 <Row label="Uptime" value={fmtUptime(data.pi.uptime)} />
                 <Row label="OS" value={`${data.pi.hostname} · ${data.pi.platform} · ${data.pi.arch}`} />
