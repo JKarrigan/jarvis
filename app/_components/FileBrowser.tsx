@@ -83,6 +83,14 @@ function TextIcon({ className }: { className?: string }) {
   )
 }
 
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  )
+}
+
 function FileIcon({ entry, className }: { entry: ApiEntry; className?: string }) {
   if (entry.kind === 'dir') return <FolderIcon className={`text-amber-400 ${className ?? ''}`} />
   const { iconKind, color } = fileTypeInfo(entry.ext)
@@ -151,9 +159,9 @@ function DownloadIcon() {
   )
 }
 
-function TrashIcon({ size = 14 }: { size?: number }) {
+function TrashIcon({ size = 14, className }: { size?: number; className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <polyline points="3 6 5 6 21 6" />
       <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
       <path d="M10 11v6M14 11v6" />
@@ -181,7 +189,7 @@ function XIcon({ size = 18 }: { size?: number }) {
 
 function WarnIcon() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="text-red-400">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="text-red-400">
       <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
       <line x1="12" y1="9" x2="12" y2="13" />
       <line x1="12" y1="17" x2="12.01" y2="17" />
@@ -250,24 +258,110 @@ function NewFolderModal({
 
 // ─── Upload Modal ─────────────────────────────────────────────────────────────
 
+type UploadPhase = 'select' | 'uploading' | 'done' | 'error'
+
 function UploadModal({
-  onConfirm,
+  currentPath,
+  onSuccess,
   onClose,
 }: {
-  onConfirm: (files: FileList) => void
+  currentPath: string[]
+  onSuccess: () => void
   onClose: () => void
 }) {
   const [files, setFiles] = useState<FileList | null>(null)
-  const [dragging, setDragging] = useState(false)
+  const [dropActive, setDropActive] = useState(false)
+  const [phase, setPhase] = useState<UploadPhase>('select')
+  const [progress, setProgress] = useState(0)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const fileList = files ? Array.from(files) : []
+
+  useEffect(() => {
+    if (phase !== 'done') return
+    const t = setTimeout(() => { onSuccess(); onClose() }, 1400)
+    return () => clearTimeout(t)
+  }, [phase, onSuccess, onClose])
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
-    setDragging(false)
+    setDropActive(false)
     if (e.dataTransfer.files.length) setFiles(e.dataTransfer.files)
   }
 
-  const fileList = files ? Array.from(files) : []
+  async function upload() {
+    if (!files?.length) return
+    setPhase('uploading')
+    setProgress(0)
+    setUploadError(null)
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setProgress(e.loaded / e.total)
+        }
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve()
+          else reject(new Error(xhr.responseText || `Upload failed (${xhr.status})`))
+        }
+        xhr.onerror = () => reject(new Error('Network error'))
+        xhr.open('POST', `/api/files/upload?path=${encodeURIComponent(currentPath.join('/'))}`)
+        xhr.send(fd)
+      })
+      setPhase('done')
+    } catch (e) {
+      setUploadError(String(e).replace(/^Error:\s*/, ''))
+      setPhase('error')
+    }
+  }
+
+  if (phase === 'uploading') {
+    return (
+      <Sheet onClose={() => {}}>
+        <div className="p-6 space-y-5">
+          <h2 className="text-sm font-semibold text-zinc-100">Uploading…</h2>
+
+          <div className="space-y-1.5">
+            <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+              <motion.div
+                className="h-full rounded-full bg-emerald-500"
+                initial={{ width: 0 }}
+                animate={{ width: `${progress * 100}%` }}
+                transition={{ ease: 'linear', duration: 0.1 }}
+              />
+            </div>
+            <p className="text-xs text-zinc-600 text-right">{Math.round(progress * 100)}%</p>
+          </div>
+
+          <div className="space-y-1 max-h-40 overflow-y-auto">
+            {fileList.map((f, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 px-3 py-1.5 rounded-lg bg-zinc-800/60">
+                <span className="text-xs text-zinc-300 truncate">{f.name}</span>
+                <span className="text-xs text-zinc-600 shrink-0">{formatSize(f.size)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Sheet>
+    )
+  }
+
+  if (phase === 'done') {
+    return (
+      <Sheet onClose={onClose}>
+        <div className="p-6 flex flex-col items-center gap-3 py-10">
+          <div className="w-12 h-12 rounded-full bg-emerald-500/15 flex items-center justify-center">
+            <CheckIcon className="text-emerald-400" />
+          </div>
+          <p className="text-sm font-medium text-zinc-200">
+            Uploaded {fileList.length} file{fileList.length !== 1 ? 's' : ''}
+          </p>
+        </div>
+      </Sheet>
+    )
+  }
 
   return (
     <Sheet onClose={onClose}>
@@ -281,18 +375,20 @@ function UploadModal({
 
         {/* Drop zone */}
         <div
-          onDragOver={e => { e.preventDefault(); setDragging(true) }}
-          onDragLeave={() => setDragging(false)}
+          onDragOver={e => { e.preventDefault(); setDropActive(true) }}
+          onDragLeave={() => setDropActive(false)}
           onDrop={handleDrop}
           onClick={() => inputRef.current?.click()}
           className={`border-2 border-dashed rounded-xl px-6 py-8 flex flex-col items-center gap-2 cursor-pointer transition-colors ${
-            dragging
+            dropActive
               ? 'border-zinc-500 bg-zinc-800/60'
               : 'border-zinc-700 hover:border-zinc-600 hover:bg-zinc-800/30'
           }`}
         >
           <UploadIcon size={22} />
-          <p className="text-sm text-zinc-400">Drop files here or <span className="text-zinc-200 underline underline-offset-2">browse</span></p>
+          <p className="text-sm text-zinc-400">
+            Drop files here or <span className="text-zinc-200 underline underline-offset-2">browse</span>
+          </p>
           <input
             ref={inputRef}
             type="file"
@@ -314,6 +410,10 @@ function UploadModal({
           </div>
         )}
 
+        {uploadError && (
+          <p className="text-xs text-red-400">{uploadError}</p>
+        )}
+
         <div className="flex justify-end gap-2">
           <button
             onClick={onClose}
@@ -322,11 +422,57 @@ function UploadModal({
             Cancel
           </button>
           <button
-            onClick={() => files && onConfirm(files)}
+            onClick={upload}
             disabled={!fileList.length}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            Upload {fileList.length > 0 && `${fileList.length} file${fileList.length !== 1 ? 's' : ''}`}
+            Upload{fileList.length > 0 ? ` ${fileList.length} file${fileList.length !== 1 ? 's' : ''}` : ''}
+          </button>
+        </div>
+      </div>
+    </Sheet>
+  )
+}
+
+// ─── Delete File Modal ────────────────────────────────────────────────────────
+
+function DeleteFileModal({
+  file,
+  onConfirm,
+  onClose,
+}: {
+  file: ApiFileEntry
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <Sheet onClose={onClose}>
+      <div className="p-6 space-y-5">
+        <div className="flex items-start gap-3">
+          <div className="shrink-0 mt-0.5 p-1.5 rounded-full bg-red-500/10">
+            <TrashIcon size={16} className="text-red-400" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-zinc-100">Delete file?</h2>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              <span className="text-zinc-200 font-medium">{file.name}</span>
+              {' '}({formatSize(file.size)}) will be permanently deleted.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 text-white hover:bg-red-500 transition-colors"
+          >
+            Delete
           </button>
         </div>
       </div>
@@ -526,33 +672,58 @@ function PreviewModal({
 function ListRow({
   entry,
   selected,
+  isDragOver,
+  isDragging,
   onActivate,
   onSelect,
   onDownload,
   onDelete,
+  onDragStart,
+  onDragEnd,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
 }: {
   entry: ApiEntry
   selected: boolean
+  isDragOver: boolean
+  isDragging: boolean
   onActivate: () => void
   onSelect: () => void
   onDownload: () => void
   onDelete: () => void
+  onDragStart: () => void
+  onDragEnd: () => void
+  onDragEnter: () => void
+  onDragLeave: () => void
+  onDrop: () => void
 }) {
   const isDir = entry.kind === 'dir'
   const info = isDir ? null : fileTypeInfo((entry as ApiFileEntry).ext)
 
   return (
     <div
+      draggable
+      onDragStart={e => { e.stopPropagation(); onDragStart() }}
+      onDragEnd={onDragEnd}
+      onDragEnter={isDir ? e => { e.preventDefault(); onDragEnter() } : undefined}
+      onDragLeave={isDir ? e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave() } : undefined}
+      onDragOver={isDir ? e => e.preventDefault() : undefined}
+      onDrop={isDir ? e => { e.preventDefault(); onDrop() } : undefined}
       onClick={isDir ? onActivate : onSelect}
       className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors cursor-pointer ${
-        selected
-          ? 'bg-zinc-800 text-zinc-100'
-          : 'hover:bg-zinc-900 text-zinc-300'
+        isDragOver
+          ? 'ring-1 ring-inset ring-zinc-500 bg-zinc-800/60'
+          : isDragging
+            ? 'opacity-40'
+            : selected
+              ? 'bg-zinc-800 text-zinc-100'
+              : 'hover:bg-zinc-900 text-zinc-300'
       }`}
     >
       <FileIcon entry={entry} className="w-5 h-5 shrink-0" />
 
-      <span className={`flex-1 text-sm font-medium truncate min-w-0 ${selected ? 'text-zinc-100' : 'text-zinc-200'}`}>
+      <span className={`flex-1 text-sm font-medium truncate min-w-0 ${selected && !isDragOver ? 'text-zinc-100' : 'text-zinc-200'}`}>
         {entry.name}
       </span>
 
@@ -595,27 +766,52 @@ function ListRow({
 function GridCell({
   entry,
   selected,
+  isDragOver,
+  isDragging,
   onActivate,
   onSelect,
   onDelete,
+  onDragStart,
+  onDragEnd,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
 }: {
   entry: ApiEntry
   selected: boolean
+  isDragOver: boolean
+  isDragging: boolean
   onActivate: () => void
   onSelect: () => void
   onDelete: () => void
+  onDragStart: () => void
+  onDragEnd: () => void
+  onDragEnter: () => void
+  onDragLeave: () => void
+  onDrop: () => void
 }) {
   const isDir = entry.kind === 'dir'
   const info = isDir ? null : fileTypeInfo((entry as ApiFileEntry).ext)
 
   return (
-    <div className="relative group">
+    <div
+      className={`relative group transition-opacity ${isDragging ? 'opacity-40' : ''}`}
+      draggable
+      onDragStart={e => { e.stopPropagation(); onDragStart() }}
+      onDragEnd={onDragEnd}
+      onDragEnter={isDir ? e => { e.preventDefault(); onDragEnter() } : undefined}
+      onDragLeave={isDir ? e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave() } : undefined}
+      onDragOver={isDir ? e => e.preventDefault() : undefined}
+      onDrop={isDir ? e => { e.preventDefault(); onDrop() } : undefined}
+    >
       <button
         onClick={isDir ? onActivate : onSelect}
         className={`flex flex-col items-center gap-2 p-4 rounded-xl border transition-colors text-left w-full ${
-          selected
-            ? 'border-zinc-500 bg-zinc-800'
-            : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900'
+          isDragOver
+            ? 'border-zinc-400 bg-zinc-800'
+            : selected
+              ? 'border-zinc-500 bg-zinc-800'
+              : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900'
         }`}
       >
         <FileIcon entry={entry} className="w-9 h-9" />
@@ -666,7 +862,10 @@ export function FileBrowser() {
   const [previewEntry, setPreviewEntry] = useState<{ entry: ApiFileEntry; filePath: string } | null>(null)
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [deleteFileTarget, setDeleteFileTarget] = useState<ApiFileEntry | null>(null)
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiDirEntry | null>(null)
+  const [dragEntry, setDragEntry] = useState<ApiEntry | null>(null)
+  const [dragOverName, setDragOverName] = useState<string | null>(null)
   const { toast, showToast } = useToast()
 
   const refresh = useCallback(async (path: string[]) => {
@@ -732,21 +931,34 @@ export function FileBrowser() {
     }
   }
 
-  function handleDeleteFile(entry: ApiFileEntry) {
-    deleteEntry(entry)
-  }
-
-  function handleDeleteFolder(entry: ApiDirEntry) {
-    if (entry.childCount === 0) {
-      deleteEntry(entry)
+  function handleDeleteAny(entry: ApiEntry) {
+    if (entry.kind === 'dir') {
+      if (entry.childCount === 0) deleteEntry(entry)
+      else setDeleteFolderTarget(entry)
     } else {
-      setDeleteFolderTarget(entry)
+      setDeleteFileTarget(entry)
     }
   }
 
-  function handleDeleteAny(entry: ApiEntry) {
-    if (entry.kind === 'dir') handleDeleteFolder(entry)
-    else handleDeleteFile(entry)
+  async function handleMove(intoName: string) {
+    if (!dragEntry || dragEntry.name === intoName) return
+    const fromPath = [...currentPath, dragEntry.name].join('/')
+    const toDirPath = [...currentPath, intoName].join('/')
+    const dragged = dragEntry
+    setDragEntry(null)
+    setDragOverName(null)
+    try {
+      const res = await fetch(
+        `/api/files/move?from=${encodeURIComponent(fromPath)}&to=${encodeURIComponent(toDirPath)}`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? res.statusText)
+      showToast('success', `Moved "${dragged.name}" into "${intoName}"`)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
   }
 
   async function handleNewFolder(name: string) {
@@ -756,23 +968,6 @@ export function FileBrowser() {
       const res = await fetch(`/api/files/mkdir?path=${encodeURIComponent(newPath)}`, { method: 'POST' })
       if (!res.ok) throw new Error(await res.text())
       showToast('success', `Created "${name}"`)
-      refresh(currentPath)
-    } catch (e) {
-      showToast('error', String(e))
-    }
-  }
-
-  async function handleUpload(files: FileList) {
-    setUploadOpen(false)
-    const fd = new FormData()
-    for (const f of files) fd.append('files', f)
-    try {
-      const res = await fetch(`/api/files/upload?path=${encodeURIComponent(currentPath.join('/'))}`, {
-        method: 'POST',
-        body: fd,
-      })
-      if (!res.ok) throw new Error(await res.text())
-      showToast('success', `Uploaded ${files.length} file${files.length !== 1 ? 's' : ''}`)
       refresh(currentPath)
     } catch (e) {
       showToast('error', String(e))
@@ -879,10 +1074,17 @@ export function FileBrowser() {
                   key={entry.name}
                   entry={entry}
                   selected={selected === entry.name}
+                  isDragOver={dragOverName === entry.name && entry.kind === 'dir'}
+                  isDragging={dragEntry?.name === entry.name}
                   onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                   onSelect={() => entry.kind === 'file' && handleSelect(entry)}
                   onDownload={() => entry.kind === 'file' && handleDownload(entry)}
                   onDelete={() => handleDeleteAny(entry)}
+                  onDragStart={() => setDragEntry(entry)}
+                  onDragEnd={() => { setDragEntry(null); setDragOverName(null) }}
+                  onDragEnter={() => entry.kind === 'dir' && setDragOverName(entry.name)}
+                  onDragLeave={() => setDragOverName(null)}
+                  onDrop={() => entry.kind === 'dir' && handleMove(entry.name)}
                 />
               ))}
             </div>
@@ -894,9 +1096,16 @@ export function FileBrowser() {
                 key={entry.name}
                 entry={entry}
                 selected={selected === entry.name}
+                isDragOver={dragOverName === entry.name && entry.kind === 'dir'}
+                isDragging={dragEntry?.name === entry.name}
                 onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                 onSelect={() => entry.kind === 'file' && handleSelect(entry)}
                 onDelete={() => handleDeleteAny(entry)}
+                onDragStart={() => setDragEntry(entry)}
+                onDragEnd={() => { setDragEntry(null); setDragOverName(null) }}
+                onDragEnter={() => entry.kind === 'dir' && setDragOverName(entry.name)}
+                onDragLeave={() => setDragOverName(null)}
+                onDrop={() => entry.kind === 'dir' && handleMove(entry.name)}
               />
             ))}
           </div>
@@ -917,8 +1126,24 @@ export function FileBrowser() {
         {uploadOpen && (
           <UploadModal
             key="upload"
-            onConfirm={handleUpload}
+            currentPath={currentPath}
+            onSuccess={() => refresh(currentPath)}
             onClose={() => setUploadOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deleteFileTarget && (
+          <DeleteFileModal
+            key="delete-file"
+            file={deleteFileTarget}
+            onConfirm={() => {
+              const target = deleteFileTarget
+              setDeleteFileTarget(null)
+              deleteEntry(target)
+            }}
+            onClose={() => setDeleteFileTarget(null)}
           />
         )}
       </AnimatePresence>

@@ -77,3 +77,11 @@ export function createDirectory(relPath: string): void {
   const abs = resolveSafe(relPath)
   fs.mkdirSync(abs, { recursive: true })
 }
+
+export function moveEntry(fromRel: string, toDirRel: string): void {
+  const absFrom = resolveSafe(fromRel)
+  const absToDir = resolveSafe(toDirRel)
+  const dest = path.join(absToDir, path.basename(absFrom))
+  if (!dest.startsWith(FILES_ROOT)) throw new Error('Path traversal detected')
+  fs.renameSync(absFrom, dest)
+}
