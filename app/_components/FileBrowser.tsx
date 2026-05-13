@@ -606,6 +606,16 @@ function RenameModal({
             onKeyDown={e => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') onClose() }}
             className="flex-1 min-w-0 bg-transparent px-3 py-2 text-sm text-zinc-100 outline-none"
           />
+          {name && (
+            <button
+              type="button"
+              onClick={() => { setName(''); inputRef.current?.focus() }}
+              className="p-1.5 mr-1 rounded text-zinc-600 hover:text-zinc-300 transition-colors shrink-0"
+              tabIndex={-1}
+            >
+              <XIcon size={14} />
+            </button>
+          )}
           {ext && (
             <span className="px-3 py-2 text-sm text-zinc-500 border-l border-zinc-700 shrink-0 select-none">
               {ext}
@@ -708,13 +718,13 @@ function FileContent({ entry, filePath }: { entry: ApiFileEntry; filePath: strin
 
   if (iconKind === 'image') return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={src} alt={entry.name} className="max-h-[80vh] max-w-full mx-auto rounded-lg object-contain" />
+    <img src={src} alt={entry.name} className="max-h-full max-w-full rounded-lg object-contain" />
   )
   if (iconKind === 'video') return (
-    <video src={src} controls autoPlay className="max-h-[80vh] max-w-full mx-auto rounded-lg" />
+    <video src={src} controls autoPlay className="max-h-full max-w-full rounded-lg" />
   )
   if (iconKind === 'text') return (
-    <pre className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs p-4 rounded-lg overflow-auto max-h-[80vh] whitespace-pre-wrap break-words">
+    <pre className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs p-4 rounded-lg overflow-y-auto max-h-full w-full whitespace-pre-wrap break-words">
       {text ?? 'Loading…'}
     </pre>
   )
@@ -735,8 +745,10 @@ function PreviewModal({
   const startIdx = Math.max(0, siblings.findIndex(s => s.name === initialEntry.name))
   const [currentIdx, setCurrentIdx] = useState(startIdx)
   const [slideDir, setSlideDir] = useState<1 | -1>(1)
-  const touchStartX = useRef<number>(0)
-  const touchStartY = useRef<number>(0)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const touchStartX = useRef(0)
+  const touchStartY = useRef(0)
+  const isSwiping = useRef(false)
 
   const hasSiblings = siblings.length > 1
   const entry = hasSiblings ? (siblings[currentIdx] ?? initialEntry) : initialEntry
@@ -752,50 +764,68 @@ function PreviewModal({
     function handler(e: KeyboardEvent) {
       if (e.key === 'Escape') { onClose(); return }
       if (!hasSiblings) return
-      if (e.key === 'ArrowLeft') {
-        setSlideDir(-1)
-        setCurrentIdx(i => Math.max(0, i - 1))
-      } else if (e.key === 'ArrowRight') {
-        setSlideDir(1)
-        setCurrentIdx(i => Math.min(siblings.length - 1, i + 1))
-      }
+      if (e.key === 'ArrowLeft') { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }
+      else if (e.key === 'ArrowRight') { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [onClose, hasSiblings, siblings.length])
 
+  // Non-passive touchmove so we can preventDefault and prevent browser scroll hijacking
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el || !hasSiblings) return
+    const onStart = (e: TouchEvent) => {
+      touchStartX.current = e.touches[0].clientX
+      touchStartY.current = e.touches[0].clientY
+      isSwiping.current = false
+    }
+    const onMove = (e: TouchEvent) => {
+      const dx = e.touches[0].clientX - touchStartX.current
+      const dy = Math.abs(e.touches[0].clientY - touchStartY.current)
+      if (!isSwiping.current) {
+        if (Math.abs(dx) > 8 && Math.abs(dx) > dy) isSwiping.current = true
+        else if (dy > 8) return
+      }
+      if (isSwiping.current) e.preventDefault()
+    }
+    const onEnd = (e: TouchEvent) => {
+      if (!isSwiping.current) return
+      const dx = e.changedTouches[0].clientX - touchStartX.current
+      if (dx < -40 && canNext) { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }
+      else if (dx > 40 && canPrev) { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }
+      isSwiping.current = false
+    }
+    el.addEventListener('touchstart', onStart, { passive: true })
+    el.addEventListener('touchmove', onMove, { passive: false })
+    el.addEventListener('touchend', onEnd, { passive: true })
+    return () => {
+      el.removeEventListener('touchstart', onStart)
+      el.removeEventListener('touchmove', onMove)
+      el.removeEventListener('touchend', onEnd)
+    }
+  }, [hasSiblings, siblings.length, canPrev, canNext])
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 overflow-hidden flex flex-col">
       <motion.div
-        className="absolute inset-0 bg-black/85 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/90 backdrop-blur-sm"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0, transition: { duration: 0.18, ease: 'easeIn' } }}
         transition={{ duration: 0.25, ease: 'easeOut' }}
         onClick={onClose}
       />
+
       <motion.div
-        className="relative z-10 max-w-5xl max-h-[90vh] w-full mx-4 flex flex-col"
-        initial={{ opacity: 0, scale: 0.96 }}
+        className="relative z-10 flex flex-col h-full"
+        initial={{ opacity: 0, scale: 0.97 }}
         animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: [0.32, 0, 0.67, 0] } }}
-        transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
-        onClick={e => e.stopPropagation()}
-        onTouchStart={hasSiblings ? e => {
-          touchStartX.current = e.touches[0].clientX
-          touchStartY.current = e.touches[0].clientY
-        } : undefined}
-        onTouchEnd={hasSiblings ? e => {
-          const dx = e.changedTouches[0].clientX - touchStartX.current
-          const dy = Math.abs(e.changedTouches[0].clientY - touchStartY.current)
-          if (Math.abs(dx) > 50 && Math.abs(dx) > dy) {
-            if (dx < 0) { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }
-            else { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }
-          }
-        } : undefined}
+        exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.18, ease: [0.32, 0, 0.67, 0] } }}
+        transition={{ type: 'spring', bounce: 0.15, duration: 0.35 }}
       >
         {/* Header */}
-        <div className="flex items-center gap-2 mb-3">
+        <div className="flex items-center gap-2 px-4 py-3 shrink-0" onClick={e => e.stopPropagation()}>
           {hasSiblings && (
             <button
               onClick={() => { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }}
@@ -828,21 +858,27 @@ function PreviewModal({
           </button>
         </div>
 
-        {/* Content — keyed so FileContent remounts (resets text fetch) on navigation */}
-        <div className="overflow-hidden">
+        {/* Content area — fills remaining height, no overflow escape */}
+        <div
+          ref={contentRef}
+          className="flex-1 relative overflow-hidden"
+          onClick={onClose}
+        >
           <AnimatePresence mode="wait" custom={slideDir} initial={false}>
             <motion.div
               key={entry.name}
               custom={slideDir}
               variants={{
-                enter: (d: number) => ({ x: d * 60, opacity: 0 }),
+                enter: (d: number) => ({ x: d * 80, opacity: 0 }),
                 center: { x: 0, opacity: 1 },
-                exit: (d: number) => ({ x: -d * 60, opacity: 0 }),
+                exit: (d: number) => ({ x: -d * 80, opacity: 0 }),
               }}
               initial="enter"
               animate="center"
               exit="exit"
-              transition={{ duration: 0.18, ease: [0.32, 0, 0.67, 0] }}
+              transition={{ duration: 0.2, ease: [0.32, 0, 0.67, 0] }}
+              className="absolute inset-0 flex items-center justify-center p-4 pb-8"
+              onClick={e => e.stopPropagation()}
             >
               <FileContent entry={entry} filePath={filePath} />
             </motion.div>
@@ -973,7 +1009,7 @@ function ListRow({
       </span>
 
       {/* actions (always last col) */}
-      <div className={`flex items-center justify-end gap-0 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+      <div className={`flex items-center justify-end gap-0 transition-opacity ${selected ? 'opacity-100' : 'sm:opacity-0 sm:group-hover:opacity-100'}`}>
         {!isDir && (
           <button
             onClick={e => { e.stopPropagation(); onDownload() }}
@@ -1284,7 +1320,7 @@ export function FileBrowser() {
     if (e.kind === 'dir') availableTypes.add('dir')
     else availableTypes.add(fileTypeInfo((e as ApiFileEntry).ext).iconKind as FilterKind)
   }
-  const showFilter = !isSearching && availableTypes.size > 1
+  const showFilter = availableTypes.size > 1
 
   const filtered = filterType
     ? sorted.filter(e => {
@@ -1293,6 +1329,14 @@ export function FileBrowser() {
         return fileTypeInfo((e as ApiFileEntry).ext).iconKind === filterType
       })
     : sorted
+
+  const filteredSearchResults = filterType
+    ? searchResults.filter(r => {
+        if (filterType === 'dir') return r.kind === 'dir'
+        if (r.kind !== 'file') return false
+        return fileTypeInfo((r as ApiFileEntry).ext).iconKind === filterType
+      })
+    : searchResults
 
   function navigateInto(name: string) {
     setCurrentPath(p => [...p, name])
@@ -1601,18 +1645,22 @@ export function FileBrowser() {
             <div className="flex justify-center py-20">
               <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
             </div>
-          ) : searchResults.length === 0 ? (
+          ) : filteredSearchResults.length === 0 ? (
             <div className="flex flex-col items-center py-20 gap-2">
               <SearchIcon size={36} className="text-zinc-700" />
-              <p className="text-sm text-zinc-600">No results for &ldquo;{searchQuery}&rdquo;</p>
+              <p className="text-sm text-zinc-600">
+                {searchResults.length > 0
+                  ? `No ${FILTER_LABELS[filterType!].toLowerCase()} matching &ldquo;${searchQuery}&rdquo;`
+                  : `No results for "${searchQuery}"`}
+              </p>
             </div>
           ) : (
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
               <div className="px-3 py-2 border-b border-zinc-800/60">
-                <span className="text-xs text-zinc-600">{searchResults.length} result{searchResults.length !== 1 ? 's' : ''}</span>
+                <span className="text-xs text-zinc-600">{filteredSearchResults.length} result{filteredSearchResults.length !== 1 ? 's' : ''}</span>
               </div>
               <div className="divide-y divide-zinc-800/40">
-                {searchResults.map((result, i) => (
+                {filteredSearchResults.map((result, i) => (
                   <SearchResultRow
                     key={`${result.relPath}-${i}`}
                     result={result}

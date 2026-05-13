@@ -18,6 +18,13 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
+/* Prevent iOS Safari from zooming on input focus (requires font-size >= 16px) */
+@media screen and (max-width: 639px) {
+  input, textarea, select {
+    font-size: 16px;
+  }
+}
+
 .scrollbar-hide {
   scrollbar-width: none;
   -ms-overflow-style: none;
