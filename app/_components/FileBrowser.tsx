@@ -571,7 +571,9 @@ function RenameModal({
   onConfirm: (newName: string) => void
   onClose: () => void
 }) {
-  const [name, setName] = useState(entry.name)
+  const ext = entry.kind === 'file' && entry.ext ? `.${entry.ext}` : ''
+  const baseName = ext ? entry.name.slice(0, -ext.length) : entry.name
+  const [name, setName] = useState(baseName)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -581,7 +583,7 @@ function RenameModal({
 
   function submit() {
     const trimmed = name.trim()
-    if (trimmed && trimmed !== entry.name) onConfirm(trimmed)
+    if (trimmed && trimmed !== baseName) onConfirm(trimmed + ext)
     else onClose()
   }
 
@@ -595,14 +597,21 @@ function RenameModal({
           </button>
         </div>
 
-        <input
-          ref={inputRef}
-          type="text"
-          value={name}
-          onChange={e => setName(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') onClose() }}
-          className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-500 transition-colors"
-        />
+        <div className="flex items-center bg-zinc-800 border border-zinc-700 rounded-lg focus-within:border-zinc-500 transition-colors overflow-hidden">
+          <input
+            ref={inputRef}
+            type="text"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') submit(); else if (e.key === 'Escape') onClose() }}
+            className="flex-1 min-w-0 bg-transparent px-3 py-2 text-sm text-zinc-100 outline-none"
+          />
+          {ext && (
+            <span className="px-3 py-2 text-sm text-zinc-500 border-l border-zinc-700 shrink-0 select-none">
+              {ext}
+            </span>
+          )}
+        </div>
 
         <div className="flex justify-end gap-2">
           <button
@@ -613,7 +622,7 @@ function RenameModal({
           </button>
           <button
             onClick={submit}
-            disabled={!name.trim() || name.trim() === entry.name}
+            disabled={!name.trim() || name.trim() === baseName}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Rename
