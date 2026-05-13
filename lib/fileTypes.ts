@@ -32,6 +32,8 @@ export type ApiDirEntry = {
 
 export type ApiEntry = ApiFileEntry | ApiDirEntry
 
+export type SearchResult = ApiEntry & { relPath: string }
+
 export type SortKey = 'name' | 'size' | 'modified'
 
 const KB = 1024

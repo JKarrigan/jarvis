@@ -2,7 +2,7 @@ import 'server-only'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
-import type { ApiEntry } from '@/lib/fileTypes'
+import type { ApiEntry, SearchResult } from '@/lib/fileTypes'
 
 export const FILES_ROOT = process.env.FILES_ROOT ?? '/mnt/storage'
 
@@ -84,4 +84,38 @@ export function moveEntry(fromRel: string, toDirRel: string): void {
   const dest = path.join(absToDir, path.basename(absFrom))
   if (!dest.startsWith(FILES_ROOT)) throw new Error('Path traversal detected')
   fs.renameSync(absFrom, dest)
+}
+
+export function searchEntries(rootRel: string, query: string): SearchResult[] {
+  const abs = resolveSafe(rootRel)
+  const lowerQ = query.toLowerCase()
+  const results: SearchResult[] = []
+
+  function walk(dir: string, depth: number) {
+    if (depth > 6 || results.length >= 200) return
+    let dirents: fs.Dirent[]
+    try { dirents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const dirent of dirents) {
+      if (dirent.name.startsWith('.')) continue
+      const entAbs = path.join(dir, dirent.name)
+      if (dirent.name.toLowerCase().includes(lowerQ)) {
+        try {
+          const stat = fs.statSync(entAbs)
+          const relPath = path.relative(FILES_ROOT, entAbs)
+          if (dirent.isDirectory()) {
+            let childCount = 0
+            try { childCount = fs.readdirSync(entAbs).filter(n => !n.startsWith('.')).length } catch { /* ignore */ }
+            results.push({ name: dirent.name, kind: 'dir', modified: stat.mtime.toISOString(), childCount, relPath })
+          } else if (dirent.isFile()) {
+            const ext = path.extname(dirent.name).slice(1)
+            results.push({ name: dirent.name, kind: 'file', size: stat.size, modified: stat.mtime.toISOString(), ext, relPath })
+          }
+        } catch { /* skip unreadable */ }
+      }
+      if (dirent.isDirectory()) walk(entAbs, depth + 1)
+    }
+  }
+
+  walk(abs, 0)
+  return results
 }

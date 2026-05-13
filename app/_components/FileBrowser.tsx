@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   sortEntries, formatSize, formatDate, fileTypeInfo,
-  type ApiEntry, type ApiFileEntry, type ApiDirEntry, type SortKey,
+  type ApiEntry, type ApiFileEntry, type ApiDirEntry, type SortKey, type SearchResult,
 } from '@/lib/fileTypes'
 import { useToast, Toast } from '@/app/_components/Toast'
 import { Sheet } from '@/app/_components/HueControls'
@@ -193,6 +193,24 @@ function WarnIcon() {
       <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
       <line x1="12" y1="9" x2="12" y2="13" />
       <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  )
+}
+
+function SearchIcon({ size = 15, className }: { size?: number; className?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+
+function UpArrowIcon({ className }: { className?: string }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M12 19V5" />
+      <polyline points="5 12 12 5 19 12" />
     </svg>
   )
 }
@@ -667,7 +685,49 @@ function PreviewModal({
   )
 }
 
+// ─── Parent Row (move up / navigate up) ──────────────────────────────────────
+
+function ParentRow({
+  isDragOver,
+  onNavigate,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
+}: {
+  isDragOver: boolean
+  onNavigate: () => void
+  onDragEnter: () => void
+  onDragLeave: () => void
+  onDrop: () => void
+}) {
+  return (
+    <div
+      onDragEnter={e => { e.preventDefault(); onDragEnter() }}
+      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave() }}
+      onDragOver={e => e.preventDefault()}
+      onDrop={e => { e.preventDefault(); onDrop() }}
+      onClick={onNavigate}
+      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors cursor-pointer select-none ${
+        isDragOver
+          ? 'ring-1 ring-inset ring-zinc-500 bg-zinc-800/60'
+          : 'hover:bg-zinc-900'
+      }`}
+    >
+      <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+        <UpArrowIcon className="text-zinc-600" />
+      </div>
+      <span className="flex-1 text-sm text-zinc-600 min-w-0 truncate">
+        .. parent folder
+      </span>
+    </div>
+  )
+}
+
 // ─── List Row ─────────────────────────────────────────────────────────────────
+
+// Uses CSS grid to lock column widths regardless of content length.
+// Columns: icon(20px) | name(1fr) | type(112px, sm+) | size(80px, md+) | modified(112px, lg+) | actions(64px)
+const ROW_GRID = 'grid grid-cols-[20px_minmax(0,1fr)_64px] sm:grid-cols-[20px_minmax(0,1fr)_112px_64px] md:grid-cols-[20px_minmax(0,1fr)_112px_80px_64px] lg:grid-cols-[20px_minmax(0,1fr)_112px_80px_112px_64px]'
 
 function ListRow({
   entry,
@@ -711,7 +771,7 @@ function ListRow({
       onDragOver={isDir ? e => e.preventDefault() : undefined}
       onDrop={isDir ? e => { e.preventDefault(); onDrop() } : undefined}
       onClick={isDir ? onActivate : onSelect}
-      className={`group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors cursor-pointer ${
+      className={`group ${ROW_GRID} items-center gap-3 px-3 py-2.5 rounded-lg transition-colors cursor-pointer ${
         isDragOver
           ? 'ring-1 ring-inset ring-zinc-500 bg-zinc-800/60'
           : isDragging
@@ -721,25 +781,29 @@ function ListRow({
               : 'hover:bg-zinc-900 text-zinc-300'
       }`}
     >
-      <FileIcon entry={entry} className="w-5 h-5 shrink-0" />
+      <FileIcon entry={entry} className="w-5 h-5" />
 
-      <span className={`flex-1 text-sm font-medium truncate min-w-0 ${selected && !isDragOver ? 'text-zinc-100' : 'text-zinc-200'}`}>
+      <span className={`text-sm font-medium truncate ${selected && !isDragOver ? 'text-zinc-100' : 'text-zinc-200'}`}>
         {entry.name}
       </span>
 
-      <span className="hidden sm:block w-28 shrink-0 text-xs text-zinc-600 truncate">
+      {/* type — hidden below sm, shown at sm+ (col 3) */}
+      <span className="hidden sm:block text-xs text-zinc-600 truncate">
         {isDir ? 'Folder' : info?.label}
       </span>
 
-      <span className="hidden md:block w-20 shrink-0 text-xs font-mono text-zinc-600 text-right">
+      {/* size — hidden below md, shown at md+ (col 4) */}
+      <span className="hidden md:block text-xs font-mono text-zinc-600 text-right truncate">
         {isDir ? '—' : formatSize((entry as ApiFileEntry).size)}
       </span>
 
-      <span className="hidden lg:block w-28 shrink-0 text-xs text-zinc-600 text-right">
+      {/* modified — hidden below lg, shown at lg+ (col 5) */}
+      <span className="hidden lg:block text-xs text-zinc-600 text-right truncate">
         {formatDate(entry.modified)}
       </span>
 
-      <div className={`flex items-center gap-0.5 shrink-0 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+      {/* actions (always last col) */}
+      <div className={`flex items-center justify-end gap-0.5 transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
         {!isDir && (
           <button
             onClick={e => { e.stopPropagation(); onDownload() }}
@@ -757,6 +821,21 @@ function ListRow({
           <TrashIcon />
         </button>
       </div>
+    </div>
+  )
+}
+
+// ─── List Header ──────────────────────────────────────────────────────────────
+
+function ListHeader() {
+  return (
+    <div className={`${ROW_GRID} items-center gap-3 px-3 py-2 border-b border-zinc-800/60`}>
+      <span />
+      <span className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Name</span>
+      <span className="hidden sm:block text-xs font-semibold uppercase tracking-widest text-zinc-600">Type</span>
+      <span className="hidden md:block text-xs font-semibold uppercase tracking-widest text-zinc-600 text-right">Size</span>
+      <span className="hidden lg:block text-xs font-semibold uppercase tracking-widest text-zinc-600 text-right">Modified</span>
+      <span />
     </div>
   )
 }
@@ -833,6 +912,93 @@ function GridCell({
   )
 }
 
+// ─── Parent Grid Cell ─────────────────────────────────────────────────────────
+
+function ParentGridCell({
+  isDragOver,
+  onNavigate,
+  onDragEnter,
+  onDragLeave,
+  onDrop,
+}: {
+  isDragOver: boolean
+  onNavigate: () => void
+  onDragEnter: () => void
+  onDragLeave: () => void
+  onDrop: () => void
+}) {
+  return (
+    <div
+      onDragEnter={e => { e.preventDefault(); onDragEnter() }}
+      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) onDragLeave() }}
+      onDragOver={e => e.preventDefault()}
+      onDrop={e => { e.preventDefault(); onDrop() }}
+      onClick={onNavigate}
+      className={`flex flex-col items-center gap-2 p-4 rounded-xl border transition-colors cursor-pointer ${
+        isDragOver
+          ? 'border-zinc-400 bg-zinc-800'
+          : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-900'
+      }`}
+    >
+      <div className="w-9 h-9 flex items-center justify-center">
+        <UpArrowIcon className="text-zinc-600 w-7 h-7" />
+      </div>
+      <div className="w-full space-y-0.5">
+        <p className="text-xs font-medium text-zinc-500 truncate text-center">..</p>
+        <p className="text-xs text-zinc-700 text-center">Parent</p>
+      </div>
+    </div>
+  )
+}
+
+// ─── Search Result Row ────────────────────────────────────────────────────────
+
+function SearchResultRow({
+  result,
+  onOpen,
+  onDownload,
+}: {
+  result: SearchResult
+  onOpen: () => void
+  onDownload: () => void
+}) {
+  const isDir = result.kind === 'dir'
+  const info = isDir ? null : fileTypeInfo((result as ApiFileEntry).ext)
+  const parentPath = result.relPath.split('/').slice(0, -1).join('/')
+
+  return (
+    <div
+      onClick={onOpen}
+      className="group grid grid-cols-[20px_minmax(0,1fr)_64px] sm:grid-cols-[20px_minmax(0,1fr)_80px_64px] items-center gap-3 px-3 py-2.5 rounded-lg transition-colors cursor-pointer hover:bg-zinc-900"
+    >
+      <FileIcon entry={result} className="w-5 h-5" />
+
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-zinc-200 truncate">{result.name}</p>
+        {parentPath && (
+          <p className="text-xs text-zinc-600 truncate">{parentPath}</p>
+        )}
+      </div>
+
+      <span className="hidden sm:block text-xs text-zinc-600 truncate">
+        {isDir ? 'Folder' : info?.label}
+      </span>
+
+      <div className="flex items-center justify-end gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        {!isDir && (
+          <button
+            onClick={e => { e.stopPropagation(); onDownload() }}
+            title="Download"
+            className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
+          >
+            <DownloadIcon />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
 function EmptyState() {
@@ -866,7 +1032,12 @@ export function FileBrowser() {
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<ApiDirEntry | null>(null)
   const [dragEntry, setDragEntry] = useState<ApiEntry | null>(null)
   const [dragOverName, setDragOverName] = useState<string | null>(null)
+  const [dragOverParent, setDragOverParent] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
+  const [searchLoading, setSearchLoading] = useState(false)
   const { toast, showToast } = useToast()
+  const searchRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async (path: string[]) => {
     setLoading(true)
@@ -888,7 +1059,28 @@ export function FileBrowser() {
     refresh(currentPath)
   }, [currentPath, refresh])
 
+  // Debounced search
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (!q) { setSearchResults([]); setSearchLoading(false); return }
+    setSearchLoading(true)
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/files/search?q=${encodeURIComponent(q)}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error ?? res.statusText)
+        setSearchResults(data.results)
+      } catch {
+        setSearchResults([])
+      } finally {
+        setSearchLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [searchQuery])
+
   const sorted = sortEntries(entries, sortKey)
+  const isSearching = searchQuery.trim().length > 0
 
   function navigateInto(name: string) {
     setCurrentPath(p => [...p, name])
@@ -897,6 +1089,11 @@ export function FileBrowser() {
 
   function navigateTo(idx: number) {
     setCurrentPath(p => idx < 0 ? [] : p.slice(0, idx + 1))
+    setSelected(null)
+  }
+
+  function navigateUp() {
+    setCurrentPath(p => p.slice(0, -1))
     setSelected(null)
   }
 
@@ -911,10 +1108,14 @@ export function FileBrowser() {
 
   function handleDownload(entry: ApiFileEntry) {
     const filePath = [...currentPath, entry.name].join('/')
+    triggerDownload(filePath, entry.name)
+  }
+
+  function triggerDownload(filePath: string, name: string) {
     const url = `/api/files/content?path=${encodeURIComponent(filePath)}&download=true`
     const a = document.createElement('a')
     a.href = url
-    a.download = entry.name
+    a.download = name
     a.click()
   }
 
@@ -940,13 +1141,18 @@ export function FileBrowser() {
     }
   }
 
+  function clearDrag() {
+    setDragEntry(null)
+    setDragOverName(null)
+    setDragOverParent(false)
+  }
+
   async function handleMove(intoName: string) {
     if (!dragEntry || dragEntry.name === intoName) return
     const fromPath = [...currentPath, dragEntry.name].join('/')
     const toDirPath = [...currentPath, intoName].join('/')
     const dragged = dragEntry
-    setDragEntry(null)
-    setDragOverName(null)
+    clearDrag()
     try {
       const res = await fetch(
         `/api/files/move?from=${encodeURIComponent(fromPath)}&to=${encodeURIComponent(toDirPath)}`,
@@ -955,6 +1161,26 @@ export function FileBrowser() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? res.statusText)
       showToast('success', `Moved "${dragged.name}" into "${intoName}"`)
+      refresh(currentPath)
+    } catch (e) {
+      showToast('error', String(e))
+    }
+  }
+
+  async function handleMoveToParent() {
+    if (!dragEntry || currentPath.length === 0) return
+    const fromPath = [...currentPath, dragEntry.name].join('/')
+    const parentPath = currentPath.slice(0, -1).join('/')
+    const dragged = dragEntry
+    clearDrag()
+    try {
+      const res = await fetch(
+        `/api/files/move?from=${encodeURIComponent(fromPath)}&to=${encodeURIComponent(parentPath)}`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? res.statusText)
+      showToast('success', `Moved "${dragged.name}" to parent folder`)
       refresh(currentPath)
     } catch (e) {
       showToast('error', String(e))
@@ -971,6 +1197,20 @@ export function FileBrowser() {
       refresh(currentPath)
     } catch (e) {
       showToast('error', String(e))
+    }
+  }
+
+  function handleSearchResultOpen(result: SearchResult) {
+    if (result.kind === 'dir') {
+      setCurrentPath(result.relPath.split('/').filter(Boolean))
+      setSearchQuery('')
+    } else {
+      const { iconKind } = fileTypeInfo((result as ApiFileEntry).ext)
+      if (['image', 'video', 'text'].includes(iconKind)) {
+        setPreviewEntry({ entry: result as ApiFileEntry, filePath: result.relPath })
+      } else {
+        triggerDownload(result.relPath, result.name)
+      }
     }
   }
 
@@ -1006,71 +1246,170 @@ export function FileBrowser() {
             </div>
           </div>
 
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-0.5">
-              <span className="text-xs text-zinc-600 mr-2">Sort</span>
-              {sortLabels.map(({ key, label }) => (
-                <button
-                  key={key}
-                  onClick={() => setSortKey(key)}
-                  className={`px-2.5 py-1 rounded-md text-xs transition-colors ${
-                    sortKey === key
-                      ? 'bg-zinc-800 text-zinc-100'
-                      : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
-                  }`}
+          {/* Search bar */}
+          <div className="relative">
+            <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-zinc-600">
+              <SearchIcon size={14} />
+            </div>
+            <input
+              ref={searchRef}
+              type="text"
+              placeholder="Search files…"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); searchRef.current?.blur() } }}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-8 pr-8 py-2 text-sm text-zinc-200 placeholder-zinc-700 outline-none focus:border-zinc-600 transition-colors"
+            />
+            <AnimatePresence>
+              {searchQuery && (
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{ duration: 0.12 }}
+                  onClick={() => setSearchQuery('')}
+                  className="absolute inset-y-0 right-2.5 flex items-center text-zinc-600 hover:text-zinc-400 transition-colors"
                 >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="text-xs text-zinc-700 mr-2">{sorted.length} item{sorted.length !== 1 ? 's' : ''}</span>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'}`}
-                title="List view"
-              >
-                <ListViewIcon />
-              </button>
-              <button
-                onClick={() => setViewMode('grid')}
-                className={`p-1.5 rounded-md transition-colors ${viewMode === 'grid' ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'}`}
-                title="Grid view"
-              >
-                <GridViewIcon />
-              </button>
-            </div>
+                  <XIcon size={14} />
+                </motion.button>
+              )}
+            </AnimatePresence>
           </div>
+
+          {!isSearching && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-0.5">
+                <span className="text-xs text-zinc-600 mr-2">Sort</span>
+                {sortLabels.map(({ key, label }) => (
+                  <button
+                    key={key}
+                    onClick={() => setSortKey(key)}
+                    className={`px-2.5 py-1 rounded-md text-xs transition-colors ${
+                      sortKey === key
+                        ? 'bg-zinc-800 text-zinc-100'
+                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-zinc-700 mr-2">{sorted.length} item{sorted.length !== 1 ? 's' : ''}</span>
+                <button
+                  onClick={() => setViewMode('list')}
+                  className={`p-1.5 rounded-md transition-colors ${viewMode === 'list' ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'}`}
+                  title="List view"
+                >
+                  <ListViewIcon />
+                </button>
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`p-1.5 rounded-md transition-colors ${viewMode === 'grid' ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'}`}
+                  title="Grid view"
+                >
+                  <GridViewIcon />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Storage Bar ── */}
-        <StorageBar disk={diskInfo} />
+        {!isSearching && <StorageBar disk={diskInfo} />}
 
-        {/* ── File Listing ── */}
-        {loading ? (
-          <div className="flex justify-center py-20">
-            <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
-          </div>
-        ) : error ? (
-          <div className="flex flex-col items-center py-20 gap-2">
-            <p className="text-sm text-red-400">Failed to load files</p>
-            <p className="text-xs text-zinc-600">{error}</p>
-          </div>
-        ) : sorted.length === 0 ? (
-          <EmptyState />
-        ) : viewMode === 'list' ? (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
-            <div className="flex items-center gap-3 px-3 py-2 border-b border-zinc-800/60">
-              <span className="w-5 shrink-0" />
-              <span className="flex-1 text-xs font-semibold uppercase tracking-widest text-zinc-600">Name</span>
-              <span className="hidden sm:block w-28 shrink-0 text-xs font-semibold uppercase tracking-widest text-zinc-600">Type</span>
-              <span className="hidden md:block w-20 shrink-0 text-xs font-semibold uppercase tracking-widest text-zinc-600 text-right">Size</span>
-              <span className="hidden lg:block w-28 shrink-0 text-xs font-semibold uppercase tracking-widest text-zinc-600 text-right">Modified</span>
-              <span className="w-16 shrink-0" />
+        {/* ── Search Results ── */}
+        {isSearching ? (
+          searchLoading ? (
+            <div className="flex justify-center py-20">
+              <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
             </div>
-            <div className="divide-y divide-zinc-800/40">
+          ) : searchResults.length === 0 ? (
+            <div className="flex flex-col items-center py-20 gap-2">
+              <SearchIcon size={36} className="text-zinc-700" />
+              <p className="text-sm text-zinc-600">No results for &ldquo;{searchQuery}&rdquo;</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
+              <div className="px-3 py-2 border-b border-zinc-800/60">
+                <span className="text-xs text-zinc-600">{searchResults.length} result{searchResults.length !== 1 ? 's' : ''}</span>
+              </div>
+              <div className="divide-y divide-zinc-800/40">
+                {searchResults.map((result, i) => (
+                  <SearchResultRow
+                    key={`${result.relPath}-${i}`}
+                    result={result}
+                    onOpen={() => handleSearchResultOpen(result)}
+                    onDownload={() => triggerDownload(result.relPath, result.name)}
+                  />
+                ))}
+              </div>
+            </div>
+          )
+        ) : (
+          /* ── File Listing ── */
+          loading ? (
+            <div className="flex justify-center py-20">
+              <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-zinc-400 animate-spin" />
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center py-20 gap-2">
+              <p className="text-sm text-red-400">Failed to load files</p>
+              <p className="text-xs text-zinc-600">{error}</p>
+            </div>
+          ) : sorted.length === 0 && currentPath.length === 0 ? (
+            <EmptyState />
+          ) : viewMode === 'list' ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
+              <ListHeader />
+              <div className="divide-y divide-zinc-800/40">
+                {currentPath.length > 0 && (
+                  <ParentRow
+                    isDragOver={dragOverParent}
+                    onNavigate={navigateUp}
+                    onDragEnter={() => setDragOverParent(true)}
+                    onDragLeave={() => setDragOverParent(false)}
+                    onDrop={handleMoveToParent}
+                  />
+                )}
+                {sorted.map(entry => (
+                  <ListRow
+                    key={entry.name}
+                    entry={entry}
+                    selected={selected === entry.name}
+                    isDragOver={dragOverName === entry.name && entry.kind === 'dir'}
+                    isDragging={dragEntry?.name === entry.name}
+                    onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
+                    onSelect={() => entry.kind === 'file' && handleSelect(entry)}
+                    onDownload={() => entry.kind === 'file' && handleDownload(entry)}
+                    onDelete={() => handleDeleteAny(entry)}
+                    onDragStart={() => setDragEntry(entry)}
+                    onDragEnd={clearDrag}
+                    onDragEnter={() => entry.kind === 'dir' && setDragOverName(entry.name)}
+                    onDragLeave={() => setDragOverName(null)}
+                    onDrop={() => entry.kind === 'dir' && handleMove(entry.name)}
+                  />
+                ))}
+                {sorted.length === 0 && (
+                  <div className="px-3 py-10 text-center">
+                    <p className="text-sm text-zinc-600">This folder is empty</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              {currentPath.length > 0 && (
+                <ParentGridCell
+                  isDragOver={dragOverParent}
+                  onNavigate={navigateUp}
+                  onDragEnter={() => setDragOverParent(true)}
+                  onDragLeave={() => setDragOverParent(false)}
+                  onDrop={handleMoveToParent}
+                />
+              )}
               {sorted.map(entry => (
-                <ListRow
+                <GridCell
                   key={entry.name}
                   entry={entry}
                   selected={selected === entry.name}
@@ -1078,37 +1417,16 @@ export function FileBrowser() {
                   isDragging={dragEntry?.name === entry.name}
                   onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
                   onSelect={() => entry.kind === 'file' && handleSelect(entry)}
-                  onDownload={() => entry.kind === 'file' && handleDownload(entry)}
                   onDelete={() => handleDeleteAny(entry)}
                   onDragStart={() => setDragEntry(entry)}
-                  onDragEnd={() => { setDragEntry(null); setDragOverName(null) }}
+                  onDragEnd={clearDrag}
                   onDragEnter={() => entry.kind === 'dir' && setDragOverName(entry.name)}
                   onDragLeave={() => setDragOverName(null)}
                   onDrop={() => entry.kind === 'dir' && handleMove(entry.name)}
                 />
               ))}
             </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-            {sorted.map(entry => (
-              <GridCell
-                key={entry.name}
-                entry={entry}
-                selected={selected === entry.name}
-                isDragOver={dragOverName === entry.name && entry.kind === 'dir'}
-                isDragging={dragEntry?.name === entry.name}
-                onActivate={() => entry.kind === 'dir' && navigateInto(entry.name)}
-                onSelect={() => entry.kind === 'file' && handleSelect(entry)}
-                onDelete={() => handleDeleteAny(entry)}
-                onDragStart={() => setDragEntry(entry)}
-                onDragEnd={() => { setDragEntry(null); setDragOverName(null) }}
-                onDragEnter={() => entry.kind === 'dir' && setDragOverName(entry.name)}
-                onDragLeave={() => setDragOverName(null)}
-                onDrop={() => entry.kind === 'dir' && handleMove(entry.name)}
-              />
-            ))}
-          </div>
+          )
         )}
       </main>
 
