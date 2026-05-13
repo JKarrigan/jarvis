@@ -170,10 +170,18 @@ function TrashIcon({ size = 14, className }: { size?: number; className?: string
   )
 }
 
-function ChevronRight() {
+function ChevronRight({ size = 12 }: { size?: number }) {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="9 18 15 12 9 6" />
+    </svg>
+  )
+}
+
+function ChevronLeft({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="15 18 9 12 15 6" />
     </svg>
   )
 }
@@ -605,29 +613,74 @@ function StorageBar({ disk }: { disk: { usedBytes: number; totalBytes: number } 
 
 // ─── Preview Modal ────────────────────────────────────────────────────────────
 
-function PreviewModal({
-  entry,
-  filePath,
-  onClose,
-}: {
-  entry: ApiFileEntry
-  filePath: string
-  onClose: () => void
-}) {
-  const [textContent, setTextContent] = useState<string | null>(null)
+function FileContent({ entry, filePath }: { entry: ApiFileEntry; filePath: string }) {
+  const [text, setText] = useState<string | null>(null)
   const src = `/api/files/content?path=${encodeURIComponent(filePath)}`
   const { iconKind } = fileTypeInfo(entry.ext)
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+    if (iconKind !== 'text') return
+    setText(null)
+    fetch(src).then(r => r.text()).then(setText).catch(() => setText('Failed to load file.'))
+  }, [src, iconKind])
+
+  if (iconKind === 'image') return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={src} alt={entry.name} className="max-h-[80vh] max-w-full mx-auto rounded-lg object-contain" />
+  )
+  if (iconKind === 'video') return (
+    <video src={src} controls autoPlay className="max-h-[80vh] max-w-full mx-auto rounded-lg" />
+  )
+  if (iconKind === 'text') return (
+    <pre className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs p-4 rounded-lg overflow-auto max-h-[80vh] whitespace-pre-wrap break-words">
+      {text ?? 'Loading…'}
+    </pre>
+  )
+  return null
+}
+
+function PreviewModal({
+  initialEntry,
+  initialFilePath,
+  siblings,
+  onClose,
+}: {
+  initialEntry: ApiFileEntry
+  initialFilePath: string
+  siblings: ApiFileEntry[]
+  onClose: () => void
+}) {
+  const startIdx = Math.max(0, siblings.findIndex(s => s.name === initialEntry.name))
+  const [currentIdx, setCurrentIdx] = useState(startIdx)
+  const [slideDir, setSlideDir] = useState<1 | -1>(1)
+  const touchStartX = useRef<number>(0)
+  const touchStartY = useRef<number>(0)
+
+  const hasSiblings = siblings.length > 1
+  const entry = hasSiblings ? (siblings[currentIdx] ?? initialEntry) : initialEntry
+  const folderPath = initialFilePath.split('/').slice(0, -1).join('/')
+  const filePath = hasSiblings
+    ? (folderPath ? `${folderPath}/${entry.name}` : entry.name)
+    : initialFilePath
+
+  const canPrev = hasSiblings && currentIdx > 0
+  const canNext = hasSiblings && currentIdx < siblings.length - 1
 
   useEffect(() => {
-    if (iconKind !== 'text') return
-    fetch(src).then(r => r.text()).then(setTextContent).catch(() => setTextContent('Failed to load file.'))
-  }, [src, iconKind])
+    function handler(e: KeyboardEvent) {
+      if (e.key === 'Escape') { onClose(); return }
+      if (!hasSiblings) return
+      if (e.key === 'ArrowLeft') {
+        setSlideDir(-1)
+        setCurrentIdx(i => Math.max(0, i - 1))
+      } else if (e.key === 'ArrowRight') {
+        setSlideDir(1)
+        setCurrentIdx(i => Math.min(siblings.length - 1, i + 1))
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose, hasSiblings, siblings.length])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -646,9 +699,45 @@ function PreviewModal({
         exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: [0.32, 0, 0.67, 0] } }}
         transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
         onClick={e => e.stopPropagation()}
+        onTouchStart={hasSiblings ? e => {
+          touchStartX.current = e.touches[0].clientX
+          touchStartY.current = e.touches[0].clientY
+        } : undefined}
+        onTouchEnd={hasSiblings ? e => {
+          const dx = e.changedTouches[0].clientX - touchStartX.current
+          const dy = Math.abs(e.changedTouches[0].clientY - touchStartY.current)
+          if (Math.abs(dx) > 50 && Math.abs(dx) > dy) {
+            if (dx < 0) { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }
+            else { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }
+          }
+        } : undefined}
       >
-        <div className="flex items-center justify-between mb-3">
-          <p className="text-sm text-zinc-300 truncate">{entry.name}</p>
+        {/* Header */}
+        <div className="flex items-center gap-2 mb-3">
+          {hasSiblings && (
+            <button
+              onClick={() => { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }}
+              disabled={!canPrev}
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/80 disabled:opacity-20 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              <ChevronLeft />
+            </button>
+          )}
+          <p className="flex-1 text-sm text-zinc-300 truncate min-w-0">{entry.name}</p>
+          {hasSiblings && (
+            <span className="text-xs text-zinc-600 shrink-0 tabular-nums">
+              {currentIdx + 1} / {siblings.length}
+            </span>
+          )}
+          {hasSiblings && (
+            <button
+              onClick={() => { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }}
+              disabled={!canNext}
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/80 disabled:opacity-20 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              <ChevronRight size={20} />
+            </button>
+          )}
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors shrink-0"
@@ -657,29 +746,26 @@ function PreviewModal({
           </button>
         </div>
 
-        {iconKind === 'image' && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={src}
-            alt={entry.name}
-            className="max-h-[80vh] max-w-full mx-auto rounded-lg object-contain"
-          />
-        )}
-
-        {iconKind === 'video' && (
-          <video
-            src={src}
-            controls
-            autoPlay
-            className="max-h-[80vh] max-w-full mx-auto rounded-lg"
-          />
-        )}
-
-        {iconKind === 'text' && (
-          <pre className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs p-4 rounded-lg overflow-auto max-h-[80vh] whitespace-pre-wrap break-words">
-            {textContent ?? 'Loading…'}
-          </pre>
-        )}
+        {/* Content — keyed so FileContent remounts (resets text fetch) on navigation */}
+        <div className="overflow-hidden">
+          <AnimatePresence mode="wait" custom={slideDir}>
+            <motion.div
+              key={entry.name}
+              custom={slideDir}
+              variants={{
+                enter: (d: number) => ({ x: d * 60, opacity: 0 }),
+                center: { x: 0, opacity: 1 },
+                exit: (d: number) => ({ x: -d * 60, opacity: 0 }),
+              }}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.18, ease: [0.32, 0, 0.67, 0] }}
+            >
+              <FileContent entry={entry} filePath={filePath} />
+            </motion.div>
+          </AnimatePresence>
+        </div>
       </motion.div>
     </div>
   )
@@ -1025,7 +1111,7 @@ export function FileBrowser() {
   const [diskInfo, setDiskInfo] = useState<{ usedBytes: number; totalBytes: number } | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [previewEntry, setPreviewEntry] = useState<{ entry: ApiFileEntry; filePath: string } | null>(null)
+  const [previewEntry, setPreviewEntry] = useState<{ entry: ApiFileEntry; filePath: string; siblings: ApiFileEntry[] } | null>(null)
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [deleteFileTarget, setDeleteFileTarget] = useState<ApiFileEntry | null>(null)
@@ -1100,7 +1186,11 @@ export function FileBrowser() {
   function handleSelect(entry: ApiFileEntry) {
     const { iconKind } = fileTypeInfo(entry.ext)
     if (['image', 'video', 'text'].includes(iconKind)) {
-      setPreviewEntry({ entry, filePath: [...currentPath, entry.name].join('/') })
+      const siblings = sorted.filter(e => {
+        if (e.kind !== 'file') return false
+        return ['image', 'video', 'text'].includes(fileTypeInfo((e as ApiFileEntry).ext).iconKind)
+      }) as ApiFileEntry[]
+      setPreviewEntry({ entry, filePath: [...currentPath, entry.name].join('/'), siblings })
     } else {
       setSelected(s => s === entry.name ? null : entry.name)
     }
@@ -1207,7 +1297,7 @@ export function FileBrowser() {
     } else {
       const { iconKind } = fileTypeInfo((result as ApiFileEntry).ext)
       if (['image', 'video', 'text'].includes(iconKind)) {
-        setPreviewEntry({ entry: result as ApiFileEntry, filePath: result.relPath })
+        setPreviewEntry({ entry: result as ApiFileEntry, filePath: result.relPath, siblings: [] })
       } else {
         triggerDownload(result.relPath, result.name)
       }
@@ -1485,8 +1575,9 @@ export function FileBrowser() {
         {previewEntry && (
           <PreviewModal
             key="preview"
-            entry={previewEntry.entry}
-            filePath={previewEntry.filePath}
+            initialEntry={previewEntry.entry}
+            initialFilePath={previewEntry.filePath}
+            siblings={previewEntry.siblings}
             onClose={() => setPreviewEntry(null)}
           />
         )}
