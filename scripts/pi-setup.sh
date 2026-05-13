@@ -17,8 +17,8 @@ if ! command -v pm2 &>/dev/null; then
 fi
 
 # 3. Start app under PM2 if not already running
-if ! pm2 describe airgradient &>/dev/null; then
-  pm2 start "npm run start" --name airgradient
+if ! pm2 describe jarvis &>/dev/null; then
+  pm2 start "npm run start" --name jarvis
 fi
 
 # 4. Create the post-receive hook
@@ -29,7 +29,7 @@ set -e
 cd ~/air-gradient
 npm ci --omit=dev
 npm run build
-pm2 restart airgradient
+pm2 restart jarvis
 EOF
 chmod +x "$HOOK"
 
