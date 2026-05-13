@@ -187,3 +187,9 @@ export function getAllReadings(): HistoryEntry[] {
     .all() as { timestamp: number; data: string }[]
   return rows.map(r => ({ timestamp: r.timestamp, measures: JSON.parse(r.data) as DeviceMeasures }))
 }
+
+export function getReadingCount(): number {
+  return (getDb()
+    .prepare('SELECT COUNT(*) as count FROM readings')
+    .get() as { count: number }).count
+}

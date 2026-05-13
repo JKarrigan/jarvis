@@ -35,6 +35,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       {link('/files', 'Files')}
       {link('/logs', 'Logs')}
       {link('/settings', 'Settings')}
+      {link('/system', 'System')}
       <div className="mt-5 mb-1 px-3 text-xs text-zinc-700 uppercase tracking-widest">Media</div>
       {link('/media', 'Home')}
       {link('/media/movies', 'Movies')}
