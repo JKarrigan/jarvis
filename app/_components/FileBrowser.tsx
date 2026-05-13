@@ -1,11 +1,13 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 import {
   sortEntries, formatSize, formatDate, fileTypeInfo,
   type ApiEntry, type ApiFileEntry, type ApiDirEntry, type SortKey,
 } from '@/lib/fileTypes'
 import { useToast, Toast } from '@/app/_components/Toast'
+import { Sheet } from '@/app/_components/HueControls'
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
@@ -187,30 +189,6 @@ function WarnIcon() {
   )
 }
 
-// ─── Modal Shell ──────────────────────────────────────────────────────────────
-
-function ModalShell({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="w-full sm:max-w-md sm:mx-4 bg-zinc-900 border border-zinc-800 border-b-0 sm:border-b rounded-t-2xl sm:rounded-2xl shadow-2xl"
-        onClick={e => e.stopPropagation()}
-      >
-        {children}
-      </div>
-    </div>
-  )
-}
-
 // ─── New Folder Modal ─────────────────────────────────────────────────────────
 
 function NewFolderModal({
@@ -231,7 +209,7 @@ function NewFolderModal({
   }
 
   return (
-    <ModalShell onClose={onClose}>
+    <Sheet onClose={onClose}>
       <div className="p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-zinc-100">New Folder</h2>
@@ -266,7 +244,7 @@ function NewFolderModal({
           </button>
         </div>
       </div>
-    </ModalShell>
+    </Sheet>
   )
 }
 
@@ -292,7 +270,7 @@ function UploadModal({
   const fileList = files ? Array.from(files) : []
 
   return (
-    <ModalShell onClose={onClose}>
+    <Sheet onClose={onClose}>
       <div className="p-6 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-zinc-100">Upload Files</h2>
@@ -352,7 +330,7 @@ function UploadModal({
           </button>
         </div>
       </div>
-    </ModalShell>
+    </Sheet>
   )
 }
 
@@ -368,7 +346,7 @@ function DeleteFolderModal({
   onClose: () => void
 }) {
   return (
-    <ModalShell onClose={onClose}>
+    <Sheet onClose={onClose}>
       <div className="p-6 space-y-5">
         <div className="flex items-start gap-3">
           <div className="shrink-0 mt-0.5"><WarnIcon /></div>
@@ -397,7 +375,7 @@ function DeleteFolderModal({
           </button>
         </div>
       </div>
-    </ModalShell>
+    </Sheet>
   )
 }
 
@@ -488,12 +466,21 @@ function PreviewModal({
   }, [src, iconKind])
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="relative max-w-5xl max-h-[90vh] w-full mx-4 flex flex-col"
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <motion.div
+        className="absolute inset-0 bg-black/85 backdrop-blur-sm"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0, transition: { duration: 0.18, ease: 'easeIn' } }}
+        transition={{ duration: 0.25, ease: 'easeOut' }}
+        onClick={onClose}
+      />
+      <motion.div
+        className="relative z-10 max-w-5xl max-h-[90vh] w-full mx-4 flex flex-col"
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.18, ease: [0.32, 0, 0.67, 0] } }}
+        transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-3">
@@ -529,7 +516,7 @@ function PreviewModal({
             {textContent ?? 'Loading…'}
           </pre>
         )}
-      </div>
+      </motion.div>
     </div>
   )
 }
@@ -916,39 +903,51 @@ export function FileBrowser() {
         )}
       </main>
 
-      {newFolderOpen && (
-        <NewFolderModal
-          onConfirm={handleNewFolder}
-          onClose={() => setNewFolderOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {newFolderOpen && (
+          <NewFolderModal
+            key="new-folder"
+            onConfirm={handleNewFolder}
+            onClose={() => setNewFolderOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
-      {uploadOpen && (
-        <UploadModal
-          onConfirm={handleUpload}
-          onClose={() => setUploadOpen(false)}
-        />
-      )}
+      <AnimatePresence>
+        {uploadOpen && (
+          <UploadModal
+            key="upload"
+            onConfirm={handleUpload}
+            onClose={() => setUploadOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
-      {deleteFolderTarget && (
-        <DeleteFolderModal
-          folder={deleteFolderTarget}
-          onConfirm={() => {
-            const target = deleteFolderTarget
-            setDeleteFolderTarget(null)
-            deleteEntry(target)
-          }}
-          onClose={() => setDeleteFolderTarget(null)}
-        />
-      )}
+      <AnimatePresence>
+        {deleteFolderTarget && (
+          <DeleteFolderModal
+            key="delete-folder"
+            folder={deleteFolderTarget}
+            onConfirm={() => {
+              const target = deleteFolderTarget
+              setDeleteFolderTarget(null)
+              deleteEntry(target)
+            }}
+            onClose={() => setDeleteFolderTarget(null)}
+          />
+        )}
+      </AnimatePresence>
 
-      {previewEntry && (
-        <PreviewModal
-          entry={previewEntry.entry}
-          filePath={previewEntry.filePath}
-          onClose={() => setPreviewEntry(null)}
-        />
-      )}
+      <AnimatePresence>
+        {previewEntry && (
+          <PreviewModal
+            key="preview"
+            entry={previewEntry.entry}
+            filePath={previewEntry.filePath}
+            onClose={() => setPreviewEntry(null)}
+          />
+        )}
+      </AnimatePresence>
 
       <Toast toast={toast} />
     </div>
