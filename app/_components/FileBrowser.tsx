@@ -291,6 +291,21 @@ function NewFolderModal({
   )
 }
 
+function formatUploadSpeed(bps: number): string {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(1)} GB/s`
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} MB/s`
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(0)} KB/s`
+  return `${Math.round(bps)} B/s`
+}
+
+function formatUploadEta(seconds: number): string {
+  if (seconds < 60) return `${Math.ceil(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.ceil(seconds % 60)
+  if (m < 60) return `${m}m ${s}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
 // ─── Upload Modal ─────────────────────────────────────────────────────────────
 
 type UploadPhase = 'select' | 'uploading' | 'done' | 'error'
@@ -308,8 +323,11 @@ function UploadModal({
   const [dropActive, setDropActive] = useState(false)
   const [phase, setPhase] = useState<UploadPhase>('select')
   const [progress, setProgress] = useState(0)
+  const [uploadSpeed, setUploadSpeed] = useState(0)
+  const [uploadEta, setUploadEta] = useState<number | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const uploadStartRef = useRef<number>(0)
   const fileList = files ? Array.from(files) : []
 
   useEffect(() => {
@@ -328,14 +346,24 @@ function UploadModal({
     if (!files?.length) return
     setPhase('uploading')
     setProgress(0)
+    setUploadSpeed(0)
+    setUploadEta(null)
     setUploadError(null)
+    uploadStartRef.current = Date.now()
     const fd = new FormData()
     for (const f of files) fd.append('files', f)
     try {
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest()
         xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) setProgress(e.loaded / e.total)
+          if (!e.lengthComputable) return
+          setProgress(e.loaded / e.total)
+          const elapsed = (Date.now() - uploadStartRef.current) / 1000
+          if (elapsed > 0.5) {
+            const speed = e.loaded / elapsed
+            setUploadSpeed(speed)
+            setUploadEta((e.total - e.loaded) / speed)
+          }
         }
         xhr.onload = () => {
           if (xhr.status >= 200 && xhr.status < 300) resolve()
@@ -367,7 +395,17 @@ function UploadModal({
                 transition={{ ease: 'linear', duration: 0.1 }}
               />
             </div>
-            <p className="text-xs text-zinc-600 text-right">{Math.round(progress * 100)}%</p>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-zinc-500">
+                {uploadSpeed > 0 ? formatUploadSpeed(uploadSpeed) : '—'}
+              </p>
+              <p className="text-xs text-zinc-500">
+                {uploadEta !== null && uploadEta > 0
+                  ? `${formatUploadEta(uploadEta)} · `
+                  : ''}
+                {Math.round(progress * 100)}%
+              </p>
+            </div>
           </div>
 
           <div className="space-y-1 max-h-40 overflow-y-auto">
