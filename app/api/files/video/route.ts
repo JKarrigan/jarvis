@@ -1,4 +1,4 @@
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 import { statSync, createReadStream, unlink } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -7,14 +7,49 @@ import { resolveSafe } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
 
-const FFMPEG = process.env.FFMPEG_PATH ?? 'ffmpeg'
-const STARTUP_BYTES = 256 * 1024 // wait for 256 KB (moov + first fragment) before serving
+const FFMPEG  = process.env.FFMPEG_PATH  ?? 'ffmpeg'
+const FFPROBE = process.env.FFPROBE_PATH ?? 'ffprobe'
+
+// How many bytes ffmpeg must write before we send the first response byte.
+// Needs to be large enough that the moov box is fully on disk.
+const STARTUP_BYTES = 256 * 1024
 const POLL_MS = 150
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 function diskSize(path: string): number {
   try { return statSync(path).size } catch { return 0 }
+}
+
+// Probe input file to estimate output size.
+// ffprobe only reads container headers — no decoding, completes in <1 second.
+function estimateOutputBytes(abs: string): number | null {
+  try {
+    const result = spawnSync(FFPROBE, [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      abs,
+    ])
+    const info = JSON.parse(result.stdout.toString()) as {
+      format: { duration?: string; bit_rate?: string }
+      streams: { codec_type: string; bit_rate?: string }[]
+    }
+
+    const duration = parseFloat(info.format.duration ?? '0')
+    if (!duration) return null
+
+    const videoStream = info.streams.find(s => s.codec_type === 'video')
+    // prefer per-stream bitrate; fall back to total format bitrate minus audio estimate
+    const videoBps = parseInt(videoStream?.bit_rate ?? info.format.bit_rate ?? '0', 10)
+    if (!videoBps) return null
+
+    const audioBps = 192_000 // our fixed output audio bitrate
+    return Math.round((videoBps + audioBps) * duration / 8)
+  } catch {
+    return null
+  }
 }
 
 export async function GET(request: Request) {
@@ -28,20 +63,18 @@ export async function GET(request: Request) {
   try { if (!statSync(abs).isFile()) return new Response('Not a file', { status: 400 }) }
   catch { return new Response('Not found', { status: 404 }) }
 
-  // Write to a temp file instead of piping to stdout.
-  // This lets ffmpeg write a proper moov box (with duration) at the start,
-  // and lets us serve range requests so Chrome buffers aggressively.
+  const contentLength = estimateOutputBytes(abs)
+
   const tmpPath = join(tmpdir(), `ag-video-${randomUUID()}.mp4`)
 
   const ff = spawn(FFMPEG, [
     '-i', abs,
-    '-vcodec', 'copy',  // video: pass through unchanged
-    '-acodec', 'aac',   // audio: transcode (handles AC3, DTS, TrueHD, etc.)
+    '-vcodec', 'copy',  // video: pass through unchanged — no re-encode cost
+    '-acodec', 'aac',   // audio: transcode to AAC (handles AC3, DTS, TrueHD, etc.)
     '-b:a', '192k',
     '-f', 'mp4',
-    // frag_keyframe+default_base_moof WITHOUT empty_moov:
-    // ffmpeg writes a real moov with correct duration at the start of the file,
-    // then appends keyframe-aligned fragments. Chrome reads duration from moov immediately.
+    // Write to a real file so ffmpeg can put a proper moov (with duration) at the
+    // start. Dropping empty_moov means Chrome reads the real duration immediately.
     '-movflags', 'frag_keyframe+default_base_moof',
     tmpPath,
   ])
@@ -58,13 +91,13 @@ export async function GET(request: Request) {
     setTimeout(() => unlink(tmpPath, () => {}), 500)
   }
 
-  // Wait for ffmpeg to flush the moov box + at least one fragment to disk
+  // Wait for ffmpeg to flush the moov box + first fragment before responding
   for (let ms = 0; ms < 15_000; ms += POLL_MS) {
     if (diskSize(tmpPath) >= STARTUP_BYTES || ffDone) break
     await sleep(POLL_MS)
   }
 
-  // Parse Range header (browser sends this when seeking or rebuffering)
+  // Parse Range header
   const rangeHeader = request.headers.get('range')
   let start = 0
   let reqEnd: number | undefined
@@ -101,7 +134,6 @@ export async function GET(request: Request) {
           } else if (ffDone) {
             break
           } else {
-            // ffmpeg still writing — wait for more data
             await sleep(POLL_MS)
           }
         }
@@ -113,17 +145,22 @@ export async function GET(request: Request) {
     cancel: cleanup,
   })
 
+  const end = reqEnd ?? (contentLength ? contentLength - 1 : diskSize(tmpPath) - 1)
+  const total = contentLength ?? '*'
+
   const headers: Record<string, string> = {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-store',
   }
 
+  if (contentLength && !rangeHeader) {
+    headers['Content-Length'] = String(contentLength)
+  }
+
   if (rangeHeader) {
-    // Total size is unknown while ffmpeg is running, so use * for the total field.
-    // Chrome handles this and will use the duration from the moov box instead.
-    const end = reqEnd ?? diskSize(tmpPath) - 1
-    headers['Content-Range'] = `bytes ${start}-${end}/*`
+    headers['Content-Range'] = `bytes ${start}-${end}/${total}`
+    if (contentLength) headers['Content-Length'] = String(end - start + 1)
   }
 
   return new Response(stream, {
