@@ -30,11 +30,13 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
 
     function flush() {
       if (!sb || sb.updating || queue.length === 0) return
+      const chunk = queue.shift()!
       try {
-        const chunk = queue.shift()!
         sb.appendBuffer(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer)
       } catch (e) {
-        console.error('[VideoPlayer] appendBuffer:', e)
+        // Put back on error (e.g. QuotaExceededError) so updateend retries
+        queue.unshift(chunk)
+        if ((e as Error).name !== 'QuotaExceededError') console.error('[VideoPlayer] appendBuffer:', e)
       }
     }
 
@@ -48,12 +50,37 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
       }
     }
 
-    async function streamSeek(t: number) {
+    // sourceopen: one-time setup — fetch + read headers + create SourceBuffer + pipe body
+    ms.addEventListener('sourceopen', async () => {
+      const ctrl = new AbortController()
+      abort = ctrl
+      try {
+        const res = await fetch(src, { signal: ctrl.signal })
+        if (!res.ok || !res.body) return
+
+        const mime = mimeForCodec(res.headers.get('X-Video-Codec') ?? '')
+        const dur = parseFloat(res.headers.get('X-Duration-Seconds') ?? '0')
+
+        try { sb = ms.addSourceBuffer(mime) }
+        catch { console.error('[VideoPlayer] addSourceBuffer failed:', mime); res.body.cancel(); return }
+
+        sb.addEventListener('updateend', flush)
+        if (dur > 0 && isFinite(dur)) try { ms.duration = dur } catch {}
+
+        await pipeBody(res.body.getReader(), ctrl)
+      } catch (e) {
+        if ((e as Error).name !== 'AbortError') console.error('[VideoPlayer] initial fetch:', e)
+      }
+    })
+
+    // streamFrom: abort current stream and start a new one from time t.
+    // Does NOT remove the existing buffer — MSE supports disjoint buffered ranges,
+    // so we just add data at the new position alongside what's already buffered.
+    async function streamFrom(t: number) {
       abort?.abort()
       queue = []
       const ctrl = new AbortController()
       abort = ctrl
-
       try {
         const res = await fetch(`${src}&t=${t.toFixed(3)}`, { signal: ctrl.signal })
         if (!res.ok || !res.body) return
@@ -63,57 +90,8 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
       }
     }
 
-    function restartAt(t: number) {
-      abort?.abort()
-      queue = []
-      if (!sb || ms.readyState !== 'open') { streamSeek(t); return }
-
-      const doRemove = () => {
-        if (sb!.updating) { sb!.addEventListener('updateend', doRemove, { once: true }); return }
-        try {
-          const b = sb!.buffered
-          if (b.length > 0) {
-            const end = isFinite(ms.duration) && ms.duration > 0
-              ? Math.min(b.end(b.length - 1) + 1, ms.duration)
-              : b.end(b.length - 1) + 1
-            sb!.remove(b.start(0), end)
-            sb!.addEventListener('updateend', () => streamSeek(t), { once: true })
-          } else {
-            streamSeek(t)
-          }
-        } catch { streamSeek(t) }
-      }
-      doRemove()
-    }
-
-    ms.addEventListener('sourceopen', async () => {
-      const ctrl = new AbortController()
-      abort = ctrl
-
-      try {
-        const res = await fetch(src, { signal: ctrl.signal })
-        if (!res.ok || !res.body) return
-
-        const codec = res.headers.get('X-Video-Codec') ?? ''
-        const dur = parseFloat(res.headers.get('X-Duration-Seconds') ?? '0')
-        const mime = mimeForCodec(codec)
-
-        try { sb = ms.addSourceBuffer(mime) }
-        catch { console.error('[VideoPlayer] addSourceBuffer failed:', mime); res.body.cancel(); return }
-
-        sb.addEventListener('updateend', flush)
-
-        if (dur > 0 && isFinite(dur)) {
-          try { ms.duration = dur } catch {}
-        }
-
-        await pipeBody(res.body.getReader(), ctrl)
-      } catch (e) {
-        if ((e as Error).name !== 'AbortError') console.error('[VideoPlayer] initial fetch:', e)
-      }
-    })
-
     function onSeeking() {
+      if (!sb) return // SourceBuffer not ready yet; ignore early seeks
       if (debounce) clearTimeout(debounce)
       debounce = setTimeout(() => {
         const t = video!.currentTime
@@ -121,7 +99,7 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
         for (let i = 0; i < buf.length; i++) {
           if (t >= buf.start(i) - 0.5 && t <= buf.end(i) + 0.5) return
         }
-        restartAt(t)
+        streamFrom(t)
       }, 200)
     }
 

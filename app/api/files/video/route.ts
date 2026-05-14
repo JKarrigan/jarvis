@@ -54,6 +54,9 @@ export async function GET(request: Request) {
     '-vcodec', 'copy',
     '-acodec', 'aac',
     '-b:a', '192k',
+    // -copyts preserves original PTS values from the input so MSE can place
+    // seek-stream fragments at the correct timeline position (e.g. t=3600 not t=0)
+    '-copyts',
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
     'pipe:1',
