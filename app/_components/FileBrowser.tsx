@@ -758,9 +758,12 @@ function FileContent({ entry, filePath }: { entry: ApiFileEntry; filePath: strin
     // eslint-disable-next-line @next/next/no-img-element
     <img src={src} alt={entry.name} className="max-h-full max-w-full rounded-lg object-contain" />
   )
-  if (iconKind === 'video') return (
-    <video src={src} controls autoPlay className="max-h-full max-w-full rounded-lg" />
-  )
+  if (iconKind === 'video') {
+    const audioSrc = `/api/files/video?path=${encodeURIComponent(filePath)}`
+    return (
+      <video src={audioSrc} controls autoPlay className="max-h-full max-w-full rounded-lg" />
+    )
+  }
   if (iconKind === 'text') return (
     <pre className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs p-4 rounded-lg overflow-y-auto max-h-full w-full whitespace-pre-wrap break-words">
       {text ?? 'Loading…'}
