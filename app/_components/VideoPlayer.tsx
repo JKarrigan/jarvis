@@ -19,79 +19,91 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
     const video = videoRef.current
     if (!video || typeof window === 'undefined' || !window.MediaSource) return
 
-    const ms = new MediaSource()
-    const objectUrl = URL.createObjectURL(ms)
-    video.src = objectUrl
-
-    let sb: SourceBuffer | null = null
+    // Mutable player state — replaced entirely on each seek
     let abort: AbortController | null = null
+    let objectUrl: string | null = null
+    let activeSb: SourceBuffer | null = null
+    let activeMs: MediaSource | null = null
     let queue: Uint8Array[] = []
     let debounce: ReturnType<typeof setTimeout> | null = null
+    let skipNextSeek = false  // suppress the seeking event we fire ourselves
 
-    function flush() {
-      if (!sb || sb.updating || queue.length === 0) return
+    function flush(sb: SourceBuffer) {
+      if (sb.updating || queue.length === 0) return
       const chunk = queue.shift()!
       try {
         sb.appendBuffer(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer)
       } catch (e) {
-        // Put back on error (e.g. QuotaExceededError) so updateend retries
         queue.unshift(chunk)
         if ((e as Error).name !== 'QuotaExceededError') console.error('[VideoPlayer] appendBuffer:', e)
       }
     }
 
-    async function pipeBody(reader: ReadableStreamDefaultReader<Uint8Array>, ctrl: AbortController) {
-      while (true) {
-        const { value, done } = await reader.read()
-        if (ctrl.signal.aborted) return
-        if (done) break
-        queue.push(value)
-        flush()
-      }
-    }
+    async function startFrom(t: number) {
+      // --- tear down previous player ---
+      abort?.abort()
+      abort = null
+      queue = []
+      activeSb = null
+      activeMs = null
 
-    // sourceopen: one-time setup — fetch + read headers + create SourceBuffer + pipe body
-    ms.addEventListener('sourceopen', async () => {
+      if (objectUrl) {
+        video!.src = ''
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+
+      // --- build new MediaSource ---
+      const ms = new MediaSource()
+      activeMs = ms
+      const url = URL.createObjectURL(ms)
+      objectUrl = url
+      video!.src = url
+
+      await new Promise<void>(r => ms.addEventListener('sourceopen', () => r(), { once: true }))
+      if (activeMs !== ms) return  // another startFrom() won the race
+
       const ctrl = new AbortController()
       abort = ctrl
+
       try {
-        const res = await fetch(src, { signal: ctrl.signal })
-        if (!res.ok || !res.body) return
+        const apiUrl = t > 0 ? `${src}&t=${t.toFixed(3)}` : src
+        const res = await fetch(apiUrl, { signal: ctrl.signal })
+        if (!res.ok || !res.body || activeMs !== ms) return
 
         const mime = mimeForCodec(res.headers.get('X-Video-Codec') ?? '')
         const dur = parseFloat(res.headers.get('X-Duration-Seconds') ?? '0')
 
+        let sb: SourceBuffer
         try { sb = ms.addSourceBuffer(mime) }
         catch { console.error('[VideoPlayer] addSourceBuffer failed:', mime); res.body.cancel(); return }
+        activeSb = sb
 
-        sb.addEventListener('updateend', flush)
         if (dur > 0 && isFinite(dur)) try { ms.duration = dur } catch {}
 
-        await pipeBody(res.body.getReader(), ctrl)
-      } catch (e) {
-        if ((e as Error).name !== 'AbortError') console.error('[VideoPlayer] initial fetch:', e)
-      }
-    })
+        // Jump playhead to seek position — suppress the resulting seeking event
+        if (t > 0) { skipNextSeek = true; video!.currentTime = t }
 
-    // streamFrom: abort current stream and start a new one from time t.
-    // Does NOT remove the existing buffer — MSE supports disjoint buffered ranges,
-    // so we just add data at the new position alongside what's already buffered.
-    async function streamFrom(t: number) {
-      abort?.abort()
-      queue = []
-      const ctrl = new AbortController()
-      abort = ctrl
-      try {
-        const res = await fetch(`${src}&t=${t.toFixed(3)}`, { signal: ctrl.signal })
-        if (!res.ok || !res.body) return
-        await pipeBody(res.body.getReader(), ctrl)
+        sb.addEventListener('updateend', () => flush(sb))
+
+        const reader = res.body.getReader()
+        while (true) {
+          const { value, done } = await reader.read()
+          if (ctrl.signal.aborted) return
+          if (done) break
+          queue.push(value)
+          flush(sb)
+        }
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') console.error('[VideoPlayer] seek fetch:', e)
+        if ((e as Error).name !== 'AbortError') console.error('[VideoPlayer] fetch:', e)
       }
     }
 
     function onSeeking() {
-      if (!sb) return // SourceBuffer not ready yet; ignore early seeks
+      // Ignore seeks we triggered ourselves (video.currentTime = t in startFrom)
+      if (skipNextSeek) { skipNextSeek = false; return }
+      if (!activeSb) return
+
       if (debounce) clearTimeout(debounce)
       debounce = setTimeout(() => {
         const t = video!.currentTime
@@ -99,17 +111,19 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
         for (let i = 0; i < buf.length; i++) {
           if (t >= buf.start(i) - 0.5 && t <= buf.end(i) + 0.5) return
         }
-        streamFrom(t)
+        startFrom(t)
       }, 200)
     }
 
     video.addEventListener('seeking', onSeeking)
+    startFrom(0)
 
     return () => {
       if (debounce) clearTimeout(debounce)
       abort?.abort()
       video.removeEventListener('seeking', onSeeking)
-      URL.revokeObjectURL(objectUrl)
+      video.src = ''
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [src])
 
