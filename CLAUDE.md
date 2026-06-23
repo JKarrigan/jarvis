@@ -43,6 +43,13 @@ This is a Next.js 16 App Router app that polls a local [AirGradient](https://www
 | `NEXT_PUBLIC_DEVICE_HOST` | Client fallback device IP if no `localStorage` value |
 | `DB_PATH` | Override SQLite file location (default: `airgradient.db` in cwd) |
 | `OUTDOOR_LAT` / `OUTDOOR_LON` | Server-side fallback coordinates for `/api/outdoor-aqi` |
+| `FILES_ROOT` | Root dir for the file browser / local media transcoding (default: `/mnt/storage`) — `lib/files.ts` |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | ffmpeg/ffprobe binaries for local file streaming (default: on `PATH`) |
+| `JELLYFIN_URL` | Jellyfin server base URL, e.g. `http://NAS_IP:8096` — `lib/jellyfinServer.ts` |
+| `JELLYFIN_USER` / `JELLYFIN_PASSWORD` | Dashboard user the frontend authenticates as (token cached server-side) |
+| `JELLYFIN_API_KEY` | Alternative to user/password (admin-wide; server-side only). Optional `JELLYFIN_USER_ID` selects the user for user-scoped calls |
+
+When none of the `JELLYFIN_*` vars are set, `lib/jellyfinServer.ts` serves mock data so the media UI still renders in dev.
 
 ### Color system
 

@@ -6,7 +6,10 @@ export interface MediaItem {
   subtitle?: string
   year?: number
   badge?: string
+  /** Gradient fallback shown behind the poster (and when no image is available). */
   posterColor: string
+  /** Real poster image (Jellyfin); falls back to the gradient when absent. */
+  posterUrl?: string
   href?: string
 }
 
@@ -17,6 +20,15 @@ export function MediaCard({ item, width = 'w-36' }: { item: MediaItem; width?: s
         className={`${width} shrink-0 aspect-[2/3] rounded-lg overflow-hidden flex items-end p-2.5 relative`}
         style={{ background: item.posterColor }}
       >
+        {item.posterUrl && (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={item.posterUrl}
+            alt={item.title}
+            loading="lazy"
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
         {item.badge && (
           <span className="relative z-10 text-[9px] font-bold uppercase tracking-widest text-white/80 bg-white/15 backdrop-blur-sm px-1.5 py-0.5 rounded">

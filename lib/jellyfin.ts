@@ -4,6 +4,8 @@ export interface JellyfinPerson {
   Role?: string
   Type: 'Actor' | 'Director' | 'Writer' | 'Producer'
   PrimaryImageTag?: string
+  /** Pre-built Jellyfin image URL (set server-side; safe for the browser — image endpoints need no auth). */
+  imageUrl?: string
 }
 
 export interface JellyfinEpisode {
@@ -39,8 +41,13 @@ export interface JellyfinItem {
   BackdropImageTags?: string[]
   ImageTags?: { Primary?: string; Logo?: string }
   Type: 'Movie' | 'Series'
-  posterColor: string
-  backdropColor: string
+  /** Presentational gradient fallback (always set; used when no real image is available). */
+  posterColor?: string
+  backdropColor?: string
+  /** Pre-built Jellyfin image URLs (set server-side; safe for the browser). */
+  posterUrl?: string
+  backdropUrl?: string
+  logoUrl?: string
   Status?: 'Ended' | 'Continuing'
   SeasonCount?: number
   EpisodeCount?: number
@@ -51,7 +58,7 @@ function mins(m: number): number {
   return m * 600_000_000
 }
 
-const MOCK_JELLYFIN_ITEMS: Record<string, JellyfinItem> = {
+export const MOCK_JELLYFIN_ITEMS: Record<string, JellyfinItem> = {
   m1: {
     Id: 'm1',
     Name: 'Dune: Part Two',
@@ -664,14 +671,6 @@ export function formatRuntime(ticks: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
-export async function getJellyfinItem(id: string): Promise<JellyfinItem | null> {
-  if (process.env.JELLYFIN_URL && process.env.JELLYFIN_API_KEY) {
-    const res = await fetch(
-      `${process.env.JELLYFIN_URL}/Items/${id}?Fields=Overview,Genres,People,MediaSources,Taglines,Studios&api_key=${process.env.JELLYFIN_API_KEY}`,
-      { next: { revalidate: 300 } },
-    )
-    if (!res.ok) return null
-    return res.json()
-  }
-  return MOCK_JELLYFIN_ITEMS[id] ?? null
-}
+// NOTE: data-fetching (auth, list/detail/stream, playback reporting) lives in
+// `lib/jellyfinServer.ts` — a `server-only` module so the Jellyfin token never
+// reaches the client. This file holds only client-safe types + pure helpers.

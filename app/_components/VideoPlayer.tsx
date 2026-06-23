@@ -19,14 +19,13 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
     const video = videoRef.current
     if (!video || typeof window === 'undefined' || !window.MediaSource) return
 
-    // Mutable player state — replaced entirely on each seek
     let abort: AbortController | null = null
     let objectUrl: string | null = null
     let activeSb: SourceBuffer | null = null
     let activeMs: MediaSource | null = null
     let queue: Uint8Array[] = []
     let debounce: ReturnType<typeof setTimeout> | null = null
-    let skipNextSeek = false  // suppress the seeking event we fire ourselves
+    let skipNextSeek = false
 
     function flush(sb: SourceBuffer) {
       if (sb.updating || queue.length === 0) return
@@ -35,12 +34,13 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
         sb.appendBuffer(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer)
       } catch (e) {
         queue.unshift(chunk)
-        if ((e as Error).name !== 'QuotaExceededError') console.error('[VideoPlayer] appendBuffer:', e)
+        console.error('[VP] appendBuffer error:', e)
       }
     }
 
     async function startFrom(t: number) {
-      // --- tear down previous player ---
+      console.log(`[VP] startFrom(${t.toFixed(2)})`)
+
       abort?.abort()
       abort = null
       queue = []
@@ -53,63 +53,106 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
         objectUrl = null
       }
 
-      // --- build new MediaSource ---
       const ms = new MediaSource()
       activeMs = ms
       const url = URL.createObjectURL(ms)
       objectUrl = url
       video!.src = url
 
+      ms.addEventListener('sourceclose', () => console.log('[VP] MediaSource closed unexpectedly'))
+      ms.addEventListener('sourceerror', () => console.error('[VP] MediaSource error'))
+
+      console.log('[VP] waiting for sourceopen...')
       await new Promise<void>(r => ms.addEventListener('sourceopen', () => r(), { once: true }))
-      if (activeMs !== ms) return  // another startFrom() won the race
+      if (activeMs !== ms) { console.log('[VP] superseded before sourceopen completed'); return }
+      console.log('[VP] sourceopen fired, ms.readyState:', ms.readyState)
 
       const ctrl = new AbortController()
       abort = ctrl
 
       try {
         const apiUrl = t > 0 ? `${src}&t=${t.toFixed(3)}` : src
+        console.log('[VP] fetching:', apiUrl)
         const res = await fetch(apiUrl, { signal: ctrl.signal })
-        if (!res.ok || !res.body || activeMs !== ms) return
+        console.log('[VP] fetch response:', res.status, 'ok:', res.ok)
+        console.log('[VP] X-Video-Codec:', res.headers.get('X-Video-Codec'))
+        console.log('[VP] X-Duration-Seconds:', res.headers.get('X-Duration-Seconds'))
+
+        if (!res.ok || !res.body || activeMs !== ms) {
+          console.log('[VP] aborting: res.ok =', res.ok, 'activeMs match =', activeMs === ms)
+          return
+        }
 
         const mime = mimeForCodec(res.headers.get('X-Video-Codec') ?? '')
         const dur = parseFloat(res.headers.get('X-Duration-Seconds') ?? '0')
+        console.log('[VP] mime:', mime, '  duration:', dur)
+        console.log('[VP] MediaSource.isTypeSupported:', MediaSource.isTypeSupported(mime))
 
         let sb: SourceBuffer
-        try { sb = ms.addSourceBuffer(mime) }
-        catch { console.error('[VideoPlayer] addSourceBuffer failed:', mime); res.body.cancel(); return }
+        try {
+          sb = ms.addSourceBuffer(mime)
+          console.log('[VP] SourceBuffer created, mode:', sb.mode)
+        } catch (err) {
+          console.error('[VP] addSourceBuffer failed:', err)
+          res.body.cancel()
+          return
+        }
         activeSb = sb
 
-        if (dur > 0 && isFinite(dur)) try { ms.duration = dur } catch {}
+        sb.addEventListener('error', (e) => console.error('[VP] SourceBuffer error event:', e))
+        sb.addEventListener('abort', () => console.warn('[VP] SourceBuffer abort event'))
 
-        // Jump playhead to seek position — suppress the resulting seeking event
-        if (t > 0) { skipNextSeek = true; video!.currentTime = t }
+        if (dur > 0 && isFinite(dur)) {
+          try { ms.duration = dur; console.log('[VP] ms.duration set to', dur) }
+          catch (e) { console.error('[VP] failed to set ms.duration:', e) }
+        }
+
+        if (t > 0) {
+          console.log('[VP] setting video.currentTime =', t)
+          skipNextSeek = true
+          video!.currentTime = t
+          console.log('[VP] video.currentTime is now:', video!.currentTime, 'seeking:', video!.seeking)
+        }
 
         sb.addEventListener('updateend', () => flush(sb))
 
+        let chunkCount = 0
         const reader = res.body.getReader()
         while (true) {
           const { value, done } = await reader.read()
-          if (ctrl.signal.aborted) return
-          if (done) break
+          if (ctrl.signal.aborted) { console.log('[VP] stream aborted after', chunkCount, 'chunks'); return }
+          if (done) { console.log('[VP] stream done after', chunkCount, 'chunks'); break }
+          chunkCount++
+          if (chunkCount <= 3) console.log(`[VP] chunk #${chunkCount} size:`, value.byteLength)
           queue.push(value)
           flush(sb)
         }
+        console.log('[VP] buffered ranges:', Array.from({ length: video!.buffered.length }, (_, i) =>
+          `[${video!.buffered.start(i).toFixed(1)}, ${video!.buffered.end(i).toFixed(1)}]`).join(', '))
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') console.error('[VideoPlayer] fetch:', e)
+        if ((e as Error).name !== 'AbortError') console.error('[VP] fetch error:', e)
       }
     }
 
+    video.addEventListener('seeking', () => console.log('[VP] video seeking event, currentTime:', video.currentTime, 'buffered ranges:', Array.from({ length: video.buffered.length }, (_, i) => `[${video.buffered.start(i).toFixed(1)}, ${video.buffered.end(i).toFixed(1)}]`).join(', ')))
+    video.addEventListener('seeked', () => console.log('[VP] video seeked event, currentTime:', video.currentTime))
+    video.addEventListener('error', () => console.error('[VP] video error:', video.error))
+    video.addEventListener('waiting', () => console.log('[VP] video waiting, currentTime:', video.currentTime))
+
     function onSeeking() {
-      // Ignore seeks we triggered ourselves (video.currentTime = t in startFrom)
-      if (skipNextSeek) { skipNextSeek = false; return }
-      if (!activeSb) return
+      if (skipNextSeek) { console.log('[VP] onSeeking: skipping (internal seek)'); skipNextSeek = false; return }
+      if (!activeSb) { console.log('[VP] onSeeking: no activeSb yet, ignoring'); return }
 
       if (debounce) clearTimeout(debounce)
       debounce = setTimeout(() => {
         const t = video!.currentTime
         const buf = video!.buffered
+        console.log('[VP] debounced seek check: t =', t.toFixed(2), 'buffered:', Array.from({ length: buf.length }, (_, i) => `[${buf.start(i).toFixed(1)}, ${buf.end(i).toFixed(1)}]`).join(', '))
         for (let i = 0; i < buf.length; i++) {
-          if (t >= buf.start(i) - 0.5 && t <= buf.end(i) + 0.5) return
+          if (t >= buf.start(i) - 0.5 && t <= buf.end(i) + 0.5) {
+            console.log('[VP] seek target already buffered, no action needed')
+            return
+          }
         }
         startFrom(t)
       }, 200)

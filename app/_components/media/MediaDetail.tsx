@@ -3,8 +3,9 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Link from 'next/link'
-import { MediaRow } from './MediaCard'
+import { MediaRow, type MediaItem } from './MediaCard'
 import { MOCK_MOVIES, MOCK_TV } from './mockData'
+import JellyfinPlayer from './JellyfinPlayer'
 import type { JellyfinItem, JellyfinEpisode } from '@/lib/jellyfin'
 import { formatRuntime } from '@/lib/jellyfin'
 
@@ -35,15 +36,29 @@ function StarRating({ rating }: { rating: number }) {
   )
 }
 
-function EpisodeRow({ ep, index }: { ep: JellyfinEpisode; index: number }) {
+function EpisodeRow({
+  ep,
+  index,
+  onPlay,
+}: {
+  ep: JellyfinEpisode
+  index: number
+  onPlay: () => void
+}) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.04, duration: 0.2 }}
-      className="flex gap-5 py-4 border-b border-zinc-800 last:border-0"
+      onClick={onPlay}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') onPlay()
+      }}
+      className="flex gap-5 py-4 border-b border-zinc-800 last:border-0 cursor-pointer group -mx-3 px-3 rounded-lg hover:bg-zinc-800/40 transition-colors"
     >
-      <span className="text-zinc-600 text-base font-mono w-7 shrink-0 pt-0.5 text-right">
+      <span className="text-zinc-600 text-base font-mono w-7 shrink-0 pt-0.5 text-right group-hover:text-zinc-300 transition-colors">
         {ep.IndexNumber}
       </span>
       <div className="min-w-0 flex-1">
@@ -64,22 +79,32 @@ function EpisodeRow({ ep, index }: { ep: JellyfinEpisode; index: number }) {
 export default function MediaDetail({
   item,
   backHref,
+  moreLikeThis,
 }: {
   item: JellyfinItem
   backHref: string
+  moreLikeThis?: MediaItem[]
 }) {
   const [overviewExpanded, setOverviewExpanded] = useState(false)
   const [selectedSeasonId, setSelectedSeasonId] = useState<string>(
     item.Seasons?.[0]?.Id ?? '',
   )
+  const [playingId, setPlayingId] = useState<string | null>(null)
 
   const selectedSeason = item.Seasons?.find(s => s.Id === selectedSeasonId)
   const actors = item.People.filter(p => p.Type === 'Actor')
   const directors = item.People.filter(p => p.Type === 'Director')
 
-  const moreItems = item.Type === 'Movie'
+  const fallbackMore = item.Type === 'Movie'
     ? MOCK_MOVIES.filter(m => m.id !== item.Id).slice(0, 8)
     : MOCK_TV.filter(t => t.id !== item.Id).slice(0, 8)
+  const moreItems = moreLikeThis && moreLikeThis.length > 0 ? moreLikeThis : fallbackMore
+
+  // What the hero "Play" button starts: a movie plays itself; a series plays the
+  // first episode of the selected (or first) season.
+  const heroPlayId = item.Type === 'Movie'
+    ? item.Id
+    : selectedSeason?.Episodes?.[0]?.Id ?? item.Seasons?.[0]?.Episodes?.[0]?.Id ?? null
 
   const runtime = item.RunTimeTicks ? formatRuntime(item.RunTimeTicks) : null
 
@@ -92,6 +117,15 @@ export default function MediaDetail({
           style={{ background: item.backdropColor }}
           aria-hidden="true"
         />
+        {item.backdropUrl && (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={item.backdropUrl}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        )}
         {/* bottom fade */}
         <div className="absolute inset-0 bg-gradient-to-t from-[#09090b] via-[#09090b]/40 to-transparent" />
         {/* top fade so sidebar area blends */}
@@ -125,9 +159,18 @@ export default function MediaDetail({
             {item.Taglines?.[0] && (
               <p className="text-base text-zinc-400 italic mb-2">{item.Taglines[0]}</p>
             )}
-            <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-zinc-100 leading-tight max-w-3xl">
-              {item.Name}
-            </h1>
+            {item.logoUrl ? (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={item.logoUrl}
+                alt={item.Name}
+                className="max-h-24 sm:max-h-28 max-w-[70vw] object-contain object-left"
+              />
+            ) : (
+              <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-zinc-100 leading-tight max-w-3xl">
+                {item.Name}
+              </h1>
+            )}
 
             {/* Meta row */}
             <div className="flex flex-wrap items-center gap-2.5 mt-4 text-base text-zinc-400">
@@ -158,7 +201,11 @@ export default function MediaDetail({
               transition={{ delay: 0.15, duration: 0.3 }}
               className="flex items-center gap-3 mt-6"
             >
-              <button className="inline-flex items-center gap-2.5 bg-zinc-100 hover:bg-white text-zinc-900 font-semibold text-base px-7 py-3 rounded-lg transition-colors">
+              <button
+                onClick={() => heroPlayId && setPlayingId(heroPlayId)}
+                disabled={!heroPlayId}
+                className="inline-flex items-center gap-2.5 bg-zinc-100 hover:bg-white text-zinc-900 font-semibold text-base px-7 py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 <svg viewBox="0 0 16 16" className="w-5 h-5 fill-current">
                   <path d="M3 2.5a.5.5 0 01.768-.422l10 5.5a.5.5 0 010 .844l-10 5.5A.5.5 0 013 13.5v-11z" />
                 </svg>
@@ -244,10 +291,20 @@ export default function MediaDetail({
                   className="flex flex-col items-center gap-2.5 shrink-0 w-28"
                 >
                   <div
-                    className="w-20 h-20 rounded-full flex items-center justify-center text-xl font-bold text-white/70 ring-2 ring-white/10"
+                    className="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center text-xl font-bold text-white/70 ring-2 ring-white/10"
                     style={{ background: personColor(person.Id) }}
                   >
-                    {person.Name.split(' ').map(n => n[0]).slice(0, 2).join('')}
+                    {person.imageUrl ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={person.imageUrl}
+                        alt={person.Name}
+                        loading="lazy"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      person.Name.split(' ').map(n => n[0]).slice(0, 2).join('')
+                    )}
                   </div>
                   <div className="text-center">
                     <p className="text-sm text-zinc-200 font-medium leading-tight line-clamp-2">
@@ -303,7 +360,7 @@ export default function MediaDetail({
                   transition={{ duration: 0.2 }}
                 >
                   {selectedSeason.Episodes?.map((ep, i) => (
-                    <EpisodeRow key={ep.Id} ep={ep} index={i} />
+                    <EpisodeRow key={ep.Id} ep={ep} index={i} onPlay={() => setPlayingId(ep.Id)} />
                   ))}
                 </motion.div>
               )}
@@ -336,6 +393,17 @@ export default function MediaDetail({
           </section>
         )}
       </div>
+
+      <AnimatePresence>
+        {playingId && (
+          <JellyfinPlayer
+            key={playingId}
+            itemId={playingId}
+            title={item.Name}
+            onClose={() => setPlayingId(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
