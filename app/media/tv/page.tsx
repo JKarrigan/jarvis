@@ -1,16 +1,9 @@
-import MediaLibrary from '@/app/_components/media/MediaLibrary'
-import { getSeries } from '@/lib/jellyfinServer'
+import { getCatalog } from '@/lib/jellyfinServer'
+import { LibraryView } from '@/app/_components/media/library'
 
 export const dynamic = 'force-dynamic'
 
 export default async function TVPage() {
-  const shows = await getSeries({ limit: 400 })
-  return (
-    <MediaLibrary
-      title="TV Shows"
-      countNoun="shows"
-      items={shows}
-      searchPlaceholder="Search shows…"
-    />
-  )
+  const catalog = await getCatalog()
+  return <LibraryView catalog={catalog} title="TV Shows" base="tv" />
 }

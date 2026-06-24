@@ -14,6 +14,8 @@ export interface JellyfinEpisode {
   IndexNumber: number
   Overview?: string
   RunTimeTicks?: number
+  /** Pre-built episode thumbnail URL (set server-side). */
+  imageUrl?: string
 }
 
 export interface JellyfinSeason {
@@ -23,6 +25,8 @@ export interface JellyfinSeason {
   EpisodeCount: number
   ProductionYear?: number
   Episodes?: JellyfinEpisode[]
+  /** Pre-built season poster URL (set server-side). */
+  posterUrl?: string
 }
 
 export interface JellyfinItem {

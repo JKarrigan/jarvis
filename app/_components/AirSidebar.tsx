@@ -36,26 +36,14 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       {link('/logs', 'Logs')}
       {link('/settings', 'Settings')}
       {link('/system', 'System')}
-      <div className="mt-5 mb-1 px-3 text-xs text-zinc-700 uppercase tracking-widest">Media</div>
-      {link('/media', 'Home')}
-      {link('/media/movies', 'Movies')}
-      {link('/media/tv', 'TV Shows')}
-      {link('/media/music', 'Music')}
-      {link('/media/photos', 'Photos')}
-      {link('/media/books', 'Books')}
       <div className="mt-5 mb-1 px-3 text-xs text-zinc-700 uppercase tracking-widest">Metrics</div>
       {METRICS.map(m => link(`/measurement/${m.slug}`, m.label))}
     </>
   )
 }
 
-export function Sidebar() {
+export function AirSidebar() {
   const [isOpen, setIsOpen] = useState(false)
-  const pathname = usePathname()
-  const isMedia = pathname.startsWith('/media')
-
-  // Close drawer on navigation
-  useEffect(() => { setIsOpen(false) }, [pathname])
 
   // Prevent body scroll when drawer is open
   useEffect(() => {
@@ -65,9 +53,8 @@ export function Sidebar() {
 
   return (
     <>
-      {/* ── Mobile top bar ── */}
-      <header className={`md:hidden sticky top-0 z-30 h-14 shrink-0 flex items-center justify-between px-4 border-b bg-zinc-950 transition-colors duration-300 ${isMedia ? 'border-transparent' : 'border-zinc-800'}`}>
-        <span className="text-base font-semibold text-zinc-100 tracking-tight">Home</span>
+      {/* ── Mobile top bar (switcher floats over the left; hamburger on the right) ── */}
+      <header className="md:hidden sticky top-0 z-30 h-14 shrink-0 flex items-center justify-end px-4 border-b border-zinc-800 bg-zinc-950">
         <button
           type="button"
           onClick={() => setIsOpen(true)}
@@ -82,12 +69,9 @@ export function Sidebar() {
         </button>
       </header>
 
-      {/* ── Desktop sidebar ── */}
-      <aside className={`hidden md:flex sticky top-0 h-screen w-44 shrink-0 border-r flex-col transition-colors duration-300 ${isMedia ? 'border-transparent bg-transparent' : 'border-zinc-800 bg-zinc-950'}`}>
-        <div className={`h-14 flex items-center px-6 border-b transition-colors duration-300 ${isMedia ? 'border-transparent' : 'border-zinc-800'}`}>
-          <span className="text-base font-semibold text-zinc-100 tracking-tight">Home</span>
-        </div>
-        <nav className="flex flex-col gap-0.5 px-2 pt-2 flex-1 pb-4">
+      {/* ── Desktop sidebar (nav padded down to clear the floating AppSwitcher) ── */}
+      <aside className="hidden md:flex sticky top-0 h-screen w-44 shrink-0 border-r border-zinc-800 bg-zinc-950 flex-col">
+        <nav className="flex flex-col gap-0.5 px-2 pt-16 flex-1 pb-4">
           <NavLinks />
         </nav>
       </aside>
@@ -112,7 +96,7 @@ export function Sidebar() {
               transition={{ type: 'spring', bounce: 0.15, duration: 0.5 }}
             >
               <div className="h-14 flex items-center justify-between px-5 border-b border-zinc-800 shrink-0">
-                <span className="text-base font-semibold text-zinc-100 tracking-tight">Home</span>
+                <span className="text-base font-semibold text-zinc-100 tracking-tight">Air Gradient</span>
                 <button
                   type="button"
                   onClick={() => setIsOpen(false)}
