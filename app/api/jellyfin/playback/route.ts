@@ -7,7 +7,15 @@ export async function GET(request: Request) {
   const id = params.get('id')
   if (!id) return Response.json({ error: 'Missing id' }, { status: 400 })
   const forceHls = params.get('hls') === '1'
-  const source = await getPlayback(id, { forceHls })
+  const mediaSourceId = params.get('mediaSourceId') ?? undefined
+  const audio = params.get('audio')
+  const subtitle = params.get('subtitle')
+  const source = await getPlayback(id, {
+    forceHls,
+    mediaSourceId,
+    audioStreamIndex: audio != null && audio !== '' ? Number(audio) : undefined,
+    subtitleStreamIndex: subtitle != null && subtitle !== '' ? Number(subtitle) : undefined,
+  })
   if (!source) return Response.json({ error: 'No playable source' }, { status: 404 })
   return Response.json(source)
 }

@@ -6,16 +6,18 @@ import { useRouter, notFound } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
 import JellyfinPlayer from './JellyfinPlayer'
 import { useMedia } from './MediaProvider'
-import type { ReelDetail } from './types'
+import { usePlaybackSelection, PlaybackPicker } from './PlaybackPicker'
+import type { ReelDetail, MediaInfo } from './types'
 import { backdropFallback } from './artwork'
 import { Poster } from './ReelCards'
 import { PlayIcon, CheckIcon, ChevronLeftIcon } from './icons'
 
 export function EpisodeDetail({
-  detail, seasonId, episodeId,
-}: { detail: ReelDetail; seasonId: string; episodeId: string }) {
+  detail, seasonId, episodeId, media,
+}: { detail: ReelDetail; seasonId: string; episodeId: string; media: MediaInfo | null }) {
   const router = useRouter()
   const { isEpWatched, toggleEpWatched } = useMedia()
+  const selection = usePlaybackSelection(media)
 
   const season = detail.seasonList?.find(s => s.id === seasonId)
   const episode = season?.episodes.find(e => e.id === episodeId)
@@ -82,6 +84,9 @@ export function EpisodeDetail({
           </button>
         </div>
 
+        {/* Version / Audio / Subtitle selection (drives the player) */}
+        <PlaybackPicker selection={selection} />
+
         {episode.overview && (
           <p className="mt-6 max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{episode.overview}</p>
         )}
@@ -108,7 +113,18 @@ export function EpisodeDetail({
       )}
 
       <AnimatePresence>
-        {playing && <JellyfinPlayer itemId={episode.id} title={playTitle} onClose={() => setPlaying(false)} />}
+        {playing && (
+          <JellyfinPlayer
+            itemId={episode.id}
+            title={playTitle}
+            splashUrl={episode.imageUrl ?? detail.backdropUrl}
+            versions={selection.versions}
+            initialSourceId={selection.versionId || undefined}
+            initialAudioIndex={selection.audioIndex}
+            initialSubtitleIndex={selection.subtitleIndex}
+            onClose={() => setPlaying(false)}
+          />
+        )}
       </AnimatePresence>
     </div>
   )

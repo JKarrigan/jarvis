@@ -1,6 +1,7 @@
 import 'server-only'
+import { revalidateTag } from 'next/cache'
 import type { MediaItem } from '@/app/_components/media/MediaCard'
-import type { ReelTitle, ContinueItem, FileInfo, ReelDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode } from '@/app/_components/media/types'
+import type { ReelTitle, ContinueItem, ReelDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion } from '@/app/_components/media/types'
 import { hueFromId, poster as posterArt, backdrop as backdropArt } from '@/app/_components/media/artwork'
 import {
   MOCK_JELLYFIN_ITEMS,
@@ -122,12 +123,16 @@ function qs(params: Params): string {
   return s ? `?${s}` : ''
 }
 
-async function jfGet<T>(path: string, params: Params = {}, revalidate = 300): Promise<T> {
+async function jfGet<T>(
+  path: string,
+  params: Params = {},
+  opts: { revalidate?: number; tags?: string[] } = {},
+): Promise<T> {
   const url = baseUrl()!
   const run = (token: string) =>
     fetch(`${url}${path}${qs(params)}`, {
       headers: { Authorization: authHeader(token), Accept: 'application/json' },
-      next: { revalidate },
+      next: { revalidate: opts.revalidate ?? 300, tags: opts.tags },
     })
   let session = await getSession()
   let res = await run(session.accessToken)
@@ -151,6 +156,16 @@ async function jfPost(path: string, body?: unknown, params: Params = {}): Promis
       Accept: 'application/json',
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    cache: 'no-store',
+  })
+}
+
+async function jfDelete(path: string, params: Params = {}): Promise<Response> {
+  const url = baseUrl()!
+  const session = await getSession()
+  return fetch(`${url}${path}${qs(params)}`, {
+    method: 'DELETE',
+    headers: { Authorization: authHeader(session.accessToken), Accept: 'application/json' },
     cache: 'no-store',
   })
 }
@@ -198,15 +213,25 @@ function backdropGradient(id: string): string {
 
 interface RawStream {
   Type: string
+  Index?: number
   Codec?: string
   Height?: number
   Width?: number
   IsDefault?: boolean
+  IsForced?: boolean
+  IsExternal?: boolean
+  /** True for text subtitles (SRT/ASS/VTT) that can be delivered as a sidecar <track>. */
+  IsTextSubtitleStream?: boolean
   Channels?: number
+  ChannelLayout?: string
+  Language?: string
+  Title?: string
   DisplayTitle?: string
 }
 interface RawMediaSource {
   Id: string
+  /** Version label when a title has multiple sources (e.g. "Director's Cut", "1080p"). */
+  Name?: string
   Container?: string
   Path?: string
   Size?: number
@@ -215,6 +240,8 @@ interface RawMediaSource {
   /** Jellyfin's pre-built HLS transcode/remux URL when the source isn't browser-compatible. */
   TranscodingUrl?: string
   RunTimeTicks?: number
+  DefaultAudioStreamIndex?: number
+  DefaultSubtitleStreamIndex?: number
   MediaStreams?: RawStream[]
 }
 interface RawUserData {
@@ -308,9 +335,19 @@ function resumeToMediaItem(it: RawItem): MediaItem {
 
 function daysAgo(iso?: string): number | undefined {
   if (!iso) return undefined
-  const then = Date.parse(iso)
-  if (Number.isNaN(then)) return undefined
-  return Math.max(0, Math.floor((Date.now() - then) / 86_400_000))
+  const then = new Date(iso)
+  if (Number.isNaN(then.getTime())) return undefined
+  // Calendar-day difference in the server's local time, so something added late
+  // yesterday reads as 1 ("Yesterday") rather than 0 just because <24h has elapsed.
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  return Math.max(0, Math.round((dayStart(new Date()) - dayStart(then)) / 86_400_000))
+}
+
+/** Precise add time (epoch ms) for exact recency ordering; `added` is the rounded day count. */
+function addedAtMs(iso?: string): number | undefined {
+  if (!iso) return undefined
+  const t = Date.parse(iso)
+  return Number.isNaN(t) ? undefined : t
 }
 
 function progressOf(it: RawItem): number {
@@ -337,6 +374,7 @@ function toReelTitle(it: RawItem, kind: 'movies' | 'tv'): ReelTitle {
     cert: it.OfficialRating,
     hue,
     added: daysAgo(it.DateCreated),
+    addedAt: addedAtMs(it.DateCreated),
     progress: progressOf(it),
     watched: Boolean(it.UserData?.Played),
     favorite: Boolean(it.UserData?.IsFavorite),
@@ -371,6 +409,7 @@ function mockToReel(item: JellyfinItem): ReelTitle {
     cert: item.OfficialRating,
     hue,
     added: ((hue % 30) + 1),
+    addedAt: Date.now() - ((hue % 30) + 1) * 86_400_000,
     progress: 0,
     watched: false,
     favorite: false,
@@ -483,11 +522,89 @@ function fmtBytes(n?: number): string | undefined {
   return `${Math.round(n / 1_048_576)} MB`
 }
 
-/** Technical file details for the detail page (resolution, codecs, size, path). */
-export async function getFileInfo(id: string): Promise<FileInfo | null> {
-  if (!isJellyfinConfigured()) {
-    return { resolution: '4K HDR · 3840×2160', videoCodec: 'HEVC 10-bit', audio: 'TrueHD Atmos 7.1', container: 'MKV', size: '48.2 GB', path: `/media/${id}` }
+// --- Track listing (versions / audio / subtitles) --------------------------
+
+const TEXT_SUB_CODECS = new Set(['subrip', 'srt', 'ass', 'ssa', 'mov_text', 'webvtt', 'vtt', 'text', 'microdvd'])
+
+/** Text subtitles can be delivered as a sidecar VTT <track>; image subs must burn in. */
+function isTextSubtitle(s: RawStream): boolean {
+  if (typeof s.IsTextSubtitleStream === 'boolean') return s.IsTextSubtitleStream
+  return TEXT_SUB_CODECS.has((s.Codec ?? '').toLowerCase())
+}
+
+function audioLabel(s: RawStream): string {
+  if (s.DisplayTitle) return s.DisplayTitle
+  const parts: string[] = []
+  if (s.Language) parts.push(s.Language.toUpperCase())
+  if (s.Codec) parts.push(s.Codec.toUpperCase())
+  if (s.ChannelLayout) parts.push(s.ChannelLayout)
+  else if (s.Channels) parts.push(`${s.Channels}ch`)
+  return parts.join(' · ') || 'Audio'
+}
+
+function subtitleLabel(s: RawStream): string {
+  if (s.DisplayTitle) return s.DisplayTitle
+  const parts: string[] = []
+  if (s.Language) parts.push(s.Language.toUpperCase())
+  if (s.Codec) parts.push(s.Codec.toUpperCase())
+  let label = parts.join(' · ') || 'Subtitle'
+  if (s.IsForced) label += ' (Forced)'
+  if (s.IsExternal) label += ' (External)'
+  return label
+}
+
+/** Default audio stream index for a source (used to decide if a transcode is needed). */
+function defaultAudioIndex(ms: RawMediaSource): number | undefined {
+  if (ms.DefaultAudioStreamIndex != null) return ms.DefaultAudioStreamIndex
+  const streams = ms.MediaStreams ?? []
+  const def = streams.find(s => s.Type === 'Audio' && s.IsDefault) ?? streams.find(s => s.Type === 'Audio')
+  return def?.Index
+}
+
+function versionFromSource(ms: RawMediaSource, idx: number): MediaVersion {
+  const streams = ms.MediaStreams ?? []
+  const v = streams.find(s => s.Type === 'Video')
+  const audio = streams
+    .filter(s => s.Type === 'Audio')
+    .map(s => ({
+      index: s.Index ?? 0,
+      label: audioLabel(s),
+      language: s.Language,
+      codec: s.Codec,
+      channels: s.ChannelLayout ?? (s.Channels ? `${s.Channels}ch` : undefined),
+      isDefault: Boolean(s.IsDefault),
+    }))
+  const subtitles = streams
+    .filter(s => s.Type === 'Subtitle')
+    .map(s => ({
+      index: s.Index ?? 0,
+      label: subtitleLabel(s),
+      language: s.Language,
+      codec: s.Codec,
+      isDefault: Boolean(s.IsDefault),
+      isForced: Boolean(s.IsForced),
+      isExternal: Boolean(s.IsExternal),
+      isText: isTextSubtitle(s),
+    }))
+  const resolution = v?.Width && v?.Height ? `${v.Width}×${v.Height}` : undefined
+  return {
+    id: ms.Id,
+    name: ms.Name || ms.Container?.toUpperCase() || resolution || `Version ${idx + 1}`,
+    resolution,
+    videoCodec: v?.Codec ? v.Codec.toUpperCase() : undefined,
+    container: ms.Container?.toUpperCase(),
+    size: fmtBytes(ms.Size),
+    path: ms.Path,
+    audio,
+    subtitles,
+    defaultAudioIndex: defaultAudioIndex(ms),
+    defaultSubtitleIndex: ms.DefaultSubtitleStreamIndex ?? subtitles.find(s => s.isDefault)?.index,
   }
+}
+
+/** Versions + audio/subtitle tracks for the detail page (and player) of a playable item. */
+export async function getMediaInfo(id: string): Promise<MediaInfo | null> {
+  if (!isJellyfinConfigured()) return mockMediaInfo(id)
   try {
     const { userId } = await getSession()
     // PlaybackInfo reliably returns MediaSources with full MediaStreams (the GET
@@ -495,28 +612,84 @@ export async function getFileInfo(id: string): Promise<FileInfo | null> {
     const res = await jfPost(`/Items/${id}/PlaybackInfo`, { UserId: userId }, { userId })
     if (!res.ok) return null
     const info = (await res.json()) as { MediaSources?: RawMediaSource[] }
-    const ms = info.MediaSources?.[0]
-    if (!ms) return null
-    const streams = ms.MediaStreams ?? []
-    const v = streams.find(s => s.Type === 'Video')
-    const a = streams.find(s => s.Type === 'Audio' && s.IsDefault) ?? streams.find(s => s.Type === 'Audio')
-    const resolution = v?.Width && v?.Height ? `${v.Width}×${v.Height}` : undefined
-    return {
-      resolution,
-      videoCodec: v?.Codec ? v.Codec.toUpperCase() : undefined,
-      audio: a?.DisplayTitle ?? (a?.Codec ? a.Codec.toUpperCase() : undefined),
-      container: ms.Container?.toUpperCase(),
-      size: fmtBytes(ms.Size),
-      path: ms.Path,
-    }
+    const sources = info.MediaSources ?? []
+    if (sources.length === 0) return null
+    return { versions: sources.map((ms, i) => versionFromSource(ms, i)) }
   } catch {
     return null
   }
 }
 
-/** Franchise collections from Jellyfin BoxSets (with their member title ids). */
+/** Dev/no-server fallback: a multi-version title with English/Japanese audio + subtitles. */
+function mockMediaInfo(id: string): MediaInfo {
+  return {
+    versions: [
+      {
+        id: `${id}-v1`,
+        name: '4K HDR Remux',
+        resolution: '3840×2160',
+        videoCodec: 'HEVC',
+        container: 'MKV',
+        size: '48.2 GB',
+        path: `/media/${id}/2160p.mkv`,
+        audio: [
+          { index: 1, label: 'English · TrueHD Atmos · 7.1', language: 'eng', codec: 'truehd', channels: '7.1', isDefault: true },
+          { index: 2, label: 'Japanese · DTS-HD MA · 5.1', language: 'jpn', codec: 'dts', channels: '5.1', isDefault: false },
+          { index: 3, label: 'English · AC3 · 2.0 (Commentary)', language: 'eng', codec: 'ac3', channels: '2.0', isDefault: false },
+        ],
+        subtitles: [
+          { index: 4, label: 'English', language: 'eng', codec: 'subrip', isDefault: true, isForced: false, isExternal: false, isText: true },
+          { index: 5, label: 'English (Forced)', language: 'eng', codec: 'subrip', isDefault: false, isForced: true, isExternal: false, isText: true },
+          { index: 6, label: 'Spanish', language: 'spa', codec: 'subrip', isDefault: false, isForced: false, isExternal: true, isText: true },
+        ],
+        defaultAudioIndex: 1,
+      },
+      {
+        id: `${id}-v2`,
+        name: '1080p',
+        resolution: '1920×1080',
+        videoCodec: 'H264',
+        container: 'MP4',
+        size: '8.6 GB',
+        path: `/media/${id}/1080p.mp4`,
+        audio: [
+          { index: 1, label: 'English · AAC · 5.1', language: 'eng', codec: 'aac', channels: '5.1', isDefault: true },
+          { index: 2, label: 'Japanese · AAC · 2.0', language: 'jpn', codec: 'aac', channels: '2.0', isDefault: false },
+        ],
+        subtitles: [
+          { index: 3, label: 'English', language: 'eng', codec: 'subrip', isDefault: false, isForced: false, isExternal: false, isText: true },
+        ],
+        defaultAudioIndex: 1,
+      },
+    ],
+  }
+}
+
+/**
+ * Fetch a text subtitle as WebVTT, proxied through this server so the player can use it
+ * as a same-origin <track> (avoids cross-origin track CORS + keeps the Jellyfin token server-side).
+ */
+export async function fetchSubtitleVtt(itemId: string, mediaSourceId: string, index: number): Promise<string | null> {
+  if (!isJellyfinConfigured()) return null
+  const url = baseUrl()!
+  const { accessToken } = await getSession()
+  try {
+    const res = await fetch(
+      `${url}/Videos/${itemId}/${mediaSourceId}/Subtitles/${index}/0/Subtitles.vtt${qs({ api_key: accessToken })}`,
+    )
+    if (!res.ok) return null
+    return res.text()
+  } catch {
+    return null
+  }
+}
+
+/** Cache tag for collection listings; busted by the write helpers below after a mutation. */
+const COLLECTIONS_TAG = 'jf-collections'
+
+/** All Jellyfin collections (BoxSets) with their member title ids — franchises + user-made. */
 export async function getBoxSets(): Promise<CollectionSummary[]> {
-  if (!isJellyfinConfigured()) return mockCollections()
+  if (!isJellyfinConfigured()) return mockStore().slice()
   try {
     const { userId } = await getSession()
     const data = await jfGet<{ Items: RawItem[] }>('/Items', {
@@ -525,7 +698,7 @@ export async function getBoxSets(): Promise<CollectionSummary[]> {
       Recursive: true,
       SortBy: 'SortName',
       Fields: 'Overview',
-    })
+    }, { tags: [COLLECTIONS_TAG] })
     return Promise.all(
       data.Items.map(async bs => {
         const members = await jfGet<{ Items: RawItem[] }>('/Items', {
@@ -533,13 +706,36 @@ export async function getBoxSets(): Promise<CollectionSummary[]> {
           ParentId: bs.Id,
           SortBy: 'PremiereDate,ProductionYear',
           Fields: 'ProductionYear',
-        }).catch(() => ({ Items: [] as RawItem[] }))
+        }, { tags: [COLLECTIONS_TAG] }).catch(() => ({ Items: [] as RawItem[] }))
+        const allArt = members.Items
+          .map(m => m.BackdropImageTags?.[0]
+            ? imageUrl(m.Id, 'Backdrop', { tag: m.BackdropImageTags[0], maxWidth: 1280, quality: 90 })
+            : m.ImageTags?.Primary
+              ? imageUrl(m.Id, 'Primary', { tag: m.ImageTags.Primary, maxWidth: 780, quality: 90 })
+              : undefined)
+          .filter((u): u is string => Boolean(u))
+        // Random sample (Fisher–Yates) so the hero montage varies and isn't just the earliest titles.
+        for (let i = allArt.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[allArt[i], allArt[j]] = [allArt[j], allArt[i]]
+        }
+        const montageUrls = allArt.slice(0, 6)
         return {
           id: bs.Id,
           name: bs.Name,
           hue: hueFromId(bs.Id),
           tagline: bs.Overview,
           itemIds: members.Items.map(m => m.Id),
+          montageUrls,
+          backdropUrl: bs.BackdropImageTags?.[0]
+            ? imageUrl(bs.Id, 'Backdrop', { tag: bs.BackdropImageTags[0], maxWidth: 1920, quality: 80 })
+            : undefined,
+          posterUrl: bs.ImageTags?.Primary
+            ? imageUrl(bs.Id, 'Primary', { tag: bs.ImageTags.Primary, maxWidth: 600 })
+            : undefined,
+          logoUrl: bs.ImageTags?.Logo
+            ? imageUrl(bs.Id, 'Logo', { tag: bs.ImageTags.Logo, maxWidth: 600 })
+            : undefined,
         } satisfies CollectionSummary
       }),
     )
@@ -556,6 +752,112 @@ function mockCollections(): CollectionSummary[] {
     { id: 'mock-scifi', name: 'Science Fiction', hue: 210, tagline: 'Worlds beyond ours.', itemIds: byGenre('Science Fiction') },
     { id: 'mock-drama', name: 'Drama', hue: 30, tagline: 'Stories that linger.', itemIds: byGenre('Drama') },
   ].filter(c => c.itemIds.length > 0)
+}
+
+// In-memory collection store for dev (no Jellyfin configured) so create/add/remove/delete
+// behave during a session. Resets on server restart. Survives hot reloads via globalThis.
+const mockG = globalThis as unknown as { __mockCollections?: CollectionSummary[] }
+function mockStore(): CollectionSummary[] {
+  if (!mockG.__mockCollections) mockG.__mockCollections = mockCollections()
+  return mockG.__mockCollections
+}
+
+// ---------------------------------------------------------------------------
+// Collection writes (Jellyfin Collections / BoxSet management)
+// ---------------------------------------------------------------------------
+
+/** Create a collection (optionally seeded with item ids); returns the new collection id. */
+export async function createCollection(name: string, ids: string[] = []): Promise<string | null> {
+  const clean = name.trim() || 'Untitled'
+  if (!isJellyfinConfigured()) {
+    const id = `mock-cc-${mockStore().length + 1}-${clean.toLowerCase().replace(/\s+/g, '-')}`
+    mockStore().push({ id, name: clean, hue: hueFromId(id), itemIds: [...ids] })
+    return id
+  }
+  try {
+    const { userId } = await getSession()
+    const res = await jfPost('/Collections', undefined, {
+      userId,
+      name: clean,
+      ids: ids.length ? ids.join(',') : undefined,
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { Id?: string }
+    revalidateTag(COLLECTIONS_TAG, { expire: 0 })
+    return data.Id ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Add titles to a collection. */
+export async function addToCollection(collectionId: string, ids: string[]): Promise<boolean> {
+  if (ids.length === 0) return true
+  if (!isJellyfinConfigured()) {
+    const c = mockStore().find(x => x.id === collectionId)
+    if (c) c.itemIds = [...new Set([...c.itemIds, ...ids])]
+    return Boolean(c)
+  }
+  try {
+    const { userId } = await getSession()
+    const res = await jfPost(`/Collections/${collectionId}/Items`, undefined, { userId, ids: ids.join(',') })
+    if (res.ok) revalidateTag(COLLECTIONS_TAG, { expire: 0 })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** Remove titles from a collection. */
+export async function removeFromCollection(collectionId: string, ids: string[]): Promise<boolean> {
+  if (ids.length === 0) return true
+  if (!isJellyfinConfigured()) {
+    const c = mockStore().find(x => x.id === collectionId)
+    if (c) c.itemIds = c.itemIds.filter(i => !ids.includes(i))
+    return Boolean(c)
+  }
+  try {
+    const res = await jfDelete(`/Collections/${collectionId}/Items`, { ids: ids.join(',') })
+    if (res.ok) revalidateTag(COLLECTIONS_TAG, { expire: 0 })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** Delete an entire collection (the BoxSet item). */
+export async function deleteCollection(collectionId: string): Promise<boolean> {
+  if (!isJellyfinConfigured()) {
+    const store = mockStore()
+    const idx = store.findIndex(x => x.id === collectionId)
+    if (idx >= 0) store.splice(idx, 1)
+    return idx >= 0
+  }
+  try {
+    const res = await jfDelete(`/Items/${collectionId}`)
+    if (res.ok) revalidateTag(COLLECTIONS_TAG, { expire: 0 })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** Deduped names of people of a given crew Type (e.g. 'Director', 'Writer'). */
+function peopleNames(
+  people: ReadonlyArray<{ Name: string; Type?: string }> | undefined,
+  type: string,
+  limit = 6,
+): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of people ?? []) {
+    if (p.Type === type && p.Name && !seen.has(p.Name)) {
+      seen.add(p.Name)
+      out.push(p.Name)
+      if (out.length >= limit) break
+    }
+  }
+  return out
 }
 
 function castFromRaw(people: RawItem['People']): ReelCastMember[] {
@@ -603,6 +905,8 @@ function mockDetail(item: JellyfinItem): ReelDetail {
       id: p.Id, name: p.Name, role: p.Role, isDirector: p.Type === 'Director', hue: hueFromId(p.Id),
     })),
     createdBy: director?.Name,
+    directors: peopleNames(item.People, 'Director'),
+    writers: peopleNames(item.People, 'Writer'),
     seasonList,
   }
 }
@@ -634,6 +938,8 @@ export async function getReelDetail(id: string): Promise<ReelDetail | null> {
     studios: (raw.Studios ?? []).map(s => s.Name),
     cast: castFromRaw(raw.People),
     createdBy: director?.Name,
+    directors: peopleNames(raw.People, 'Director'),
+    writers: peopleNames(raw.People, 'Writer'),
   }
   if (kind === 'tv') {
     try {
@@ -957,6 +1263,10 @@ export interface PlaybackSource {
   transcoding: boolean
   /** Human label for the UI, e.g. "Direct Play", "Transcoding (audio)", "Remuxing". */
   playMethodLabel: string
+  /** Selected audio stream index, echoed back for reporting. */
+  audioStreamIndex?: number
+  /** Selected (burned-in) subtitle stream index, echoed back for reporting. */
+  subtitleStreamIndex?: number
 }
 
 // Codecs the browser profile (BROWSER_PROFILE) lets Direct Play. Used to describe
@@ -1027,7 +1337,7 @@ function withApiKey(rawUrl: string, token: string): string {
 
 export async function getPlayback(
   itemId: string,
-  opts: { forceHls?: boolean } = {},
+  opts: { forceHls?: boolean; mediaSourceId?: string; audioStreamIndex?: number; subtitleStreamIndex?: number } = {},
 ): Promise<PlaybackSource | null> {
   if (!isJellyfinConfigured()) return null
   const url = baseUrl()!
@@ -1035,20 +1345,32 @@ export async function getPlayback(
 
   // Send a real browser device profile so Jellyfin only reports DirectPlay when the
   // browser can actually decode the file. For DTS/AC3 audio or MKV it instead returns a
-  // TranscodingUrl that copies the H.264 video and transcodes the audio to AAC.
-  const res = await jfPost(
-    `/Items/${itemId}/PlaybackInfo`,
-    { UserId: userId, DeviceProfile: BROWSER_PROFILE, MaxStreamingBitrate: 120_000_000 },
-    { userId },
-  )
+  // TranscodingUrl that copies the H.264 video and transcodes the audio to AAC. Passing
+  // MediaSourceId/AudioStreamIndex makes that TranscodingUrl honor the chosen version/audio.
+  const body: Record<string, unknown> = {
+    UserId: userId,
+    DeviceProfile: BROWSER_PROFILE,
+    MaxStreamingBitrate: 120_000_000,
+  }
+  if (opts.mediaSourceId) body.MediaSourceId = opts.mediaSourceId
+  if (opts.audioStreamIndex != null) body.AudioStreamIndex = opts.audioStreamIndex
+
+  const res = await jfPost(`/Items/${itemId}/PlaybackInfo`, body, { userId })
   if (!res.ok) return null
   const info = (await res.json()) as { PlaySessionId: string; MediaSources?: RawMediaSource[] }
-  const ms = info.MediaSources?.[0]
+  const ms =
+    (opts.mediaSourceId && info.MediaSources?.find(s => s.Id === opts.mediaSourceId)) ||
+    info.MediaSources?.[0]
   if (!ms) return null
 
   const positionTicks = await jfGet<RawItem>(`/Items/${itemId}`, { userId })
     .then(d => d.UserData?.PlaybackPositionTicks ?? 0)
     .catch(() => 0)
+
+  // A subtitle index here means "burn it into the video" — used for image subs (PGS/VOBSUB)
+  // that can't become VTT. Text subtitles are overlaid client-side as a sidecar <track>
+  // (see /api/jellyfin/subtitle), so the player never sends those to this endpoint.
+  const burnInSub = opts.subtitleStreamIndex != null
 
   const common = {
     itemId,
@@ -1056,10 +1378,17 @@ export async function getPlayback(
     playSessionId: info.PlaySessionId,
     positionTicks,
     runtimeTicks: ms.RunTimeTicks ?? 0,
+    audioStreamIndex: opts.audioStreamIndex,
+    subtitleStreamIndex: opts.subtitleStreamIndex,
   }
 
+  // A non-default audio track can't be switched during browser direct play, and a
+  // burned-in subtitle needs the video re-encoded — either forces an HLS transcode.
+  const audioForcesHls = opts.audioStreamIndex != null && opts.audioStreamIndex !== defaultAudioIndex(ms)
+  const mustHls = Boolean(opts.forceHls) || audioForcesHls || burnInSub
+
   // Truly browser-compatible → stream the original bytes (≈0 server CPU).
-  if (!opts.forceHls && ms.SupportsDirectPlay) {
+  if (!mustHls && ms.SupportsDirectPlay) {
     const container = ms.Container || 'mp4'
     return {
       ...common,
@@ -1075,10 +1404,11 @@ export async function getPlayback(
     }
   }
 
-  // Otherwise transcode/remux over HLS. Prefer Jellyfin's computed URL (it selects the
-  // right audio stream + bitrate); fall back to a hand-built master playlist.
+  // Otherwise transcode/remux over HLS. Prefer Jellyfin's computed URL (it already
+  // reflects the version + audio we sent), unless we must inject a burned-in subtitle
+  // — its URL won't include SubtitleStreamIndex, so build the master playlist ourselves.
   const transcoding = { transcoding: true, playMethodLabel: transcodeDetail(ms) } as const
-  if (ms.TranscodingUrl) {
+  if (ms.TranscodingUrl && !burnInSub) {
     return { ...common, ...transcoding, method: 'hls', url: withApiKey(ms.TranscodingUrl, accessToken) }
   }
   return {
@@ -1091,6 +1421,9 @@ export async function getPlayback(
       PlaySessionId: info.PlaySessionId,
       VideoCodec: 'h264',
       AudioCodec: 'aac',
+      AudioStreamIndex: opts.audioStreamIndex,
+      SubtitleStreamIndex: burnInSub ? opts.subtitleStreamIndex : undefined,
+      SubtitleMethod: burnInSub ? 'Encode' : undefined,
     })}`,
   }
 }

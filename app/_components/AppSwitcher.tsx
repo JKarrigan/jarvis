@@ -48,8 +48,10 @@ export function AppSwitcher() {
     }
   }, [open])
 
+  // z-[45]: above the media rail (z-40) but below the fullscreen player (z-50) so it
+  // stays hidden while a video is playing.
   return (
-    <div ref={ref} className="fixed top-3 left-3 z-[100]">
+    <div ref={ref} className="fixed top-3 left-3 z-[45]">
       <button
         type="button"
         onClick={() => setOpen(o => !o)}

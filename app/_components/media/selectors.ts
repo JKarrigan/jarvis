@@ -1,5 +1,8 @@
 import type { ReelTitle } from './types'
 
+/** Days within which a title still counts as "recently added" (drives the New badge). */
+export const RECENTLY_ADDED_DAYS = 30
+
 /** Resolved per-title predicates (server seed + client overlay), supplied by the caller. */
 export interface UserView {
   watched: (t: ReelTitle) => boolean
@@ -88,7 +91,7 @@ export function sortTitles(list: ReelTitle[], sort: LibrarySort): ReelTitle[] {
     case 'rating': return arr.sort((a, b) => (b.imdb ?? 0) - (a.imdb ?? 0))
     case 'runtime': return arr.sort((a, b) => effectiveRuntime(a) - effectiveRuntime(b))
     case 'added':
-    default: return arr.sort((a, b) => (a.added ?? 9e9) - (b.added ?? 9e9))
+    default: return arr.sort((a, b) => (b.addedAt ?? -Infinity) - (a.addedAt ?? -Infinity))
   }
 }
 

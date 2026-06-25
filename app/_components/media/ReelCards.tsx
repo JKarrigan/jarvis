@@ -5,7 +5,15 @@ import Link from 'next/link'
 import { useMedia } from './MediaProvider'
 import type { ReelTitle } from './types'
 import { POSTER_SHEEN } from './artwork'
-import { StarIcon, CheckIcon, HeartIcon } from './icons'
+import { RECENTLY_ADDED_DAYS } from './selectors'
+import { CheckIcon, HeartIcon } from './icons'
+
+/** Compact "added" label for the card corner: Today / Yesterday / "5d ago". */
+function daysAgoLabel(days: number): string {
+  if (days <= 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return `${days}d ago`
+}
 
 export function detailHref(t: Pick<ReelTitle, 'id' | 'type'>): string {
   return `/media/${t.type === 'tv' ? 'tv' : 'movies'}/${t.id}`
@@ -37,16 +45,6 @@ export function Poster({
   )
 }
 
-export function RatingBadge({ value }: { value?: number }) {
-  if (value == null) return null
-  return (
-    <span className="inline-flex items-center gap-1 rounded-md bg-black/55 px-1.5 py-0.5 text-[11px] font-semibold text-white backdrop-blur-sm">
-      <StarIcon className="h-3 w-3" style={{ color: 'var(--star)' }} />
-      {value.toFixed(1)}
-    </span>
-  )
-}
-
 function metaLine(t: ReelTitle): string {
   const bits: string[] = []
   if (t.year) bits.push(String(t.year))
@@ -60,11 +58,12 @@ function metaLine(t: ReelTitle): string {
  * (watched check, favorite-heart button, type badge).
  */
 export function PosterCard({
-  title, width = 'w-[178px]', overlays = false,
-}: { title: ReelTitle; width?: string; overlays?: boolean }) {
+  title, width = 'w-[178px]', overlays = false, showAddedDays = false,
+}: { title: ReelTitle; width?: string; overlays?: boolean; showAddedDays?: boolean }) {
   const { isWatched, isFavorite, toggleFavorite } = useMedia()
   const watched = isWatched(title.id, title.watched)
   const favorite = isFavorite(title.id, title.favorite)
+  const isNew = title.added != null && title.added <= RECENTLY_ADDED_DAYS
 
   return (
     <Link href={detailHref(title)} className={`group flex shrink-0 flex-col gap-2 ${width}`}>
@@ -72,13 +71,22 @@ export function PosterCard({
         <Poster gradient={title.posterColor} src={title.posterUrl} alt={title.title} className="h-full w-full shadow-[0_16px_34px_rgba(0,0,0,0.5)]" />
         <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-inset ring-white/10 transition group-hover:ring-white/20" />
 
-        <div className="absolute left-2 top-2"><RatingBadge value={title.imdb} /></div>
-
         {watched && (
-          <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full text-ink-on-accent" style={{ background: 'var(--accent)' }}>
+          <span className="absolute left-2 top-2 grid h-6 w-6 place-items-center rounded-full text-ink-on-accent" style={{ background: 'var(--accent)' }}>
             <CheckIcon className="h-3.5 w-3.5" />
           </span>
         )}
+
+        {/* Top-right: exact "added" age on the Recently Added row, else a New badge when fresh. */}
+        {showAddedDays && title.added != null ? (
+          <span className="absolute right-2 top-2 rounded-md bg-black/55 px-1.5 py-0.5 text-[11px] font-semibold text-white backdrop-blur-sm">
+            {daysAgoLabel(title.added)}
+          </span>
+        ) : isNew ? (
+          <span className="absolute right-2 top-2 rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-on-accent" style={{ background: 'var(--accent)' }}>
+            New
+          </span>
+        ) : null}
 
         {overlays && (
           <button

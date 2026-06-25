@@ -21,7 +21,8 @@ export function HomeBody({
   const lib = useFilteredLibrary(catalog)
 
   const recentlyAdded = useMemo(
-    () => [...catalog].sort((a, b) => (a.added ?? 9e9) - (b.added ?? 9e9)).slice(0, 14),
+    // Newest first (far left), by precise add time so same-day items still order correctly.
+    () => [...catalog].sort((a, b) => (b.addedAt ?? -Infinity) - (a.addedAt ?? -Infinity)).slice(0, 14),
     [catalog],
   )
   const watchlistTitles = useMemo(() => {
@@ -47,7 +48,7 @@ export function HomeBody({
         {showRows && recentlyAdded.length > 0 && (
           <section>
             <SectionHeader title="Recently added" />
-            <Row>{recentlyAdded.map(t => <PosterCard key={t.id} title={t} />)}</Row>
+            <Row>{recentlyAdded.map(t => <PosterCard key={t.id} title={t} showAddedDays />)}</Row>
           </section>
         )}
 

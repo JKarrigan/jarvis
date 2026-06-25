@@ -1,13 +1,15 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence } from 'framer-motion'
 import JellyfinPlayer from './JellyfinPlayer'
 import { Sheet } from '@/app/_components/HueControls'
 import { useMedia } from './MediaProvider'
-import type { ReelDetail, ReelTitle, FileInfo, ReelSeasonInfo } from './types'
+import { usePlaybackSelection, PlaybackPicker } from './PlaybackPicker'
+import { fetchCollections, createCollection, addToCollection, removeFromCollection } from './collectionsApi'
+import type { ReelDetail, ReelTitle, MediaInfo, ReelSeasonInfo, CollectionSummary } from './types'
 import { avatar, backdropFallback, poster } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
 import {
@@ -62,46 +64,94 @@ function ActionButton({
   )
 }
 
+function CreditRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex gap-3">
+      <dt className="w-20 shrink-0 text-white/40">{label}</dt>
+      <dd className="min-w-0 text-white/80 [text-wrap:pretty]">{value}</dd>
+    </div>
+  )
+}
+
 function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: () => void }) {
-  const { customCollections, createCollection, toggleCollectionItem } = useMedia()
+  const router = useRouter()
+  const [collections, setCollections] = useState<CollectionSummary[] | null>(null)
   const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    fetchCollections().then(cols => { if (active) setCollections(cols) })
+    return () => { active = false }
+  }, [])
+
+  // Re-pull server truth (after a create, or to revert a failed toggle) and revalidate SSR.
+  const resync = async () => {
+    setCollections(await fetchCollections())
+    router.refresh()
+  }
+
+  const toggle = async (c: CollectionSummary) => {
+    if (busy) return
+    const inIt = c.itemIds.includes(titleId)
+    setBusy(true)
+    setCollections(cur => cur?.map(x => x.id === c.id
+      ? { ...x, itemIds: inIt ? x.itemIds.filter(i => i !== titleId) : [...x.itemIds, titleId] }
+      : x) ?? cur)
+    const ok = inIt ? await removeFromCollection(c.id, titleId) : await addToCollection(c.id, titleId)
+    setBusy(false)
+    if (ok) router.refresh()
+    else resync()
+  }
+
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const n = name.trim()
+    if (!n || busy) return
+    setBusy(true)
+    const id = await createCollection(n, [titleId])
+    setBusy(false)
+    if (id) { setName(''); resync() }
+  }
+
   return (
     <Sheet onClose={onClose}>
       <div className="space-y-3 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">Add to collection</h3>
-        {customCollections.length === 0 && (
-          <p className="text-sm text-zinc-400">No custom collections yet — create one below.</p>
+        {collections == null ? (
+          <p className="text-sm text-zinc-400">Loading…</p>
+        ) : collections.length === 0 ? (
+          <p className="text-sm text-zinc-400">No collections yet — create one below.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {collections.map(c => {
+              const inIt = c.itemIds.includes(titleId)
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => toggle(c)}
+                  disabled={busy}
+                  className="flex w-full items-center gap-3 rounded-xl border border-zinc-700 bg-zinc-800/50 px-3 py-2.5 text-left transition hover:bg-zinc-800 disabled:opacity-60"
+                >
+                  <span className="grid h-5 w-5 place-items-center rounded-md border border-zinc-600">
+                    {inIt && <CheckIcon className="h-3.5 w-3.5 text-amber-300" />}
+                  </span>
+                  <span className="text-sm text-zinc-100">{c.name}</span>
+                  <span className="ml-auto text-xs text-zinc-500">{c.itemIds.length}</span>
+                </button>
+              )
+            })}
+          </div>
         )}
-        <div className="space-y-1.5">
-          {customCollections.map(c => {
-            const inIt = c.items.includes(titleId)
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => toggleCollectionItem(c.id, titleId)}
-                className="flex w-full items-center gap-3 rounded-xl border border-zinc-700 bg-zinc-800/50 px-3 py-2.5 text-left transition hover:bg-zinc-800"
-              >
-                <span className="grid h-5 w-5 place-items-center rounded-md border border-zinc-600">
-                  {inIt && <CheckIcon className="h-3.5 w-3.5 text-amber-300" />}
-                </span>
-                <span className="text-sm text-zinc-100">{c.name}</span>
-                <span className="ml-auto text-xs text-zinc-500">{c.items.length}</span>
-              </button>
-            )
-          })}
-        </div>
-        <form
-          onSubmit={(e) => { e.preventDefault(); if (name.trim()) { const id = createCollection(name); toggleCollectionItem(id, titleId); setName('') } }}
-          className="flex gap-2 pt-1"
-        >
+        <form onSubmit={create} className="flex gap-2 pt-1">
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="New collection name…"
             className="flex-1 rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-300/40"
           />
-          <button type="submit" className="rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-900 disabled:opacity-40" disabled={!name.trim()}>
+          <button type="submit" className="rounded-xl bg-amber-300 px-4 text-sm font-semibold text-zinc-900 disabled:opacity-40" disabled={!name.trim() || busy}>
             Create
           </button>
         </form>
@@ -111,14 +161,16 @@ function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: 
 }
 
 export function DetailView({
-  detail, file, similar, autoPlay = false,
-}: { detail: ReelDetail; file: FileInfo | null; similar: ReelTitle[]; autoPlay?: boolean }) {
+  detail, media, similar, autoPlay = false,
+}: { detail: ReelDetail; media: MediaInfo | null; similar: ReelTitle[]; autoPlay?: boolean }) {
   const router = useRouter()
-  const media = useMedia()
+  const mediaState = useMedia()
   const {
     isFavorite, isWatched, inWatchlist, inPickList, isEpWatched, rating, notes,
     toggleFavorite, toggleWatched, toggleWatchlist, togglePickList, setRating, setNotes,
-  } = media
+  } = mediaState
+
+  const selection = usePlaybackSelection(media)
 
   const favorite = isFavorite(detail.id, detail.favorite)
   const watched = isWatched(detail.id, detail.watched)
@@ -134,6 +186,11 @@ export function DetailView({
   const playTarget = detail.type === 'tv'
     ? next ? { id: next.episode.id, title: `${detail.title} · S${next.season.index} E${next.episode.index}` } : null
     : { id: detail.id, title: detail.title }
+
+  // Loading splash artwork — the episode still for TV, otherwise the title's backdrop.
+  const splashUrl = detail.type === 'tv'
+    ? next?.episode.imageUrl ?? detail.backdropUrl ?? detail.posterUrl
+    : detail.backdropUrl ?? detail.posterUrl
 
   const [playing, setPlaying] = useState(autoPlay && Boolean(playTarget))
   const userRating = rating(detail.id)
@@ -186,14 +243,6 @@ export function DetailView({
 
           <p className="mt-3 text-sm text-white/60">{runtimeLabel(detail)}</p>
 
-          {detail.genres.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {detail.genres.map(g => (
-                <span key={g} className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-white/70">{g}</span>
-              ))}
-            </div>
-          )}
-
           {/* Actions */}
           <div className="mt-5 flex flex-wrap items-center gap-2.5">
             {playTarget && (
@@ -216,6 +265,9 @@ export function DetailView({
             </ActionButton>
             <AddToCollectionButton titleId={detail.id} />
           </div>
+
+          {/* Version / Audio / Subtitle selection (drives the player) */}
+          <PlaybackPicker selection={selection} />
         </div>
       </div>
 
@@ -278,6 +330,17 @@ export function DetailView({
         </section>
       )}
 
+      {(detail.directors.length > 0 || detail.writers.length > 0 || detail.studios.length > 0 || detail.genres.length > 0) && (
+        <section className="mt-6 pl-[var(--rail)] pr-[var(--gx)]">
+          <dl className="grid max-w-[820px] grid-cols-1 gap-x-10 gap-y-2.5 text-sm sm:grid-cols-2">
+            {detail.directors.length > 0 && <CreditRow label={detail.directors.length > 1 ? 'Directors' : 'Director'} value={detail.directors.join(', ')} />}
+            {detail.writers.length > 0 && <CreditRow label={detail.writers.length > 1 ? 'Writers' : 'Writer'} value={detail.writers.join(', ')} />}
+            {detail.studios.length > 0 && <CreditRow label={detail.studios.length > 1 ? 'Studios' : 'Studio'} value={detail.studios.join(', ')} />}
+            {detail.genres.length > 0 && <CreditRow label="Genres" value={detail.genres.join(', ')} />}
+          </dl>
+        </section>
+      )}
+
       {detail.cast.length > 0 && (
         <section className="mt-8">
           <SectionHeader title="Cast & crew" />
@@ -329,19 +392,19 @@ export function DetailView({
           <p className="mb-3 text-sm font-semibold text-ink">File details</p>
           <dl className="space-y-2 text-[13px]">
             {([
-              ['Resolution', file?.resolution],
-              ['Video', file?.videoCodec],
-              ['Audio', file?.audio],
-              ['Container', file?.container],
-              ['Size', file?.size],
-              ['Location', file?.path],
+              ['Resolution', selection.version?.resolution],
+              ['Video', selection.version?.videoCodec],
+              ['Audio', selection.version?.audio.find(a => a.index === selection.audioIndex)?.label],
+              ['Container', selection.version?.container],
+              ['Size', selection.version?.size],
+              ['Location', selection.version?.path],
             ] as const).filter(([, v]) => v).map(([k, v]) => (
               <div key={k} className="flex items-baseline justify-between gap-3">
                 <dt className="text-white/45">{k}</dt>
                 <dd className="truncate text-right font-mono text-[12px] text-white/80">{v}</dd>
               </div>
             ))}
-            {!file && <p className="text-sm text-white/40">No file details available.</p>}
+            {!selection.version && <p className="text-sm text-white/40">No file details available.</p>}
           </dl>
         </div>
 
@@ -375,7 +438,16 @@ export function DetailView({
 
       <AnimatePresence>
         {playing && playTarget && (
-          <JellyfinPlayer itemId={playTarget.id} title={playTarget.title} onClose={() => setPlaying(false)} />
+          <JellyfinPlayer
+            itemId={playTarget.id}
+            title={playTarget.title}
+            splashUrl={splashUrl}
+            versions={selection.versions}
+            initialSourceId={selection.versionId || undefined}
+            initialAudioIndex={selection.audioIndex}
+            initialSubtitleIndex={selection.subtitleIndex}
+            onClose={() => setPlaying(false)}
+          />
         )}
       </AnimatePresence>
     </div>

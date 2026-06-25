@@ -4,6 +4,6 @@ import { CollectionsList } from '@/app/_components/media/CollectionsList'
 export const dynamic = 'force-dynamic'
 
 export default async function CollectionsPage() {
-  const [catalog, franchises] = await Promise.all([getCatalog(), getBoxSets()])
-  return <CollectionsList catalog={catalog} franchises={franchises} />
+  const [catalog, collections] = await Promise.all([getCatalog(), getBoxSets()])
+  return <CollectionsList catalog={catalog} collections={collections} />
 }

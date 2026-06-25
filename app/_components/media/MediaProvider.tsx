@@ -12,14 +12,6 @@ export const THEMES: { key: ThemeName; name: string; blurb: string; accent: stri
   { key: 'noir', name: 'Noir', blurb: 'Restrained, near monochrome', accent: '#b9b4d6', bg: 'radial-gradient(135% 135% at 94% 100%, rgba(120,116,150,0.15), transparent 62%), linear-gradient(150deg,#111016,#090909)' },
 ]
 
-export interface CustomCollection {
-  id: string
-  name: string
-  tagline?: string
-  hue: number
-  items: string[]
-}
-
 interface ProfileState {
   theme: ThemeName
   /** Local override maps (presence wins over the Jellyfin server seed). */
@@ -28,7 +20,6 @@ interface ProfileState {
   ratings: Record<string, number>
   notes: Record<string, string>
   watchlist: string[]
-  customCollections: CustomCollection[]
   pickList: string[]
   /** Keyed by Jellyfin episode Id. */
   epWatched: Record<string, boolean>
@@ -52,7 +43,6 @@ function emptyProfile(): ProfileState {
     ratings: {},
     notes: {},
     watchlist: [],
-    customCollections: [],
     pickList: [],
     epWatched: {},
   }
@@ -94,12 +84,6 @@ interface MediaContextValue {
   clearPickList: () => void
   removeFromPickList: (id: string) => void
   toggleEpWatched: (episodeId: string, serverDefault?: boolean) => void
-
-  // collections
-  customCollections: CustomCollection[]
-  createCollection: (name: string) => string
-  removeCollection: (id: string) => void
-  toggleCollectionItem: (collectionId: string, titleId: string) => void
 
   // raw lists for pages that enumerate
   watchlist: string[]
@@ -202,26 +186,6 @@ export function MediaProvider({ children }: { children: React.ReactNode }) {
       removeFromPickList: (id) => updateProfile(p => ({ ...p, pickList: p.pickList.filter(x => x !== id) })),
       toggleEpWatched: (epId, d) =>
         updateProfile(p => ({ ...p, epWatched: { ...p.epWatched, [epId]: !overrideBool(p.epWatched, epId, d) } })),
-
-      customCollections: profile.customCollections,
-      createCollection: (name) => {
-        const id = `cc_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e4).toString(36)}`
-        const hue = Math.floor(Math.random() * 360)
-        updateProfile(p => ({
-          ...p,
-          customCollections: [...p.customCollections, { id, name: name.trim() || 'Untitled', hue, items: [] }],
-        }))
-        return id
-      },
-      removeCollection: (id) =>
-        updateProfile(p => ({ ...p, customCollections: p.customCollections.filter(c => c.id !== id) })),
-      toggleCollectionItem: (collectionId, titleId) =>
-        updateProfile(p => ({
-          ...p,
-          customCollections: p.customCollections.map(c =>
-            c.id === collectionId ? { ...c, items: toggleInArray(c.items, titleId) } : c,
-          ),
-        })),
 
       watchlist: profile.watchlist,
       pickList: profile.pickList,

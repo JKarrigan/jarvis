@@ -19,8 +19,10 @@ export interface ReelTitle {
   cert?: string
   /** 0–360, drives all gradient artwork. */
   hue: number
-  /** Days since added to the library. */
+  /** Days since added to the library (calendar days). */
   added?: number
+  /** Epoch ms when added — precise recency ordering (`added` is the rounded day count). */
+  addedAt?: number
   /** Watch progress 0–1 (from Jellyfin UserData; client overlay may refine). */
   progress: number
   /** Server seed — true if Jellyfin marks it Played. */
@@ -59,6 +61,53 @@ export interface FileInfo {
   container?: string
   size?: string
   path?: string
+}
+
+/** A single selectable audio track within a media version. */
+export interface AudioTrack {
+  /** Stream index within the source's MediaStreams (the Jellyfin AudioStreamIndex). */
+  index: number
+  label: string
+  language?: string
+  codec?: string
+  channels?: string
+  isDefault: boolean
+}
+
+/** A single selectable subtitle track within a media version. */
+export interface SubtitleTrack {
+  /** Stream index within the source's MediaStreams (the Jellyfin SubtitleStreamIndex). */
+  index: number
+  label: string
+  language?: string
+  codec?: string
+  isDefault: boolean
+  isForced: boolean
+  isExternal: boolean
+  /** Text subtitles (SRT/ASS/VTT) can be delivered as a sidecar <track>; image subs must burn in. */
+  isText: boolean
+}
+
+/** One playable version of a title (a Jellyfin MediaSource) with its tracks. */
+export interface MediaVersion {
+  /** MediaSourceId — passed to playback as `mediaSourceId`. */
+  id: string
+  /** Version label (MediaSource.Name, else container/resolution). */
+  name: string
+  resolution?: string
+  videoCodec?: string
+  container?: string
+  size?: string
+  path?: string
+  audio: AudioTrack[]
+  subtitles: SubtitleTrack[]
+  defaultAudioIndex?: number
+  defaultSubtitleIndex?: number
+}
+
+/** All playable versions of a title (drives the detail-page pickers + player). */
+export interface MediaInfo {
+  versions: MediaVersion[]
 }
 
 export interface ReelCastMember {
@@ -118,14 +167,20 @@ export interface ReelSeasonInfo {
   episodes: ReelEpisode[]
 }
 
-/** A collection (Jellyfin BoxSet, or a user-made custom collection). */
+/** A Jellyfin collection (BoxSet) — franchise or user-made — with its member title ids. */
 export interface CollectionSummary {
   id: string
   name: string
   hue: number
   tagline?: string
   itemIds: string[]
-  custom?: boolean
+  /** Collection's own artwork for the detail hero (the members supply a montage fallback). */
+  backdropUrl?: string
+  posterUrl?: string
+  /** Collection logo (e.g. a studio/franchise wordmark) overlaid on the hero when present. */
+  logoUrl?: string
+  /** High-res member artwork for the hero montage (when the collection has no backdrop). */
+  montageUrls?: string[]
 }
 
 /** Full detail view model (ReelTitle + cast/seasons/studios). */
@@ -133,6 +188,8 @@ export interface ReelDetail extends ReelTitle {
   studios: string[]
   cast: ReelCastMember[]
   createdBy?: string
+  directors: string[]
+  writers: string[]
   /** TV only: full season/episode structure (ReelTitle.seasons stays the count). */
   seasonList?: ReelSeasonInfo[]
 }

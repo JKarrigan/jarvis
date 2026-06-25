@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getReelDetail, getFileInfo, getReelSimilar } from '@/lib/jellyfinServer'
+import { getReelDetail, getReelSimilar } from '@/lib/jellyfinServer'
 import { DetailView } from '@/app/_components/media/DetailView'
 
 export const dynamic = 'force-dynamic'
@@ -13,7 +13,9 @@ export default async function TVDetailPage({
 }) {
   const { id } = await params
   const { play } = await searchParams
-  const [detail, file, similar] = await Promise.all([getReelDetail(id), getFileInfo(id), getReelSimilar(id)])
+  // A series has no single playable file — version/audio/subtitle listings live on the
+  // episode pages, so we don't fetch media info here (DetailView hides the pickers).
+  const [detail, similar] = await Promise.all([getReelDetail(id), getReelSimilar(id)])
   if (!detail || detail.type !== 'tv') notFound()
-  return <DetailView detail={detail} file={file} similar={similar} autoPlay={play === '1'} />
+  return <DetailView detail={detail} media={null} similar={similar} autoPlay={play === '1'} />
 }

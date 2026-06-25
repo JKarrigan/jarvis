@@ -1,7 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { motion } from 'framer-motion'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import type { AudioTrack, SubtitleTrack, MediaVersion } from './types'
 
 interface PlaybackSource {
   itemId: string
@@ -13,6 +14,8 @@ interface PlaybackSource {
   runtimeTicks: number
   transcoding: boolean
   playMethodLabel: string
+  audioStreamIndex?: number
+  subtitleStreamIndex?: number
 }
 
 type ReportKind = 'start' | 'progress' | 'stopped'
@@ -92,7 +95,7 @@ function Slider({
           style={{ width: `${Math.min(100, buffered * 100)}%` }}
         />
       )}
-      <div className="absolute h-1.5 rounded-full bg-emerald-400" style={{ width: pct }} />
+      <div className="absolute h-1.5 rounded-full" style={{ width: pct, background: 'var(--accent)' }} />
       <div
         className="absolute h-3 w-3 -translate-x-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover/slider:opacity-100"
         style={{ left: pct }}
@@ -104,20 +107,120 @@ function Slider({
 function IconButton({
   label,
   onClick,
+  active,
   children,
 }: {
   label: string
   onClick: () => void
+  active?: boolean
   children: React.ReactNode
 }) {
   return (
     <button
       onClick={onClick}
       aria-label={label}
-      className="inline-flex h-9 w-9 items-center justify-center rounded-full text-zinc-200 transition-colors hover:bg-white/15"
+      style={active ? { color: 'var(--accent)' } : undefined}
+      className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors hover:bg-white/15 ${
+        active ? '' : 'text-zinc-200'
+      }`}
     >
       {children}
     </button>
+  )
+}
+
+function MenuRow({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string
+  selected: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={selected ? { color: 'var(--accent)' } : undefined}
+      className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] transition ${
+        selected ? '' : 'text-zinc-200 hover:bg-white/10'
+      }`}
+    >
+      <span className="grid h-4 w-4 shrink-0 place-items-center">
+        {selected && (
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-current">
+            <path d="M13.5 3.5L6 11 2.5 7.5 1 9l5 5 9-9z" />
+          </svg>
+        )}
+      </span>
+      <span className="whitespace-nowrap">{label}</span>
+    </button>
+  )
+}
+
+/** In-player popover for switching version / audio / subtitle tracks. */
+function TrackMenu({
+  versions,
+  audio,
+  subtitles,
+  versionId,
+  audioIndex,
+  subtitleIndex,
+  onVersion,
+  onAudio,
+  onSubtitle,
+}: {
+  versions: MediaVersion[]
+  audio: AudioTrack[]
+  subtitles: SubtitleTrack[]
+  versionId?: string
+  audioIndex?: number
+  subtitleIndex: number | null
+  onVersion: (id: string) => void
+  onAudio: (i: number) => void
+  onSubtitle: (i: number | null) => void
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 6, scale: 0.97, transition: { duration: 0.12, ease: 'easeIn' } }}
+      transition={{ type: 'spring', bounce: 0.2, duration: 0.26 }}
+      className="absolute bottom-full right-0 mb-2 max-h-[60vh] w-[230px] overflow-y-auto rounded-xl border border-white/10 p-1.5 shadow-2xl backdrop-blur-xl"
+      style={{ background: 'rgba(18,18,20,0.97)' }}
+    >
+      {versions.length > 1 && (
+        <>
+          <p className="px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Version</p>
+          {versions.map(v => (
+            <MenuRow key={v.id} label={v.name} selected={v.id === versionId} onClick={() => onVersion(v.id)} />
+          ))}
+        </>
+      )}
+      {audio.length > 0 && (
+        <>
+          <p className="px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Audio</p>
+          {audio.map(a => (
+            <MenuRow key={a.index} label={a.label} selected={a.index === audioIndex} onClick={() => onAudio(a.index)} />
+          ))}
+        </>
+      )}
+      {subtitles.length > 0 && (
+        <>
+          <p className="px-2.5 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Subtitles</p>
+          <MenuRow label="Off" selected={subtitleIndex == null} onClick={() => onSubtitle(null)} />
+          {subtitles.map(s => (
+            <MenuRow
+              key={s.index}
+              label={s.label}
+              selected={s.index === subtitleIndex}
+              onClick={() => onSubtitle(s.index)}
+            />
+          ))}
+        </>
+      )}
+    </motion.div>
   )
 }
 
@@ -125,10 +228,21 @@ export default function JellyfinPlayer({
   itemId,
   title,
   onClose,
+  splashUrl,
+  versions = [],
+  initialSourceId,
+  initialAudioIndex,
+  initialSubtitleIndex = null,
 }: {
   itemId: string
   title?: string
   onClose: () => void
+  /** Artwork (backdrop / episode still) shown as the loading splash before first frame. */
+  splashUrl?: string
+  versions?: MediaVersion[]
+  initialSourceId?: string
+  initialAudioIndex?: number
+  initialSubtitleIndex?: number | null
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -139,8 +253,32 @@ export default function JellyfinPlayer({
 
   const [attempt, setAttempt] = useState(0) // bump to retry; >0 forces HLS
   const [ready, setReady] = useState(false)
+  // Whether the very first frame has loaded — gates the movie splash (initial load only).
+  const [everReady, setEverReady] = useState(false)
   const [buffering, setBuffering] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // --- track selection (version / audio / subtitle) -----------------------
+  const [sourceId, setSourceId] = useState<string | undefined>(initialSourceId ?? versions[0]?.id)
+  const [audioIndex, setAudioIndex] = useState<number | undefined>(initialAudioIndex)
+  const [subIndex, setSubIndex] = useState<number | null>(initialSubtitleIndex)
+  // Seconds to resume to after a manual (selection-driven) reload; 0 = use server position.
+  const pendingSeekRef = useRef(0)
+
+  const currentVersion = useMemo(
+    () => versions.find(v => v.id === sourceId) ?? versions[0] ?? null,
+    [versions, sourceId],
+  )
+  const audioTracks = useMemo(() => currentVersion?.audio ?? [], [currentVersion])
+  const subtitleTracks = useMemo(() => currentVersion?.subtitles ?? [], [currentVersion])
+  const selectedSubTrack = subIndex == null ? null : subtitleTracks.find(s => s.index === subIndex) ?? null
+  // Image subtitles (PGS/VOBSUB) must be burned in (a server reload); text subs overlay live.
+  const burnSubIndex = selectedSubTrack && !selectedSubTrack.isText ? selectedSubTrack.index : null
+  const subtitleSrc =
+    selectedSubTrack && selectedSubTrack.isText && sourceId
+      ? `/api/jellyfin/subtitle?id=${encodeURIComponent(itemId)}&source=${encodeURIComponent(sourceId)}&index=${selectedSubTrack.index}`
+      : null
+  const hasTrackChoices = audioTracks.length > 1 || subtitleTracks.length > 0 || versions.length > 1
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -150,17 +288,33 @@ export default function JellyfinPlayer({
   const [muted, setMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showControls, setShowControls] = useState(true)
+  const [menuOpen, setMenuOpen] = useState(false)
   const [playLabel, setPlayLabel] = useState<string | null>(null)
   const [transcoding, setTranscoding] = useState(false)
 
   const isPlayingRef = useRef(false)
+  const menuOpenRef = useRef(false)
+  const menuRef = useRef<HTMLDivElement>(null)
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    menuOpenRef.current = menuOpen
+  }, [menuOpen])
+
+  // Close the track menu on an outside click (mirrors FilterDropdown).
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [menuOpen])
 
   // --- control visibility (auto-hide while playing) -----------------------
   const poke = useCallback(() => {
     setShowControls(true)
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
-    if (isPlayingRef.current) {
+    if (isPlayingRef.current && !menuOpenRef.current) {
       hideTimerRef.current = setTimeout(() => setShowControls(false), 3000)
     }
   }, [])
@@ -201,7 +355,46 @@ export default function JellyfinPlayer({
     else el.requestFullscreen?.().catch(() => {})
   }, [])
 
+  // Remember where we are, so the next (selection-driven) source reload resumes here.
+  const markResume = useCallback(() => {
+    pendingSeekRef.current = videoRef.current?.currentTime ?? 0
+  }, [])
+
+  const selectVersion = useCallback(
+    (id: string) => {
+      if (id === sourceId) return
+      markResume()
+      const v = versions.find(x => x.id === id)
+      setSourceId(id)
+      setAudioIndex(v ? v.defaultAudioIndex ?? v.audio[0]?.index : undefined)
+      setSubIndex(v?.defaultSubtitleIndex ?? null)
+    },
+    [sourceId, versions, markResume],
+  )
+  const selectAudio = useCallback(
+    (i: number) => {
+      if (i === audioIndex) return
+      markResume()
+      setAudioIndex(i)
+    },
+    [audioIndex, markResume],
+  )
+  const selectSubtitle = useCallback(
+    (i: number | null) => {
+      if (i === subIndex) return
+      const next = i == null ? null : subtitleTracks.find(s => s.index === i) ?? null
+      const willBurn = next ? !next.isText : false
+      const wasBurn = burnSubIndex != null
+      // Only image-subtitle transitions need a stream reload; text subs swap the <track> live.
+      if (willBurn || wasBurn) markResume()
+      setSubIndex(i)
+    },
+    [subIndex, subtitleTracks, burnSubIndex, markResume],
+  )
+
   // --- source loading + playback reporting --------------------------------
+  // Re-runs on retry (attempt), version (sourceId), audio, or a burned-in subtitle change.
+  // Text-subtitle changes do NOT re-run this (handled by the <track> below).
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -229,15 +422,23 @@ export default function JellyfinPlayer({
             MediaSourceId: source.mediaSourceId,
             PositionTicks: Math.round(video.currentTime * 1e7),
             IsPaused: paused,
+            AudioStreamIndex: source.audioStreamIndex,
+            SubtitleStreamIndex: source.subtitleStreamIndex,
           },
         }),
         keepalive: kind === 'stopped',
       }).catch(() => {})
     }
 
+    function resumeSeconds(): number {
+      if (!source) return 0
+      if (pendingSeekRef.current > 0) return pendingSeekRef.current
+      return source.positionTicks > 0 ? source.positionTicks / 1e7 : 0
+    }
+
     function onLoadedMetadata() {
       if (!video || !source) return
-      const startAt = source.positionTicks > 0 ? source.positionTicks / 1e7 : 0
+      const startAt = resumeSeconds()
       if (startAt > 0 && video.currentTime < 1) {
         try {
           video.currentTime = startAt
@@ -245,8 +446,10 @@ export default function JellyfinPlayer({
           /* not seekable yet */
         }
       }
+      pendingSeekRef.current = 0
       setDuration(video.duration || source.runtimeTicks / 1e7 || 0)
       setReady(true)
+      setEverReady(true)
     }
     function onPlaying() {
       sendReport('start')
@@ -267,9 +470,11 @@ export default function JellyfinPlayer({
 
     async function init() {
       try {
-        const res = await fetch(
-          `/api/jellyfin/playback?id=${encodeURIComponent(itemId)}&hls=${forceHls ? 1 : 0}`,
-        )
+        const params = new URLSearchParams({ id: itemId, hls: forceHls ? '1' : '0' })
+        if (sourceId) params.set('mediaSourceId', sourceId)
+        if (audioIndex != null) params.set('audio', String(audioIndex))
+        if (burnSubIndex != null) params.set('subtitle', String(burnSubIndex))
+        const res = await fetch(`/api/jellyfin/playback?${params.toString()}`)
         if (!res.ok) throw new Error('No playable source')
         source = (await res.json()) as PlaybackSource
         if (cancelled || !video) return
@@ -281,8 +486,8 @@ export default function JellyfinPlayer({
           const { default: Hls } = await import('hls.js')
           if (cancelled) return
           if (Hls.isSupported()) {
-            const startAt = source.positionTicks > 0 ? source.positionTicks / 1e7 : -1
-            const h = new Hls({ startPosition: startAt })
+            const startAt = resumeSeconds()
+            const h = new Hls({ startPosition: startAt > 0 ? startAt : -1 })
             hls = h
             h.loadSource(source.url)
             h.attachMedia(video)
@@ -324,7 +529,15 @@ export default function JellyfinPlayer({
       video.removeAttribute('src')
       video.load()
     }
-  }, [itemId, attempt])
+  }, [itemId, attempt, sourceId, audioIndex, burnSubIndex])
+
+  // --- keep the active text-subtitle track showing ------------------------
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const tracks = v.textTracks
+    for (let i = 0; i < tracks.length; i++) tracks[i].mode = subtitleSrc ? 'showing' : 'disabled'
+  }, [subtitleSrc, ready])
 
   // --- sync UI state from the media element -------------------------------
   useEffect(() => {
@@ -378,6 +591,10 @@ export default function JellyfinPlayer({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (menuOpenRef.current) {
+          setMenuOpen(false)
+          return
+        }
         onCloseRef.current()
         return
       }
@@ -409,7 +626,9 @@ export default function JellyfinPlayer({
   }, [])
 
   const showSpinner = (!ready || buffering) && !error
-  const controlsVisible = showControls || !isPlaying
+  // Movie splash: only on the very first load (not on mid-play track-change reloads).
+  const showSplash = !everReady && !error
+  const controlsVisible = showControls || !isPlaying || menuOpen
 
   return (
     <motion.div
@@ -426,12 +645,50 @@ export default function JellyfinPlayer({
         autoPlay
         playsInline
         onClick={togglePlay}
-        className="absolute inset-0 h-full w-full bg-black object-contain"
-      />
+        className="absolute inset-0 h-full w-full bg-black object-contain [&::cue]:bg-black/60"
+      >
+        {subtitleSrc && (
+          <track
+            key={subtitleSrc}
+            kind="subtitles"
+            src={subtitleSrc}
+            srcLang={selectedSubTrack?.language || undefined}
+            label={selectedSubTrack?.label || 'Subtitles'}
+            default
+          />
+        )}
+      </video>
+
+      {/* Loading splash — the title's own artwork while the first frame buffers */}
+      <AnimatePresence>
+        {showSplash && (
+          <motion.div
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.5, ease: 'easeOut' }}
+            className="pointer-events-none absolute inset-0 overflow-hidden bg-black"
+          >
+            {splashUrl && (
+              <motion.img
+                src={splashUrl}
+                alt={title ?? ''}
+                initial={{ scale: 1.06, opacity: 0 }}
+                animate={{ scale: 1.12, opacity: 1 }}
+                transition={{ opacity: { duration: 0.6 }, scale: { duration: 8, ease: 'linear' } }}
+                className="absolute inset-0 h-full w-full object-cover"
+              />
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/55 to-black/65" />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {showSpinner && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="h-12 w-12 animate-spin rounded-full border-2 border-white/20 border-t-white/80" />
+          <div
+            className="h-12 w-12 animate-spin rounded-full border-2 border-white/20"
+            style={{ borderTopColor: 'var(--accent)' }}
+          />
         </div>
       )}
 
@@ -547,17 +804,51 @@ export default function JellyfinPlayer({
               </div>
             </div>
 
-            <IconButton label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen}>
-              {isFullscreen ? (
-                <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.6" strokeLinecap="round">
-                  <path d="M8 3v5H3M12 3v5h5M8 17v-5H3M12 17v-5h5" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.6" strokeLinecap="round">
-                  <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" />
-                </svg>
+            <div className="flex items-center gap-1">
+              {hasTrackChoices && (
+                <div className="relative" ref={menuRef}>
+                  <IconButton
+                    label="Audio & subtitles"
+                    active={menuOpen}
+                    onClick={() => {
+                      setMenuOpen(o => !o)
+                      poke()
+                    }}
+                  >
+                    <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2.5" y="4.5" width="15" height="11" rx="2" />
+                      <path d="M5.5 11.5h3M11.5 11.5h3" />
+                    </svg>
+                  </IconButton>
+                  <AnimatePresence>
+                    {menuOpen && (
+                      <TrackMenu
+                        versions={versions}
+                        audio={audioTracks}
+                        subtitles={subtitleTracks}
+                        versionId={sourceId}
+                        audioIndex={audioIndex}
+                        subtitleIndex={subIndex}
+                        onVersion={id => selectVersion(id)}
+                        onAudio={i => selectAudio(i)}
+                        onSubtitle={i => selectSubtitle(i)}
+                      />
+                    )}
+                  </AnimatePresence>
+                </div>
               )}
-            </IconButton>
+              <IconButton label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen}>
+                {isFullscreen ? (
+                  <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.6" strokeLinecap="round">
+                    <path d="M8 3v5H3M12 3v5h5M8 17v-5H3M12 17v-5h5" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.6" strokeLinecap="round">
+                    <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" />
+                  </svg>
+                )}
+              </IconButton>
+            </div>
           </div>
         </motion.div>
       )}

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getReelDetail, getFileInfo, getReelSimilar } from '@/lib/jellyfinServer'
+import { getReelDetail, getMediaInfo, getReelSimilar } from '@/lib/jellyfinServer'
 import { DetailView } from '@/app/_components/media/DetailView'
 
 export const dynamic = 'force-dynamic'
@@ -13,7 +13,7 @@ export default async function MovieDetailPage({
 }) {
   const { id } = await params
   const { play } = await searchParams
-  const [detail, file, similar] = await Promise.all([getReelDetail(id), getFileInfo(id), getReelSimilar(id)])
+  const [detail, media, similar] = await Promise.all([getReelDetail(id), getMediaInfo(id), getReelSimilar(id)])
   if (!detail || detail.type !== 'movie') notFound()
-  return <DetailView detail={detail} file={file} similar={similar} autoPlay={play === '1'} />
+  return <DetailView detail={detail} media={media} similar={similar} autoPlay={play === '1'} />
 }

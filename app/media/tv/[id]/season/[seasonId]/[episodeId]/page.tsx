@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getReelDetail } from '@/lib/jellyfinServer'
+import { getReelDetail, getMediaInfo } from '@/lib/jellyfinServer'
 import { EpisodeDetail } from '@/app/_components/media/EpisodeDetail'
 
 export const dynamic = 'force-dynamic'
@@ -10,7 +10,7 @@ export default async function EpisodePage({
   params: Promise<{ id: string; seasonId: string; episodeId: string }>
 }) {
   const { id, seasonId, episodeId } = await params
-  const detail = await getReelDetail(id)
+  const [detail, media] = await Promise.all([getReelDetail(id), getMediaInfo(episodeId)])
   if (!detail || detail.type !== 'tv') notFound()
-  return <EpisodeDetail detail={detail} seasonId={seasonId} episodeId={episodeId} />
+  return <EpisodeDetail detail={detail} seasonId={seasonId} episodeId={episodeId} media={media} />
 }
