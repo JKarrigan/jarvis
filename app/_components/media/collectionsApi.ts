@@ -36,6 +36,15 @@ export async function removeFromCollection(collectionId: string, titleId: string
   return res.ok
 }
 
+export async function renameCollection(collectionId: string, name: string): Promise<boolean> {
+  const res = await fetch(`/api/jellyfin/collections/${collectionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  return res.ok
+}
+
 export async function deleteCollection(collectionId: string): Promise<boolean> {
   const res = await fetch(`/api/jellyfin/collections/${collectionId}`, { method: 'DELETE' })
   return res.ok

@@ -35,6 +35,10 @@ export interface ReelTitle {
   posterColor: string
   backdropColor: string
   synopsis?: string
+  /** Short one-liner shown above the synopsis (Jellyfin Taglines[0]). */
+  tagline?: string
+  /** Free-form tags (Jellyfin Tags). */
+  tags?: string[]
 }
 
 /** A Continue-watching entry (movie in progress, or a show's next/in-progress episode). */

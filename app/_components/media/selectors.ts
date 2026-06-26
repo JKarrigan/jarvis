@@ -110,6 +110,12 @@ export function allGenres(catalog: ReelTitle[]): string[] {
   return [...set].sort()
 }
 
+export function allTags(catalog: ReelTitle[]): string[] {
+  const set = new Set<string>()
+  for (const t of catalog) for (const tag of t.tags ?? []) set.add(tag)
+  return [...set].sort()
+}
+
 export interface Stats {
   hours: number
   days: number

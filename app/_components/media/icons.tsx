@@ -78,3 +78,15 @@ export const CloseIcon = (p: IconProps) => (
 export const TrailerIcon = (p: IconProps) => (
   <svg {...base(p)}><circle cx="10" cy="10" r="7" /><path d="M8.5 7.5v5l4-2.5-4-2.5Z" fill="currentColor" stroke="none" /></svg>
 )
+export const TomatoIcon = (p: IconProps) => (
+  <svg {...base({ fill: 'currentColor', stroke: 'none', ...p })}>
+    <circle cx="10" cy="12" r="6" />
+    <path d="M10 6c-.4-1.3.4-2.5 1.8-2.9-.1 1.3-.7 2.2-1.8 2.9Zm0 0c.4-1.2-.3-2.4-1.7-2.7 0 1.2.6 2.1 1.7 2.7Z" />
+  </svg>
+)
+export const PencilIcon = (p: IconProps) => (
+  <svg {...base(p)}><path d="M12.5 4.5l3 3M4 16l.9-3.4a1 1 0 0 1 .26-.45l7.1-7.1a1 1 0 0 1 1.42 0l1.77 1.77a1 1 0 0 1 0 1.42l-7.1 7.1a1 1 0 0 1-.45.26L4 16Z" /></svg>
+)
+export const TrashIcon = (p: IconProps) => (
+  <svg {...base(p)}><path d="M4.5 6h11M8 6V4.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V6M6 6.5l.6 9a1 1 0 0 0 1 .94h4.8a1 1 0 0 0 1-.94l.6-9M8.5 9v4.5M11.5 9v4.5" /></svg>
+)

@@ -36,7 +36,7 @@ export function EpisodeDetail({
       <button
         type="button"
         onClick={() => router.back()}
-        className="fixed right-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:right-6"
+        className="fixed left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
       >
         <ChevronLeftIcon className="h-4 w-4" /> Back
       </button>

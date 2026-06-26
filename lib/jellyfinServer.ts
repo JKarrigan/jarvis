@@ -260,6 +260,7 @@ interface RawItem {
   Overview?: string
   Genres?: string[]
   Taglines?: string[]
+  Tags?: string[]
   OfficialRating?: string
   CommunityRating?: number
   CriticRating?: number
@@ -388,6 +389,8 @@ function toReelTitle(it: RawItem, kind: 'movies' | 'tv'): ReelTitle {
     posterColor: posterArt(hue),
     backdropColor: backdropArt(hue),
     synopsis: it.Overview,
+    tagline: it.Taglines?.[0],
+    tags: it.Tags ?? [],
   }
 }
 
@@ -424,7 +427,7 @@ function mockCatalog(): ReelTitle[] {
 }
 
 const REEL_FIELDS =
-  'ProductionYear,Genres,Overview,CommunityRating,CriticRating,OfficialRating,DateCreated,MediaSources,ChildCount,RecursiveItemCount'
+  'ProductionYear,Genres,Tags,Overview,CommunityRating,CriticRating,OfficialRating,DateCreated,MediaSources,ChildCount,RecursiveItemCount'
 
 async function fetchReel(kind: 'movies' | 'tv', limit = 600): Promise<ReelTitle[]> {
   const { userId } = await getSession()
@@ -463,6 +466,9 @@ export async function getFeatured(catalog?: ReelTitle[]): Promise<ReelTitle | nu
 }
 
 /** Continue-watching entries with progress + a contextual sub-label. */
+/** Cache tag for the Continue Watching list, busted when an item's progress is cleared. */
+const RESUME_TAG = 'jf-resume'
+
 export async function getReelResume(): Promise<ContinueItem[]> {
   if (!isJellyfinConfigured()) {
     return mockCatalog().slice(0, 4).map((t, i) => ({
@@ -483,7 +489,7 @@ export async function getReelResume(): Promise<ContinueItem[]> {
       Fields: 'ProductionYear,SeriesName,RunTimeTicks',
       ImageTypeLimit: 1,
       EnableImageTypes: 'Primary,Backdrop',
-    })
+    }, { tags: [RESUME_TAG] })
     return data.Items.map(it => {
       const isEpisode = it.Type === 'Episode'
       const seriesId = it.SeriesId
@@ -825,6 +831,25 @@ export async function removeFromCollection(collectionId: string, ids: string[]):
   }
 }
 
+/** Rename a collection. Jellyfin has no rename endpoint, so fetch the BoxSet, change its Name, and post it back. */
+export async function renameCollection(collectionId: string, name: string): Promise<boolean> {
+  const clean = name.trim()
+  if (!clean) return false
+  if (!isJellyfinConfigured()) {
+    const c = mockStore().find(x => x.id === collectionId)
+    if (c) c.name = clean
+    return Boolean(c)
+  }
+  try {
+    const item = await jfGet<Record<string, unknown>>(`/Items/${collectionId}`, {}, { revalidate: 0 })
+    const res = await jfPost(`/Items/${collectionId}`, { ...item, Name: clean })
+    if (res.ok) revalidateTag(COLLECTIONS_TAG, { expire: 0 })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 /** Delete an entire collection (the BoxSet item). */
 export async function deleteCollection(collectionId: string): Promise<boolean> {
   if (!isJellyfinConfigured()) {
@@ -922,7 +947,7 @@ export async function getReelDetail(id: string): Promise<ReelDetail | null> {
   try {
     raw = await jfGet<RawItem>(`/Items/${id}`, {
       userId,
-      Fields: 'Overview,Genres,People,Studios,Taglines,MediaSources,ProductionYear,CriticRating,DateCreated',
+      Fields: 'Overview,Genres,People,Studios,Taglines,Tags,MediaSources,ProductionYear,CommunityRating,CriticRating,DateCreated',
     })
   } catch {
     return null
@@ -1448,4 +1473,17 @@ export async function reportPlayback(
         ? '/Sessions/Playing/Progress'
         : '/Sessions/Playing/Stopped'
   await jfPost(path, body).catch(() => { })
+}
+
+/** Clear an item's resume position (mark it unplayed) so it leaves Continue Watching. */
+export async function clearResumeProgress(itemId: string): Promise<boolean> {
+  if (!isJellyfinConfigured()) return true
+  try {
+    const { userId } = await getSession()
+    const res = await jfDelete(`/Users/${userId}/PlayedItems/${itemId}`)
+    if (res.ok) revalidateTag(RESUME_TAG, { expire: 0 })
+    return res.ok
+  } catch {
+    return false
+  }
 }

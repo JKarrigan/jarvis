@@ -3,8 +3,8 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useMedia } from './MediaProvider'
-import type { ReelTitle } from './types'
-import { POSTER_SHEEN } from './artwork'
+import type { ReelTitle, CollectionSummary } from './types'
+import { POSTER_SHEEN, collArt, collColor } from './artwork'
 import { RECENTLY_ADDED_DAYS } from './selectors'
 import { CheckIcon, HeartIcon } from './icons'
 
@@ -111,6 +111,28 @@ export function PosterCard({
         <p className="truncate text-[13.5px] font-semibold text-ink">{title.title}</p>
         <p className="truncate text-[11.5px] text-white/45">{metaLine(title)}</p>
       </div>
+    </Link>
+  )
+}
+
+/** Landscape collection tile for home/browse rows — links to the collection detail. */
+export function CollectionCard({
+  collection, width = 'w-[260px] md:w-[300px]',
+}: { collection: CollectionSummary; width?: string }) {
+  const art = collection.backdropUrl ?? collection.posterUrl ?? collection.montageUrls?.[0]
+  const count = collection.itemIds.length
+  return (
+    <Link href={`/media/collections/${collection.id}`} className={`group flex shrink-0 flex-col gap-2 ${width}`}>
+      <div className="relative aspect-video w-full overflow-hidden rounded-xl shadow-[0_16px_34px_rgba(0,0,0,0.5)] transition-transform duration-200 group-hover:-translate-y-1">
+        <Poster gradient={collArt(collection.hue)} src={art} alt={collection.name} className="h-full w-full" />
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, transparent 35%, rgba(8,6,13,0.82))' }} />
+        <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-inset ring-white/10 transition group-hover:ring-white/20" />
+        <div className="absolute inset-x-3 bottom-2.5">
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: collColor(collection.hue) }}>Collection</p>
+          <p className="truncate text-[15px] font-bold leading-tight text-ink">{collection.name}</p>
+        </div>
+      </div>
+      <p className="px-0.5 text-[11.5px] text-white/45">{count} title{count === 1 ? '' : 's'}</p>
     </Link>
   )
 }

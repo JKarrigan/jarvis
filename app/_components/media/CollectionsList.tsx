@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { AnimatePresence } from 'framer-motion'
+import { Sheet } from '@/app/_components/HueControls'
 import type { ReelTitle, CollectionSummary } from './types'
 import { collColor } from './artwork'
 import { PosterCard } from './ReelCards'
@@ -38,54 +40,33 @@ function CollectionRow({
 
 export function CollectionsList({ catalog, collections }: { catalog: ReelTitle[]; collections: CollectionSummary[] }) {
   const router = useRouter()
-  const [newName, setNewName] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
 
   const byId = useMemo(() => new Map(catalog.map(t => [t.id, t])), [catalog])
   const resolve = (ids: string[]) => ids.map(id => byId.get(id)).filter((t): t is ReelTitle => Boolean(t))
 
   const rows = collections.map(c => ({ ...c, titles: resolve(c.itemIds) }))
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    const name = newName.trim()
-    if (!name || creating) return
-    setCreating(true)
-    const id = await createCollection(name)
-    setCreating(false)
-    if (id) {
-      setNewName('')
-      router.refresh()
-    }
-  }
-
   return (
     <div className="py-10">
-      <div className="mb-6 pl-[var(--rail)] pr-[var(--gx)]">
-        <h1 className="text-[clamp(34px,8vw,58px)] font-[800] tracking-[-0.025em] text-ink">Collections</h1>
-        <p className="mt-2 text-white/55">Franchises, sagas, and your own — stored on the server.</p>
-
-        <form onSubmit={submit} className="mt-5 flex max-w-[420px] gap-2">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="New collection name…"
-            className="flex-1 rounded-xl border border-border bg-white/5 px-3 py-2 text-sm text-ink placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-accent"
-          />
-          <button
-            type="submit"
-            disabled={!newName.trim() || creating}
-            className="inline-flex items-center gap-1.5 rounded-xl px-4 text-sm font-semibold text-ink-on-accent disabled:opacity-40"
-            style={{ background: 'var(--accent)' }}
-          >
-            <PlusIcon className="h-4 w-4" /> {creating ? 'Creating…' : 'Create'}
-          </button>
-        </form>
+      <div className="mb-6 flex items-start justify-between gap-4 pl-[var(--rail)] pr-[var(--gx)]">
+        <div className="min-w-0">
+          <h1 className="text-[clamp(34px,8vw,58px)] font-[800] leading-[1] tracking-[-0.025em] text-ink">Collections</h1>
+          <p className="mt-1.5 text-white/55">Franchises, sagas, and your own — stored on the server.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowCreate(true)}
+          className="mt-1 inline-flex shrink-0 items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold text-ink-on-accent transition hover:brightness-[1.06]"
+          style={{ background: 'var(--accent)' }}
+        >
+          <PlusIcon className="h-4 w-4" /> New collection
+        </button>
       </div>
 
       {rows.length === 0 ? (
         <p className="pl-[var(--rail)] pr-[var(--gx)] text-sm text-white/45">
-          No collections yet. Create one above, then add titles from any detail page with “Add to collection”.
+          No collections yet. Use “New collection” to make one, then add titles from any detail page with “Add to collection”.
         </p>
       ) : (
         <section className="space-y-12">
@@ -94,6 +75,49 @@ export function CollectionsList({ catalog, collections }: { catalog: ReelTitle[]
           ))}
         </section>
       )}
+
+      <AnimatePresence>
+        {showCreate && (
+          <CreateCollectionSheet
+            onClose={() => setShowCreate(false)}
+            onCreated={() => { setShowCreate(false); router.refresh() }}
+          />
+        )}
+      </AnimatePresence>
     </div>
+  )
+}
+
+function CreateCollectionSheet({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const name = value.trim()
+    if (!name || busy) return
+    setBusy(true)
+    const id = await createCollection(name)
+    setBusy(false)
+    if (id) onCreated(id)
+  }
+
+  return (
+    <Sheet onClose={onClose}>
+      <form onSubmit={submit} className="space-y-4 p-5">
+        <h3 className="text-lg font-semibold text-zinc-100">New collection</h3>
+        <input
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="Collection name…"
+          className="w-full rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-1 focus:ring-amber-300/40"
+        />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-medium text-zinc-300 transition hover:bg-zinc-800">Cancel</button>
+          <button type="submit" disabled={!value.trim() || busy} className="rounded-xl bg-amber-300 px-4 py-2 text-sm font-semibold text-zinc-900 transition disabled:opacity-40">{busy ? 'Creating…' : 'Create'}</button>
+        </div>
+      </form>
+    </Sheet>
   )
 }

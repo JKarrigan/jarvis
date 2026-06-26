@@ -13,7 +13,7 @@ import type { ReelDetail, ReelTitle, MediaInfo, ReelSeasonInfo, CollectionSummar
 import { avatar, backdropFallback, poster } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
 import {
-  PlayIcon, StarIcon, CheckIcon, HeartIcon, BookmarkIcon, PlusIcon, ChevronLeftIcon,
+  PlayIcon, StarIcon, CheckIcon, HeartIcon, BookmarkIcon, PlusIcon, ChevronLeftIcon, TomatoIcon,
 } from './icons'
 
 function runtimeLabel(t: ReelDetail): string {
@@ -30,6 +30,11 @@ function criticColor(rt: number): string {
   if (rt >= 60) return '#f0c25a'
   return '#e88'
 }
+
+/** Body text column padding. On desktop the left edge lines up under the title / Play
+    button (page rail + poster width `md:w-[268px]` + the poster↔info flex gap `md:gap-7`),
+    so the description, credits and tags share one left edge with the header above them. */
+const BODY_PAD = 'pl-[var(--rail)] pr-[var(--gx)] md:pl-[calc(var(--rail)_+_268px_+_1.75rem)]'
 
 /** First unwatched episode walking seasons in order (falls back to the first). */
 function findNextEpisode(seasons: ReelSeasonInfo[] | undefined, isEpWatched: (id: string) => boolean) {
@@ -64,7 +69,7 @@ function ActionButton({
   )
 }
 
-function CreditRow({ label, value }: { label: string; value: string }) {
+function CreditRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex gap-3">
       <dt className="w-20 shrink-0 text-white/40">{label}</dt>
@@ -203,7 +208,7 @@ export function DetailView({
       <button
         type="button"
         onClick={() => router.back()}
-        className="fixed right-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:right-6"
+        className="fixed left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
       >
         <ChevronLeftIcon className="h-4 w-4" /> Back
       </button>
@@ -241,7 +246,27 @@ export function DetailView({
             {detail.title}
           </h1>
 
-          <p className="mt-3 text-sm text-white/60">{runtimeLabel(detail)}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm text-white/60">
+            <span>{runtimeLabel(detail)}</span>
+            {detail.imdb != null && (
+              <>
+                <span className="text-white/30">·</span>
+                <span className="inline-flex items-center gap-1 text-white/80">
+                  <StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} />
+                  {detail.imdb.toFixed(1)}
+                </span>
+              </>
+            )}
+            {detail.rt != null && (
+              <>
+                <span className="text-white/30">·</span>
+                <span className="inline-flex items-center gap-1 font-semibold" style={{ color: criticColor(detail.rt) }}>
+                  <TomatoIcon className="h-4 w-4" />
+                  {Math.round(detail.rt)}%
+                </span>
+              </>
+            )}
+          </div>
 
           {/* Actions */}
           <div className="mt-5 flex flex-wrap items-center gap-2.5">
@@ -323,21 +348,57 @@ export function DetailView({
         </section>
       )}
 
-      {/* Overview + cast */}
-      {detail.synopsis && (
-        <section className="mt-10 pl-[var(--rail)] pr-[var(--gx)]">
-          <p className="max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{detail.synopsis}</p>
+      {/* Tagline + overview */}
+      {(detail.tagline || detail.synopsis) && (
+        <section className={`mt-10 md:mt-2 ${BODY_PAD}`}>
+          {detail.tagline && (
+            <p className="mb-2 max-w-[820px] text-[15px] italic text-white/50 [text-wrap:pretty]">{detail.tagline}</p>
+          )}
+          {detail.synopsis && (
+            <p className="max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{detail.synopsis}</p>
+          )}
         </section>
       )}
 
       {(detail.directors.length > 0 || detail.writers.length > 0 || detail.studios.length > 0 || detail.genres.length > 0) && (
-        <section className="mt-6 pl-[var(--rail)] pr-[var(--gx)]">
-          <dl className="grid max-w-[820px] grid-cols-1 gap-x-10 gap-y-2.5 text-sm sm:grid-cols-2">
+        <section className={`mt-6 pb-2 ${BODY_PAD}`}>
+          <dl className="flex max-w-[820px] flex-col gap-y-2.5 text-sm">
             {detail.directors.length > 0 && <CreditRow label={detail.directors.length > 1 ? 'Directors' : 'Director'} value={detail.directors.join(', ')} />}
             {detail.writers.length > 0 && <CreditRow label={detail.writers.length > 1 ? 'Writers' : 'Writer'} value={detail.writers.join(', ')} />}
             {detail.studios.length > 0 && <CreditRow label={detail.studios.length > 1 ? 'Studios' : 'Studio'} value={detail.studios.join(', ')} />}
-            {detail.genres.length > 0 && <CreditRow label="Genres" value={detail.genres.join(', ')} />}
+            {detail.genres.length > 0 && (
+              <CreditRow
+                label="Genres"
+                value={detail.genres.map((g, i) => (
+                  <span key={g}>
+                    {i > 0 && ', '}
+                    <Link
+                      href={`/media/${detail.type === 'tv' ? 'tv' : 'movies'}?genre=${encodeURIComponent(g)}`}
+                      className="underline-offset-2 transition hover:text-ink hover:underline"
+                    >
+                      {g}
+                    </Link>
+                  </span>
+                ))}
+              />
+            )}
           </dl>
+        </section>
+      )}
+
+      {detail.tags && detail.tags.length > 0 && (
+        <section className={`mt-5 ${BODY_PAD}`}>
+          <div className="flex max-w-[820px] flex-wrap gap-2">
+            {detail.tags.map(t => (
+              <Link
+                key={t}
+                href={`/media/${detail.type === 'tv' ? 'tv' : 'movies'}?tag=${encodeURIComponent(t)}`}
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[12px] text-white/55 transition hover:border-white/20 hover:bg-white/10 hover:text-ink"
+              >
+                {t}
+              </Link>
+            ))}
+          </div>
         </section>
       )}
 
@@ -367,27 +428,8 @@ export function DetailView({
         </section>
       )}
 
-      {/* Details row: Ratings · File · Your rating */}
-      <section className="mt-10 grid gap-4 pl-[var(--rail)] pr-[var(--gx)] md:grid-cols-3">
-        <div className="rounded-2xl border border-border bg-surface p-5">
-          <p className="mb-4 flex items-center gap-2 text-sm font-semibold text-ink"><StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} /> Ratings</p>
-          <div className="flex gap-8">
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Community</p>
-              <p className="mt-1 flex items-center gap-1.5 text-2xl font-bold text-ink">
-                <StarIcon className="h-5 w-5" style={{ color: 'var(--star)' }} />
-                {detail.imdb != null ? detail.imdb.toFixed(1) : '—'}
-              </p>
-            </div>
-            {detail.rt != null && (
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Critics</p>
-                <p className="mt-1 text-2xl font-bold" style={{ color: criticColor(detail.rt) }}>{Math.round(detail.rt)}%</p>
-              </div>
-            )}
-          </div>
-        </div>
-
+      {/* Details row: File · Your rating */}
+      <section className="mt-10 grid gap-4 pl-[var(--rail)] pr-[var(--gx)] md:grid-cols-2">
         <div className="rounded-2xl border border-border bg-surface p-5">
           <p className="mb-3 text-sm font-semibold text-ink">File details</p>
           <dl className="space-y-2 text-[13px]">
@@ -397,7 +439,6 @@ export function DetailView({
               ['Audio', selection.version?.audio.find(a => a.index === selection.audioIndex)?.label],
               ['Container', selection.version?.container],
               ['Size', selection.version?.size],
-              ['Location', selection.version?.path],
             ] as const).filter(([, v]) => v).map(([k, v]) => (
               <div key={k} className="flex items-baseline justify-between gap-3">
                 <dt className="text-white/45">{k}</dt>

@@ -1,17 +1,19 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useMedia } from './MediaProvider'
-import type { ReelTitle, ContinueItem } from './types'
+import type { ReelTitle, ContinueItem, CollectionSummary } from './types'
 import { recommendations, type UserView } from './selectors'
 import { HomeHero } from './HomeHero'
-import { PosterCard, Row, SectionHeader } from './ReelCards'
+import { PosterCard, CollectionCard, Row, SectionHeader } from './ReelCards'
 import { ContinueCard } from './ContinueCard'
 import { useFilteredLibrary, LibraryFilterBar, LibraryGridInner } from './library'
 
 export function HomeBody({
-  featured, resume, catalog,
-}: { featured: ReelTitle | null; resume: ContinueItem[]; catalog: ReelTitle[] }) {
+  featured, resume, catalog, collections,
+}: { featured: ReelTitle | null; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[] }) {
   const { isWatched, isFavorite, watchlist } = useMedia()
   const view: UserView = useMemo(() => ({
     watched: (t) => isWatched(t.id, t.watched),
@@ -19,6 +21,10 @@ export function HomeBody({
   }), [isWatched, isFavorite])
 
   const lib = useFilteredLibrary(catalog)
+
+  const router = useRouter()
+  const [clearedResume, setClearedResume] = useState<Set<string>>(() => new Set())
+  const resumeShown = useMemo(() => resume.filter(r => !clearedResume.has(r.id)), [resume, clearedResume])
 
   const recentlyAdded = useMemo(
     // Newest first (far left), by precise add time so same-day items still order correctly.
@@ -38,10 +44,26 @@ export function HomeBody({
       {showRows && featured && <HomeHero title={featured} />}
 
       <div className="space-y-10 pt-8">
-        {showRows && resume.length > 0 && (
+        {showRows && resumeShown.length > 0 && (
           <section>
             <SectionHeader title="Continue watching" />
-            <Row>{resume.map(r => <ContinueCard key={r.id} item={r} />)}</Row>
+            <Row>
+              <AnimatePresence initial={false}>
+                {resumeShown.map(r => (
+                  <motion.div
+                    key={r.id}
+                    layout
+                    exit={{ opacity: 0, scale: 0.92, transition: { duration: 0.18 } }}
+                    className="shrink-0"
+                  >
+                    <ContinueCard
+                      item={r}
+                      onCleared={() => { setClearedResume(s => new Set(s).add(r.id)); router.refresh() }}
+                    />
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </Row>
           </section>
         )}
 
@@ -49,6 +71,13 @@ export function HomeBody({
           <section>
             <SectionHeader title="Recently added" />
             <Row>{recentlyAdded.map(t => <PosterCard key={t.id} title={t} showAddedDays />)}</Row>
+          </section>
+        )}
+
+        {showRows && collections.length > 0 && (
+          <section>
+            <SectionHeader title="Collections" />
+            <Row>{collections.slice(0, 18).map(c => <CollectionCard key={c.id} collection={c} />)}</Row>
           </section>
         )}
 
@@ -71,8 +100,9 @@ export function HomeBody({
           <LibraryFilterBar
             sort={lib.sort} setSort={lib.setSort}
             genre={lib.genre} setGenre={lib.setGenre}
+            tag={lib.tag} setTag={lib.setTag}
             show={lib.show} setShow={lib.setShow}
-            genres={lib.genres} count={lib.result.length}
+            genres={lib.genres} tags={lib.tags} count={lib.result.length}
           />
           <LibraryGridInner titles={lib.result} />
         </section>
