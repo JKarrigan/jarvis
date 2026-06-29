@@ -20,6 +20,29 @@ interface PlaybackSource {
 
 type ReportKind = 'start' | 'progress' | 'stopped'
 
+/**
+ * Structural type for a hls.js instance — declared here so the source-loading
+ * effect and the stall watchdog can share the live instance via a ref without
+ * statically importing hls.js (it stays dynamically imported / out of the bundle).
+ */
+type HlsInstance = {
+  destroy: () => void
+  startLoad: (startPosition?: number) => void
+  recoverMediaError: () => void
+  swapAudioCodec: () => void
+  loadSource: (url: string) => void
+  attachMedia: (el: HTMLMediaElement) => void
+  on: (event: string, cb: (event: string, data: { type: string; fatal: boolean }) => void) => void
+}
+
+// --- stall / recovery tuning -------------------------------------------------
+const INIT_TIMEOUT_MS = 30_000 // first frame must arrive within this (cold transcode allowance)
+const STALL_SOFT_MS = 6_000 // no currentTime progress this long → cheap nudge
+const STALL_HARD_MS = 15_000 // …this long → full source reload
+const RELOAD_COOLDOWN_MS = 10_000 // min gap between reload escalations
+const HEALTHY_RESET_MS = 30_000 // healthy playback this long → reset recovery counters
+const MAX_RELOADS = 2 // hard cap on watchdog/fatal-driven reloads before giving up
+
 function formatTime(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0
   const s = Math.floor(sec % 60)
@@ -265,6 +288,14 @@ export default function JellyfinPlayer({
   // Seconds to resume to after a manual (selection-driven) reload; 0 = use server position.
   const pendingSeekRef = useRef(0)
 
+  // --- stall watchdog + recovery state (refs: no re-render churn) ----------
+  const hlsRef = useRef<HlsInstance | null>(null)
+  const watchdogRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastProgressRef = useRef({ t: 0, at: 0 })
+  const playStartedAtRef = useRef(0)
+  const nudgedRef = useRef(false)
+  const recoveryRef = useRef({ media: 0, network: 0, reload: 0, lastMediaErrorAt: 0, lastReloadAt: 0 })
+
   const currentVersion = useMemo(
     () => versions.find(v => v.id === sourceId) ?? versions[0] ?? null,
     [versions, sourceId],
@@ -356,8 +387,19 @@ export default function JellyfinPlayer({
   }, [])
 
   // Remember where we are, so the next (selection-driven) source reload resumes here.
+  // A deliberate user switch also refreshes the auto-recovery budget.
   const markResume = useCallback(() => {
     pendingSeekRef.current = videoRef.current?.currentTime ?? 0
+    recoveryRef.current.reload = 0
+    recoveryRef.current.lastReloadAt = 0
+  }, [])
+
+  // Manual retry from the error screen: fresh budget, resume in place, force HLS.
+  const retry = useCallback(() => {
+    recoveryRef.current = { media: 0, network: 0, reload: 0, lastMediaErrorAt: 0, lastReloadAt: 0 }
+    pendingSeekRef.current = videoRef.current?.currentTime || pendingSeekRef.current
+    setError(null)
+    setAttempt(a => a + 1)
   }, [])
 
   const selectVersion = useCallback(
@@ -400,14 +442,22 @@ export default function JellyfinPlayer({
     if (!video) return
 
     let cancelled = false
-    let hls: { destroy: () => void } | null = null
+    let hls: HlsInstance | null = null
     let source: PlaybackSource | null = null
     let progressTimer: ReturnType<typeof setInterval> | null = null
+    const ac = new AbortController()
     const forceHls = attempt > 0
 
     setReady(false)
     setBuffering(true)
     setError(null)
+    // Per-load HLS error counters reset each load (each load = a fresh hls.js
+    // instance). The reload/cooldown budget intentionally PERSISTS across
+    // attempt-driven reloads so MAX_RELOADS can actually cap them.
+    recoveryRef.current.media = 0
+    recoveryRef.current.network = 0
+    recoveryRef.current.lastMediaErrorAt = 0
+    nudgedRef.current = false
 
     function sendReport(kind: ReportKind, paused = false) {
       if (!source || !video) return
@@ -468,13 +518,116 @@ export default function JellyfinPlayer({
       else if (!cancelled) setError('This title could not be played.')
     }
 
+    // --- recovery ladder ---------------------------------------------------
+    // Full source reload: resume at the current position via a fresh HLS load.
+    // Bounded by a cooldown + MAX_RELOADS so an unplayable title can't loop.
+    function escalateReload() {
+      if (cancelled || !video) return
+      const now = performance.now()
+      if (now - recoveryRef.current.lastReloadAt < RELOAD_COOLDOWN_MS) return
+      if (recoveryRef.current.reload >= MAX_RELOADS) {
+        setError('Playback keeps stalling. Try again.')
+        return
+      }
+      recoveryRef.current.reload++
+      recoveryRef.current.lastReloadAt = now
+      pendingSeekRef.current = video.currentTime || pendingSeekRef.current
+      setAttempt(a => (a > 0 ? a + 1 : 1)) // >0 forces HLS on reload
+    }
+
+    function giveUp() {
+      if (recoveryRef.current.reload < MAX_RELOADS) escalateReload()
+      else if (!cancelled) setError('Playback keeps stalling. Try again.')
+    }
+
+    // hls.js fatal-error recovery — the direct fix for "audio plays, video frozen".
+    function onHlsError(
+      HlsCtor: { ErrorTypes: { NETWORK_ERROR: string; MEDIA_ERROR: string } },
+      data: { type: string; fatal: boolean },
+    ) {
+      if (!data.fatal || cancelled) return
+      const h = hlsRef.current
+      const now = performance.now()
+      if (data.type === HlsCtor.ErrorTypes.NETWORK_ERROR) {
+        if (recoveryRef.current.network >= 2) return giveUp()
+        recoveryRef.current.network++
+        h?.startLoad()
+        return
+      }
+      if (data.type === HlsCtor.ErrorTypes.MEDIA_ERROR) {
+        const recent = now - recoveryRef.current.lastMediaErrorAt < 3000
+        recoveryRef.current.lastMediaErrorAt = now
+        if (recoveryRef.current.media >= 2) return giveUp()
+        recoveryRef.current.media++
+        // A second media error in quick succession (audio fine, video stuck) →
+        // swap the audio codec before recovering, hls.js's canonical remedy.
+        if (recent && recoveryRef.current.media >= 2) h?.swapAudioCodec()
+        h?.recoverMediaError()
+        return
+      }
+      giveUp()
+    }
+
+    // Cheap, branch-aware nudge tried once per stall episode before a reload.
+    function nudge() {
+      if (!video) return
+      nudgedRef.current = true
+      const h = hlsRef.current
+      if (h) {
+        h.startLoad()
+      } else {
+        // direct / native HLS: a tiny seek re-primes the decoder
+        try {
+          video.currentTime = video.currentTime + 0.1
+        } catch {
+          /* not seekable */
+        }
+        video.play().catch(() => {})
+      }
+    }
+
+    // Polled stall detector — measures real currentTime progress (not the
+    // `buffering` flag) so legitimately slow buffering isn't mistaken for a stall.
+    function watchdogTick() {
+      if (cancelled || !video) return
+      const now = performance.now()
+
+      // (a) initial load never completes — metadata never arrived
+      if (video.readyState < 1) {
+        if (now - playStartedAtRef.current > INIT_TIMEOUT_MS) escalateReload()
+        return
+      }
+      // (b) user-driven non-advancement (pause / seek / end) is never a stall
+      if (video.paused || video.ended || video.seeking) {
+        lastProgressRef.current = { t: video.currentTime, at: now }
+        return
+      }
+      // (c) progressing normally — reset baseline; decay recovery budget after a healthy stretch
+      if (video.currentTime > lastProgressRef.current.t + 0.05) {
+        lastProgressRef.current = { t: video.currentTime, at: now }
+        nudgedRef.current = false
+        if (now - recoveryRef.current.lastReloadAt > HEALTHY_RESET_MS) {
+          recoveryRef.current.reload = 0
+          recoveryRef.current.media = 0
+          recoveryRef.current.network = 0
+        }
+        return
+      }
+      // (d) stalled while it should be playing
+      const stalledFor = now - lastProgressRef.current.at
+      if (stalledFor > STALL_HARD_MS) escalateReload()
+      else if (stalledFor > STALL_SOFT_MS && !nudgedRef.current) nudge()
+    }
+
     async function init() {
       try {
         const params = new URLSearchParams({ id: itemId, hls: forceHls ? '1' : '0' })
         if (sourceId) params.set('mediaSourceId', sourceId)
         if (audioIndex != null) params.set('audio', String(audioIndex))
         if (burnSubIndex != null) params.set('subtitle', String(burnSubIndex))
-        const res = await fetch(`/api/jellyfin/playback?${params.toString()}`)
+        const res = await fetch(`/api/jellyfin/playback?${params.toString()}`, {
+          signal: AbortSignal.any([ac.signal, AbortSignal.timeout(15_000)]),
+        })
         if (!res.ok) throw new Error('No playable source')
         source = (await res.json()) as PlaybackSource
         if (cancelled || !video) return
@@ -487,8 +640,13 @@ export default function JellyfinPlayer({
           if (cancelled) return
           if (Hls.isSupported()) {
             const startAt = resumeSeconds()
-            const h = new Hls({ startPosition: startAt > 0 ? startAt : -1 })
+            const h = new Hls({
+              startPosition: startAt > 0 ? startAt : -1,
+              highBufferWatchdogPeriod: 2,
+            }) as unknown as HlsInstance
             hls = h
+            hlsRef.current = h
+            h.on(Hls.Events.ERROR, (_evt, data) => onHlsError(Hls, data))
             h.loadSource(source.url)
             h.attachMedia(video)
           } else {
@@ -505,11 +663,22 @@ export default function JellyfinPlayer({
         video.addEventListener('error', onError)
 
         progressTimer = setInterval(() => sendReport('progress', video.paused), 10_000)
+
+        playStartedAtRef.current = performance.now()
+        lastProgressRef.current = { t: 0, at: performance.now() }
+        watchdogRef.current = setInterval(watchdogTick, 1_000)
+
         video.play().catch(() => {
           /* autoplay may need a gesture; the play button is shown */
         })
       } catch (e) {
-        if (!cancelled) setError((e as Error).message || 'Playback failed')
+        if (cancelled) return // benign cleanup abort
+        const name = (e as Error).name
+        setError(
+          name === 'TimeoutError' || name === 'AbortError'
+            ? 'Could not reach the server. Try again.'
+            : (e as Error).message || 'Playback failed',
+        )
       }
     }
 
@@ -517,7 +686,10 @@ export default function JellyfinPlayer({
 
     return () => {
       cancelled = true
+      ac.abort()
       if (progressTimer) clearInterval(progressTimer)
+      if (watchdogRef.current) clearInterval(watchdogRef.current)
+      watchdogRef.current = null
       sendReport('stopped')
       video.removeEventListener('loadedmetadata', onLoadedMetadata)
       video.removeEventListener('playing', onPlaying)
@@ -525,6 +697,7 @@ export default function JellyfinPlayer({
       video.removeEventListener('ended', onEnded)
       video.removeEventListener('error', onError)
       hls?.destroy()
+      hlsRef.current = null
       video.pause()
       video.removeAttribute('src')
       video.load()
@@ -695,12 +868,21 @@ export default function JellyfinPlayer({
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-zinc-300">{error}</p>
-          <button
-            onClick={() => onCloseRef.current()}
-            className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
-          >
-            Close
-          </button>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={retry}
+              className="rounded-full px-4 py-1.5 text-sm font-medium text-black"
+              style={{ background: 'var(--accent)' }}
+            >
+              Try again
+            </button>
+            <button
+              onClick={() => onCloseRef.current()}
+              className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
 

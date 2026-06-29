@@ -115,6 +115,11 @@ function clearSession() {
 // Fetch helpers
 // ---------------------------------------------------------------------------
 
+// Hard ceiling on any single Jellyfin request so a hung server fails fast into
+// the client's error/retry path instead of hanging the route (and the player)
+// forever.
+const JF_TIMEOUT_MS = 10_000
+
 type Params = Record<string, string | number | boolean | undefined>
 function qs(params: Params): string {
   const usp = new URLSearchParams()
@@ -133,6 +138,8 @@ async function jfGet<T>(
     fetch(`${url}${path}${qs(params)}`, {
       headers: { Authorization: authHeader(token), Accept: 'application/json' },
       next: { revalidate: opts.revalidate ?? 300, tags: opts.tags },
+      // Fresh timeout per call, so the 401-reauth retry below isn't starved.
+      signal: AbortSignal.timeout(JF_TIMEOUT_MS),
     })
   let session = await getSession()
   let res = await run(session.accessToken)
@@ -157,6 +164,7 @@ async function jfPost(path: string, body?: unknown, params: Params = {}): Promis
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',
+    signal: AbortSignal.timeout(JF_TIMEOUT_MS),
   })
 }
 

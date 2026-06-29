@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 function mimeForCodec(codec: string): string {
   switch (codec.toLowerCase()) {
@@ -12,8 +12,21 @@ function mimeForCodec(codec: string): string {
   }
 }
 
+// --- stall / recovery tuning (mirrors JellyfinPlayer) ------------------------
+const STALL_SOFT_MS = 6_000 // no currentTime progress this long → cheap nudge
+const STALL_HARD_MS = 15_000 // …this long → re-fetch the stream from here
+const RELOAD_COOLDOWN_MS = 10_000 // min gap between reloads
+const MAX_RELOADS = 2 // cap before surfacing the error UI
+
 export function VideoPlayer({ src, className }: { src: string; className?: string }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const [buffering, setBuffering] = useState(true)
+  const [error, setError] = useState<string | null>(() =>
+    typeof window !== 'undefined' && !window.MediaSource
+      ? 'Playback is not supported in this browser.'
+      : null,
+  )
+  const [reloadKey, setReloadKey] = useState(0) // bump to restart the whole pipeline
 
   useEffect(() => {
     const video = videoRef.current
@@ -26,21 +39,41 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
     let queue: Uint8Array[] = []
     let debounce: ReturnType<typeof setTimeout> | null = null
     let skipNextSeek = false
+    let disposed = false
+
+    // recovery state (plain locals — the effect owns one playback session)
+    const lastProgress = { t: 0, at: 0 }
+    let nudged = false
+    const recovery = { reload: 0, lastReloadAt: 0 }
 
     function flush(sb: SourceBuffer) {
       if (sb.updating || queue.length === 0) return
       const chunk = queue.shift()!
       try {
-        sb.appendBuffer(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer)
+        sb.appendBuffer(
+          chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer,
+        )
       } catch (e) {
         queue.unshift(chunk)
-        console.error('[VP] appendBuffer error:', e)
+        // SourceBuffer is full (inevitable on a long title) — evict already-played
+        // data and let the `updateend` listener re-drive flush(). Without this the
+        // same chunk retries forever and playback stalls permanently.
+        if ((e as Error).name === 'QuotaExceededError') {
+          const cur = video!.currentTime
+          if (!sb.updating && cur > 40) {
+            try {
+              sb.remove(0, cur - 30)
+            } catch {
+              /* ignore */
+            }
+          }
+        } else {
+          console.error('[VideoPlayer] appendBuffer error:', e)
+        }
       }
     }
 
     async function startFrom(t: number) {
-      console.log(`[VP] startFrom(${t.toFixed(2)})`)
-
       abort?.abort()
       abort = null
       queue = []
@@ -59,123 +92,192 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
       objectUrl = url
       video!.src = url
 
-      ms.addEventListener('sourceclose', () => console.log('[VP] MediaSource closed unexpectedly'))
-      ms.addEventListener('sourceerror', () => console.error('[VP] MediaSource error'))
+      ms.addEventListener('sourceerror', () => console.error('[VideoPlayer] MediaSource error'))
 
-      console.log('[VP] waiting for sourceopen...')
       await new Promise<void>(r => ms.addEventListener('sourceopen', () => r(), { once: true }))
-      if (activeMs !== ms) { console.log('[VP] superseded before sourceopen completed'); return }
-      console.log('[VP] sourceopen fired, ms.readyState:', ms.readyState)
+      if (activeMs !== ms || disposed) return
 
       const ctrl = new AbortController()
       abort = ctrl
 
       try {
         const apiUrl = t > 0 ? `${src}&t=${t.toFixed(3)}` : src
-        console.log('[VP] fetching:', apiUrl)
         const res = await fetch(apiUrl, { signal: ctrl.signal })
-        console.log('[VP] fetch response:', res.status, 'ok:', res.ok)
-        console.log('[VP] X-Video-Codec:', res.headers.get('X-Video-Codec'))
-        console.log('[VP] X-Duration-Seconds:', res.headers.get('X-Duration-Seconds'))
-
-        if (!res.ok || !res.body || activeMs !== ms) {
-          console.log('[VP] aborting: res.ok =', res.ok, 'activeMs match =', activeMs === ms)
+        if (activeMs !== ms || disposed) return
+        if (!res.ok) {
+          setError('This file could not be played.')
           return
         }
+        if (!res.body) return
 
         const mime = mimeForCodec(res.headers.get('X-Video-Codec') ?? '')
         const dur = parseFloat(res.headers.get('X-Duration-Seconds') ?? '0')
-        console.log('[VP] mime:', mime, '  duration:', dur)
-        console.log('[VP] MediaSource.isTypeSupported:', MediaSource.isTypeSupported(mime))
+
+        // Codec guard: surface a clear message instead of a silently frozen frame
+        // when the browser can't decode this codec in MSE (e.g. HEVC).
+        if (!MediaSource.isTypeSupported(mime)) {
+          res.body.cancel()
+          setError('This file can’t be played in the browser.')
+          return
+        }
 
         let sb: SourceBuffer
         try {
           sb = ms.addSourceBuffer(mime)
-          console.log('[VP] SourceBuffer created, mode:', sb.mode)
         } catch (err) {
-          console.error('[VP] addSourceBuffer failed:', err)
+          console.error('[VideoPlayer] addSourceBuffer failed:', err)
           res.body.cancel()
+          setError('This file can’t be played in the browser.')
           return
         }
         activeSb = sb
-
-        sb.addEventListener('error', (e) => console.error('[VP] SourceBuffer error event:', e))
-        sb.addEventListener('abort', () => console.warn('[VP] SourceBuffer abort event'))
+        sb.addEventListener('updateend', () => flush(sb))
 
         if (dur > 0 && isFinite(dur)) {
-          try { ms.duration = dur; console.log('[VP] ms.duration set to', dur) }
-          catch (e) { console.error('[VP] failed to set ms.duration:', e) }
+          try {
+            ms.duration = dur
+          } catch {
+            /* ignore */
+          }
         }
 
         if (t > 0) {
-          console.log('[VP] setting video.currentTime =', t)
           skipNextSeek = true
           video!.currentTime = t
-          console.log('[VP] video.currentTime is now:', video!.currentTime, 'seeking:', video!.seeking)
         }
 
-        sb.addEventListener('updateend', () => flush(sb))
-
-        let chunkCount = 0
         const reader = res.body.getReader()
         while (true) {
           const { value, done } = await reader.read()
-          if (ctrl.signal.aborted) { console.log('[VP] stream aborted after', chunkCount, 'chunks'); return }
-          if (done) { console.log('[VP] stream done after', chunkCount, 'chunks'); break }
-          chunkCount++
-          if (chunkCount <= 3) console.log(`[VP] chunk #${chunkCount} size:`, value.byteLength)
+          if (ctrl.signal.aborted || disposed) return
+          if (done) break
           queue.push(value)
           flush(sb)
         }
-        console.log('[VP] buffered ranges:', Array.from({ length: video!.buffered.length }, (_, i) =>
-          `[${video!.buffered.start(i).toFixed(1)}, ${video!.buffered.end(i).toFixed(1)}]`).join(', '))
       } catch (e) {
-        if ((e as Error).name !== 'AbortError') console.error('[VP] fetch error:', e)
+        if ((e as Error).name !== 'AbortError' && !disposed) {
+          console.error('[VideoPlayer] stream error:', e)
+          setError('Playback failed.')
+        }
       }
     }
 
-    video.addEventListener('seeking', () => console.log('[VP] video seeking event, currentTime:', video.currentTime, 'buffered ranges:', Array.from({ length: video.buffered.length }, (_, i) => `[${video.buffered.start(i).toFixed(1)}, ${video.buffered.end(i).toFixed(1)}]`).join(', ')))
-    video.addEventListener('seeked', () => console.log('[VP] video seeked event, currentTime:', video.currentTime))
-    video.addEventListener('error', () => console.error('[VP] video error:', video.error))
-    video.addEventListener('waiting', () => console.log('[VP] video waiting, currentTime:', video.currentTime))
+    // Re-fetch the stream from the current position, bounded so a wedged
+    // transcode can't loop forever.
+    function reloadFromCurrent() {
+      const now = performance.now()
+      if (now - recovery.lastReloadAt < RELOAD_COOLDOWN_MS) return
+      if (recovery.reload >= MAX_RELOADS) {
+        setError('Playback keeps stalling. Try again.')
+        return
+      }
+      recovery.reload++
+      recovery.lastReloadAt = now
+      startFrom(video!.currentTime)
+    }
+
+    function watchdogTick() {
+      if (disposed || !video) return
+      const now = performance.now()
+      // not playing for a legitimate reason → reset baseline
+      if (video.readyState < 1 || video.paused || video.ended || video.seeking) {
+        lastProgress.t = video.currentTime
+        lastProgress.at = now
+        return
+      }
+      // progressing → reset baseline
+      if (video.currentTime > lastProgress.t + 0.05) {
+        lastProgress.t = video.currentTime
+        lastProgress.at = now
+        nudged = false
+        return
+      }
+      // stalled while it should be playing
+      const stalledFor = now - lastProgress.at
+      if (stalledFor > STALL_HARD_MS) {
+        reloadFromCurrent()
+      } else if (stalledFor > STALL_SOFT_MS && !nudged) {
+        nudged = true
+        video.play().catch(() => {})
+      }
+    }
+
+    const onWaiting = () => setBuffering(true)
+    const onPlaying = () => setBuffering(false)
+    const onCanPlay = () => setBuffering(false)
+    const onVideoError = () => console.error('[VideoPlayer] video error:', video.error)
 
     function onSeeking() {
-      if (skipNextSeek) { console.log('[VP] onSeeking: skipping (internal seek)'); skipNextSeek = false; return }
-      if (!activeSb) { console.log('[VP] onSeeking: no activeSb yet, ignoring'); return }
-
+      if (skipNextSeek) {
+        skipNextSeek = false
+        return
+      }
+      if (!activeSb) return
       if (debounce) clearTimeout(debounce)
       debounce = setTimeout(() => {
-        const t = video!.currentTime
+        const tt = video!.currentTime
         const buf = video!.buffered
-        console.log('[VP] debounced seek check: t =', t.toFixed(2), 'buffered:', Array.from({ length: buf.length }, (_, i) => `[${buf.start(i).toFixed(1)}, ${buf.end(i).toFixed(1)}]`).join(', '))
         for (let i = 0; i < buf.length; i++) {
-          if (t >= buf.start(i) - 0.5 && t <= buf.end(i) + 0.5) {
-            console.log('[VP] seek target already buffered, no action needed')
-            return
-          }
+          if (tt >= buf.start(i) - 0.5 && tt <= buf.end(i) + 0.5) return // already buffered
         }
-        startFrom(t)
+        startFrom(tt)
       }, 200)
     }
 
+    video.addEventListener('waiting', onWaiting)
+    video.addEventListener('playing', onPlaying)
+    video.addEventListener('canplay', onCanPlay)
+    video.addEventListener('error', onVideoError)
     video.addEventListener('seeking', onSeeking)
+
+    lastProgress.t = 0
+    lastProgress.at = performance.now()
+    const watchdog = setInterval(watchdogTick, 1_000)
+
     startFrom(0)
 
     return () => {
+      disposed = true
+      clearInterval(watchdog)
       if (debounce) clearTimeout(debounce)
       abort?.abort()
+      video.removeEventListener('waiting', onWaiting)
+      video.removeEventListener('playing', onPlaying)
+      video.removeEventListener('canplay', onCanPlay)
+      video.removeEventListener('error', onVideoError)
       video.removeEventListener('seeking', onSeeking)
       video.src = ''
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [src])
+  }, [src, reloadKey])
+
+  const retry = () => {
+    setError(null)
+    setBuffering(true)
+    setReloadKey(k => k + 1)
+  }
 
   return (
-    <video
-      ref={videoRef}
-      controls
-      autoPlay
-      className={className ?? 'max-h-full max-w-full rounded-lg'}
-    />
+    <div className={`relative flex h-full w-full items-center justify-center ${className ?? ''}`}>
+      <video ref={videoRef} controls autoPlay className="max-h-full max-w-full rounded-lg" />
+
+      {buffering && !error && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="h-12 w-12 animate-spin rounded-full border-2 border-zinc-700 border-t-zinc-300" />
+        </div>
+      )}
+
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+          <p className="text-zinc-300">{error}</p>
+          <button
+            onClick={retry}
+            className="rounded-full bg-zinc-200 px-4 py-1.5 text-sm font-medium text-zinc-900 transition-colors hover:bg-white"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+    </div>
   )
 }

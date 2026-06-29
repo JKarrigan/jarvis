@@ -47,6 +47,9 @@ export async function GET(request: Request) {
   const { durationSec, codec } = await probeVideo(abs)
 
   let ff: ReturnType<typeof spawn> | null = null
+  let gotData = false
+  let settled = false
+  let firstByteTimer: ReturnType<typeof setTimeout> | null = null
 
   const ffArgs = [
     ...(seekTo > 0 ? ['-ss', String(seekTo)] : []),
@@ -64,13 +67,42 @@ export async function GET(request: Request) {
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
+      const closeOk = () => { if (!settled) { settled = true; controller.close() } }
+      const fail = (err: Error) => {
+        if (settled) return
+        settled = true
+        ff?.kill('SIGKILL')
+        controller.error(err)
+      }
+
+      // A wedged transcode (e.g. ffmpeg hangs at startup) would otherwise leave
+      // the client buffering forever — bail if no bytes arrive in time.
+      firstByteTimer = setTimeout(() => {
+        if (!gotData) fail(new Error('ffmpeg produced no output'))
+      }, 15_000)
+
       ff = spawn(FFMPEG, ffArgs)
-      ff.stdout!.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-      ff.stdout!.on('end', () => controller.close())
+      ff.stdout!.on('data', (chunk: Buffer) => {
+        if (settled) return
+        if (!gotData) { gotData = true; if (firstByteTimer) clearTimeout(firstByteTimer) }
+        controller.enqueue(new Uint8Array(chunk))
+      })
+      ff.stdout!.on('end', () => { if (gotData) closeOk() })
       ff.stderr!.on('data', (chunk: Buffer) => { process.stderr.write(chunk) })
-      ff.on('error', (err) => controller.error(err))
+      ff.on('error', (err) => fail(err))
+      ff.on('close', (code) => {
+        if (firstByteTimer) clearTimeout(firstByteTimer)
+        // Non-zero exit before any bytes = a real failure; report it instead of
+        // closing an empty stream (which the client renders as a frozen frame).
+        if (code && code !== 0 && !gotData) fail(new Error(`ffmpeg exited with code ${code}`))
+        else closeOk()
+      })
     },
-    cancel() { ff?.kill('SIGKILL') },
+    cancel() {
+      settled = true
+      if (firstByteTimer) clearTimeout(firstByteTimer)
+      ff?.kill('SIGKILL')
+    },
   })
 
   const headers: Record<string, string> = {
