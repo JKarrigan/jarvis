@@ -20,6 +20,18 @@ interface PlaybackSource {
 
 type ReportKind = 'start' | 'progress' | 'stopped'
 
+/** Transient center-screen feedback shown on a user action (YouTube-style). */
+type FlashKind =
+  | 'play'
+  | 'pause'
+  | 'rewind'
+  | 'forward'
+  | 'mute'
+  | 'unmute'
+  | 'volume'
+  | 'fs-enter'
+  | 'fs-exit'
+
 /**
  * Structural type for a hls.js instance — declared here so the source-loading
  * effect and the stall watchdog can share the live instance via a ref without
@@ -150,6 +162,69 @@ function IconButton({
       {children}
     </button>
   )
+}
+
+/** The glyph shown inside the transient center-screen action badge. */
+function FlashIcon({ kind }: { kind: FlashKind }) {
+  const fill = 'h-11 w-11 fill-current'
+  const stroke = 'h-11 w-11 fill-none stroke-current'
+  // Seek glyphs only fill part of their viewBox, so size them up a touch more.
+  const seek = 'h-12 w-12 fill-current'
+  switch (kind) {
+    case 'play':
+      return (
+        <svg viewBox="0 0 16 16" className={fill}>
+          <path d="M4 2.5a.5.5 0 01.768-.422l9 5.5a.5.5 0 010 .844l-9 5.5A.5.5 0 014 13.5v-11z" />
+        </svg>
+      )
+    case 'pause':
+      return (
+        <svg viewBox="0 0 16 16" className={fill}>
+          <path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" />
+        </svg>
+      )
+    case 'rewind':
+      // viewBox origin shifted to center the glyph (true center 9, 8.5), then nudged up ~3px.
+      return (
+        <svg viewBox="-1 -0.3 20 20" className={seek}>
+          <path d="M9 4V1L4 5l5 4V6a4 4 0 11-4 4H3a6 6 0 106-6z" />
+        </svg>
+      )
+    case 'forward':
+      // viewBox origin shifted to center the glyph (true center 11, 8.5), then nudged up ~3px.
+      return (
+        <svg viewBox="1 -0.3 20 20" className={seek}>
+          <path d="M11 4V1l5 4-5 4V6a4 4 0 104 4h2a6 6 0 11-6-6z" />
+        </svg>
+      )
+    case 'mute':
+      return (
+        <svg viewBox="0 0 20 20" className={fill}>
+          <path d="M9 4L5 7H2v6h3l4 3V4z" />
+          <path d="M14.5 7.5l-2 2m0-2l2 2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      )
+    case 'unmute':
+    case 'volume':
+      return (
+        <svg viewBox="0 0 20 20" className={fill}>
+          <path d="M9 4L5 7H2v6h3l4 3V4z" />
+          <path d="M12.5 7a3.5 3.5 0 010 6M14.5 4.5a6.5 6.5 0 010 11" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      )
+    case 'fs-enter':
+      return (
+        <svg viewBox="0 0 20 20" className={stroke} strokeWidth="1.6" strokeLinecap="round">
+          <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" />
+        </svg>
+      )
+    case 'fs-exit':
+      return (
+        <svg viewBox="0 0 20 20" className={stroke} strokeWidth="1.6" strokeLinecap="round">
+          <path d="M8 3v5H3M12 3v5h5M8 17v-5H3M12 17v-5h5" />
+        </svg>
+      )
+  }
 }
 
 function MenuRow({
@@ -350,18 +425,62 @@ export default function JellyfinPlayer({
     }
   }, [])
 
+  // --- transient center-screen action flash (YouTube-style) ---------------
+  const [flash, setFlash] = useState<{ id: number; kind: FlashKind; label?: string } | null>(null)
+  const [announce, setAnnounce] = useState('') // sr-only live-region text (the badge is decorative)
+  const flashIdRef = useRef(0)
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashAction = useCallback((kind: FlashKind, label?: string) => {
+    flashIdRef.current += 1
+    setFlash({ id: flashIdRef.current, kind, label })
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = setTimeout(() => setFlash(null), 600)
+    const phrase: Record<FlashKind, string> = {
+      play: 'Playing',
+      pause: 'Paused',
+      rewind: `Rewind ${label ?? ''}`.trim(),
+      forward: `Forward ${label ?? ''}`.trim(),
+      mute: 'Muted',
+      unmute: 'Unmuted',
+      volume: `Volume ${label ?? ''}`.trim(),
+      'fs-enter': 'Fullscreen',
+      'fs-exit': 'Exited fullscreen',
+    }
+    const msg = phrase[kind]
+    // Re-announce identical consecutive actions by nudging the string (zero-width space).
+    setAnnounce(prev => (prev === msg ? `${msg} ` : msg))
+  }, [])
+  useEffect(() => () => {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
+  }, [])
+
   // --- imperative controls (stable; read the video ref directly) ----------
   const togglePlay = useCallback(() => {
     const v = videoRef.current
     if (!v) return
-    if (v.paused) v.play().catch(() => {})
-    else v.pause()
-  }, [])
-  const seekBy = useCallback((delta: number) => {
-    const v = videoRef.current
-    if (!v) return
-    v.currentTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + delta))
-  }, [])
+    if (v.paused) {
+      v.play().catch(() => {})
+      flashAction('play')
+    } else {
+      v.pause()
+      flashAction('pause')
+    }
+  }, [flashAction])
+  const seekBy = useCallback(
+    (delta: number) => {
+      const v = videoRef.current
+      if (!v) return
+      const before = v.currentTime
+      const target = Math.max(0, Math.min(v.duration || 0, before + delta))
+      v.currentTime = target
+      // Don't flash a phantom jump when clamped to a no-op at the start/end.
+      const moved = target - before
+      if (Math.abs(moved) > 0.05) {
+        flashAction(moved < 0 ? 'rewind' : 'forward', `${Math.round(Math.abs(moved))}s`)
+      }
+    },
+    [flashAction],
+  )
   const seekToFraction = useCallback((f: number) => {
     const v = videoRef.current
     if (!v || !v.duration) return
@@ -372,7 +491,8 @@ export default function JellyfinPlayer({
     const v = videoRef.current
     if (!v) return
     v.muted = !v.muted
-  }, [])
+    flashAction(v.muted ? 'mute' : 'unmute')
+  }, [flashAction])
   const changeVolume = useCallback((f: number) => {
     const v = videoRef.current
     if (!v) return
@@ -382,9 +502,14 @@ export default function JellyfinPlayer({
   const toggleFullscreen = useCallback(() => {
     const el = containerRef.current
     if (!el) return
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
-    else el.requestFullscreen?.().catch(() => {})
-  }, [])
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {})
+      flashAction('fs-exit')
+    } else {
+      el.requestFullscreen?.().catch(() => {})
+      flashAction('fs-enter')
+    }
+  }, [flashAction])
 
   // Remember where we are, so the next (selection-driven) source reload resumes here.
   // A deliberate user switch also refreshes the auto-recovery budget.
@@ -780,6 +905,15 @@ export default function JellyfinPlayer({
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
         seekBy(10)
+      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        const v = videoRef.current
+        if (v) {
+          const raw = (v.muted ? 0 : v.volume) + (e.key === 'ArrowUp' ? 0.1 : -0.1)
+          const next = Math.min(1, Math.max(0, Math.round(raw * 10) / 10)) // snap off IEEE754 drift
+          changeVolume(next)
+          flashAction(next === 0 ? 'mute' : 'volume', `${Math.round(next * 100)}%`)
+        }
       } else if (e.key === 'f') {
         toggleFullscreen()
       } else if (e.key === 'm') {
@@ -789,7 +923,7 @@ export default function JellyfinPlayer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePlay, seekBy, toggleFullscreen, toggleMute, poke])
+  }, [togglePlay, seekBy, toggleFullscreen, toggleMute, changeVolume, flashAction, poke])
 
   // --- track fullscreen state ---------------------------------------------
   useEffect(() => {
@@ -865,8 +999,35 @@ export default function JellyfinPlayer({
         </div>
       )}
 
+      {/* Center action flash — brief state feedback on play/pause/seek/etc.
+          Sits above the video/spinner (z-10) but below the chrome (z-20). */}
+      <AnimatePresence>
+        {flash && !error && (
+          <motion.div
+            key={flash.id}
+            aria-hidden
+            initial={{ opacity: 0, scale: 0.7 }}
+            animate={{ opacity: [0, 1, 1, 0], scale: [0.7, 1, 1, 1.18] }}
+            exit={{ opacity: 0, transition: { duration: 0.12 } }}
+            transition={{ duration: 0.6, times: [0, 0.15, 0.5, 1], ease: 'easeOut' }}
+            className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2"
+          >
+            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm">
+              <FlashIcon kind={flash.kind} />
+            </div>
+            {flash.label && (
+              <span className="text-sm font-semibold tabular-nums text-white drop-shadow">{flash.label}</span>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* Screen-reader announcement for keyboard/imperative actions (the badge is decorative). */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announce}
+      </div>
+
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-zinc-300">{error}</p>
           <div className="flex items-center gap-4">
             <button
@@ -890,7 +1051,7 @@ export default function JellyfinPlayer({
       <motion.div
         animate={{ opacity: controlsVisible ? 1 : 0 }}
         transition={{ duration: 0.2 }}
-        className="absolute inset-x-0 top-0 flex items-start justify-between gap-4 bg-gradient-to-b from-black/70 to-transparent p-4 pb-16"
+        className="absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-4 bg-gradient-to-b from-black/70 to-transparent p-4 pb-16"
       >
         <div className="flex min-w-0 items-center gap-3 pt-1.5">
           {title && (
@@ -927,7 +1088,7 @@ export default function JellyfinPlayer({
         <motion.div
           animate={{ opacity: controlsVisible ? 1 : 0, y: controlsVisible ? 0 : 12 }}
           transition={{ duration: 0.2 }}
-          className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-20"
+          className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-20"
         >
           <div className="flex items-center gap-3">
             <span className="w-12 text-right text-xs tabular-nums text-zinc-300">
