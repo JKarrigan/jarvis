@@ -1,6 +1,22 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
+import {
+  CenterFlash,
+  formatTime,
+  IconButton,
+  IconFullscreenEnter,
+  IconFullscreenExit,
+  IconMuted,
+  IconPause,
+  IconPlay,
+  IconSkipBack,
+  IconSkipForward,
+  IconVolume,
+  Slider,
+  useActionFlash,
+} from '@/app/_components/media/playerUi'
 
 function mimeForCodec(codec: string): string {
   switch (codec.toLowerCase()) {
@@ -20,6 +36,8 @@ const MAX_RELOADS = 2 // cap before surfacing the error UI
 
 export function VideoPlayer({ src, className }: { src: string; className?: string }) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+
   const [buffering, setBuffering] = useState(true)
   const [error, setError] = useState<string | null>(() =>
     typeof window !== 'undefined' && !window.MediaSource
@@ -28,6 +46,22 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
   )
   const [reloadKey, setReloadKey] = useState(0) // bump to restart the whole pipeline
 
+  // --- UI state (mirrors the media element) -------------------------------
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [bufferedEnd, setBufferedEnd] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showControls, setShowControls] = useState(true)
+
+  const isPlayingRef = useRef(false)
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const { flash, announce, flashAction } = useActionFlash()
+
+  // --- streaming pipeline (MediaSource + ffmpeg) --------------------------
   useEffect(() => {
     const video = videoRef.current
     if (!video || typeof window === 'undefined' || !window.MediaSource) return
@@ -202,11 +236,6 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
       }
     }
 
-    const onWaiting = () => setBuffering(true)
-    const onPlaying = () => setBuffering(false)
-    const onCanPlay = () => setBuffering(false)
-    const onVideoError = () => console.error('[VideoPlayer] video error:', video.error)
-
     function onSeeking() {
       if (skipNextSeek) {
         skipNextSeek = false
@@ -224,10 +253,6 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
       }, 200)
     }
 
-    video.addEventListener('waiting', onWaiting)
-    video.addEventListener('playing', onPlaying)
-    video.addEventListener('canplay', onCanPlay)
-    video.addEventListener('error', onVideoError)
     video.addEventListener('seeking', onSeeking)
 
     lastProgress.t = 0
@@ -241,15 +266,175 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
       clearInterval(watchdog)
       if (debounce) clearTimeout(debounce)
       abort?.abort()
-      video.removeEventListener('waiting', onWaiting)
-      video.removeEventListener('playing', onPlaying)
-      video.removeEventListener('canplay', onCanPlay)
-      video.removeEventListener('error', onVideoError)
       video.removeEventListener('seeking', onSeeking)
       video.src = ''
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [src, reloadKey])
+
+  // --- control visibility (auto-hide while playing) -----------------------
+  const poke = useCallback(() => {
+    setShowControls(true)
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    if (isPlayingRef.current) {
+      hideTimerRef.current = setTimeout(() => setShowControls(false), 3000)
+    }
+  }, [])
+  useEffect(
+    () => () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+    },
+    [],
+  )
+
+  // --- sync UI state from the media element (listeners persist across reloads) ---
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const onPlay = () => {
+      isPlayingRef.current = true
+      setIsPlaying(true)
+      poke()
+    }
+    const onPause = () => {
+      isPlayingRef.current = false
+      setIsPlaying(false)
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current)
+      setShowControls(true)
+    }
+    const onTime = () => setCurrentTime(v.currentTime)
+    const onDuration = () => setDuration(v.duration || 0)
+    const onProgress = () =>
+      setBufferedEnd(v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0)
+    const onWaiting = () => setBuffering(true)
+    const onCanPlay = () => setBuffering(false)
+    const onVolume = () => {
+      setVolume(v.volume)
+      setMuted(v.muted)
+    }
+    const onVideoError = () => console.error('[VideoPlayer] video error:', v.error)
+
+    v.addEventListener('play', onPlay)
+    v.addEventListener('pause', onPause)
+    v.addEventListener('timeupdate', onTime)
+    v.addEventListener('durationchange', onDuration)
+    v.addEventListener('progress', onProgress)
+    v.addEventListener('waiting', onWaiting)
+    v.addEventListener('playing', onCanPlay)
+    v.addEventListener('canplay', onCanPlay)
+    v.addEventListener('volumechange', onVolume)
+    v.addEventListener('error', onVideoError)
+    return () => {
+      v.removeEventListener('play', onPlay)
+      v.removeEventListener('pause', onPause)
+      v.removeEventListener('timeupdate', onTime)
+      v.removeEventListener('durationchange', onDuration)
+      v.removeEventListener('progress', onProgress)
+      v.removeEventListener('waiting', onWaiting)
+      v.removeEventListener('playing', onCanPlay)
+      v.removeEventListener('canplay', onCanPlay)
+      v.removeEventListener('volumechange', onVolume)
+      v.removeEventListener('error', onVideoError)
+    }
+  }, [poke])
+
+  // --- imperative controls (stable; read the video ref directly) ----------
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) {
+      v.play().catch(() => {})
+      flashAction('play')
+    } else {
+      v.pause()
+      flashAction('pause')
+    }
+  }, [flashAction])
+  const seekBy = useCallback(
+    (delta: number) => {
+      const v = videoRef.current
+      if (!v) return
+      const before = v.currentTime
+      const target = Math.max(0, Math.min(v.duration || 0, before + delta))
+      v.currentTime = target
+      const moved = target - before
+      if (Math.abs(moved) > 0.05) {
+        flashAction(moved < 0 ? 'rewind' : 'forward', `${Math.round(Math.abs(moved))}s`)
+      }
+    },
+    [flashAction],
+  )
+  const seekToFraction = useCallback((f: number) => {
+    const v = videoRef.current
+    if (!v || !v.duration) return
+    v.currentTime = f * v.duration
+    setCurrentTime(v.currentTime)
+  }, [])
+  const toggleMute = useCallback(() => {
+    const v = videoRef.current
+    if (!v) return
+    v.muted = !v.muted
+    flashAction(v.muted ? 'mute' : 'unmute')
+  }, [flashAction])
+  const changeVolume = useCallback((f: number) => {
+    const v = videoRef.current
+    if (!v) return
+    v.muted = false
+    v.volume = Math.min(1, Math.max(0, f))
+  }, [])
+  const toggleFullscreen = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {})
+      flashAction('fs-exit')
+    } else {
+      el.requestFullscreen?.().catch(() => {})
+      flashAction('fs-enter')
+    }
+  }, [flashAction])
+
+  // --- track fullscreen state ---------------------------------------------
+  useEffect(() => {
+    const onFullscreen = () => setIsFullscreen(Boolean(document.fullscreenElement))
+    document.addEventListener('fullscreenchange', onFullscreen)
+    return () => document.removeEventListener('fullscreenchange', onFullscreen)
+  }, [])
+
+  // Focus the player so keyboard shortcuts work immediately (and so our handler,
+  // not the file-preview modal's window listener, receives the arrow keys).
+  useEffect(() => {
+    containerRef.current?.focus()
+  }, [])
+
+  // Keyboard shortcuts — scoped to the container. We stopPropagation on keys we
+  // handle so the surrounding preview modal's Arrow navigation doesn't also fire.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const handled = new Set([' ', 'k', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'f', 'm'])
+    if (!handled.has(e.key)) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.key === ' ' || e.key === 'k') {
+      togglePlay()
+    } else if (e.key === 'ArrowLeft') {
+      seekBy(-10)
+    } else if (e.key === 'ArrowRight') {
+      seekBy(10)
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      const v = videoRef.current
+      if (v) {
+        const raw = (v.muted ? 0 : v.volume) + (e.key === 'ArrowUp' ? 0.1 : -0.1)
+        const next = Math.min(1, Math.max(0, Math.round(raw * 10) / 10))
+        changeVolume(next)
+        flashAction(next === 0 ? 'mute' : 'volume', `${Math.round(next * 100)}%`)
+      }
+    } else if (e.key === 'f') {
+      toggleFullscreen()
+    } else if (e.key === 'm') {
+      toggleMute()
+    }
+    poke()
+  }
 
   const retry = () => {
     setError(null)
@@ -257,18 +442,38 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
     setReloadKey(k => k + 1)
   }
 
-  return (
-    <div className={`relative flex h-full w-full items-center justify-center ${className ?? ''}`}>
-      <video ref={videoRef} controls autoPlay className="max-h-full max-w-full rounded-lg" />
+  const controlsVisible = showControls || !isPlaying
 
-      {buffering && !error && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+  return (
+    <div
+      ref={containerRef}
+      onPointerMove={poke}
+      onKeyDown={onKeyDown}
+      tabIndex={-1}
+      className={`relative flex h-full w-full items-center justify-center overflow-hidden rounded-lg bg-black outline-none ${
+        !controlsVisible ? 'cursor-none' : ''
+      } ${className ?? ''}`}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        onClick={togglePlay}
+        onPointerDown={() => containerRef.current?.focus()}
+        className="absolute inset-0 h-full w-full bg-black object-contain"
+      />
+
+      {buffering && !error && !flash && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
           <div className="h-12 w-12 animate-spin rounded-full border-2 border-zinc-700 border-t-zinc-300" />
         </div>
       )}
 
+      {/* Center action flash — brief state feedback on play/pause/seek/etc. */}
+      <CenterFlash flash={flash} announce={announce} suppressed={Boolean(error)} />
+
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 px-6 text-center">
           <p className="text-zinc-300">{error}</p>
           <button
             onClick={retry}
@@ -277,6 +482,55 @@ export function VideoPlayer({ src, className }: { src: string; className?: strin
             Try again
           </button>
         </div>
+      )}
+
+      {/* Bottom controls */}
+      {!error && (
+        <motion.div
+          animate={{ opacity: controlsVisible ? 1 : 0, y: controlsVisible ? 0 : 12 }}
+          transition={{ duration: 0.2 }}
+          className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-20"
+        >
+          <div className="flex items-center gap-3">
+            <span className="w-12 text-right text-xs tabular-nums text-zinc-300">
+              {formatTime(currentTime)}
+            </span>
+            <Slider
+              ariaLabel="Seek"
+              fraction={duration ? currentTime / duration : 0}
+              buffered={duration ? bufferedEnd / duration : 0}
+              onChange={seekToFraction}
+            />
+            <span className="w-12 text-xs tabular-nums text-zinc-400">{formatTime(duration)}</span>
+          </div>
+
+          <div className="mt-1 flex items-center justify-between">
+            <div className="flex items-center gap-1">
+              <IconButton label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlay}>
+                {isPlaying ? <IconPause /> : <IconPlay />}
+              </IconButton>
+              <IconButton label="Back 10 seconds" onClick={() => seekBy(-10)}>
+                <IconSkipBack />
+              </IconButton>
+              <IconButton label="Forward 10 seconds" onClick={() => seekBy(10)}>
+                <IconSkipForward />
+              </IconButton>
+
+              <div className="ml-1 flex items-center gap-2">
+                <IconButton label={muted ? 'Unmute' : 'Mute'} onClick={toggleMute}>
+                  {muted || volume === 0 ? <IconMuted /> : <IconVolume />}
+                </IconButton>
+                <div className="w-20">
+                  <Slider ariaLabel="Volume" fraction={muted ? 0 : volume} onChange={changeVolume} />
+                </div>
+              </div>
+            </div>
+
+            <IconButton label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen}>
+              {isFullscreen ? <IconFullscreenExit /> : <IconFullscreenEnter />}
+            </IconButton>
+          </div>
+        </motion.div>
       )}
     </div>
   )

@@ -804,23 +804,33 @@ function PreviewModal({
     function handler(e: KeyboardEvent) {
       if (e.key === 'Escape') { onClose(); return }
       if (!hasSiblings) return
+      // The video player owns Arrow keys for seeking (it may not hold focus), so
+      // don't navigate siblings out from under a playing video.
+      if (fileTypeInfo(entry.ext).iconKind === 'video') return
       if (e.key === 'ArrowLeft') { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }
       else if (e.key === 'ArrowRight') { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose, hasSiblings, siblings.length])
+  }, [onClose, hasSiblings, siblings.length, entry.ext])
 
   // Non-passive touchmove so we can preventDefault and prevent browser scroll hijacking
   useEffect(() => {
     const el = contentRef.current
     if (!el || !hasSiblings) return
     const onStart = (e: TouchEvent) => {
+      // Don't treat scrubbing the player's seek/volume slider as a file swipe.
+      if ((e.target as HTMLElement | null)?.closest('[role="slider"]')) {
+        touchStartX.current = NaN
+        isSwiping.current = false
+        return
+      }
       touchStartX.current = e.touches[0].clientX
       touchStartY.current = e.touches[0].clientY
       isSwiping.current = false
     }
     const onMove = (e: TouchEvent) => {
+      if (Number.isNaN(touchStartX.current)) return
       const dx = e.touches[0].clientX - touchStartX.current
       const dy = Math.abs(e.touches[0].clientY - touchStartY.current)
       if (!isSwiping.current) {
@@ -830,7 +840,7 @@ function PreviewModal({
       if (isSwiping.current) e.preventDefault()
     }
     const onEnd = (e: TouchEvent) => {
-      if (!isSwiping.current) return
+      if (Number.isNaN(touchStartX.current) || !isSwiping.current) return
       const dx = e.changedTouches[0].clientX - touchStartX.current
       if (dx < -40 && canNext) { setSlideDir(1); setCurrentIdx(i => Math.min(siblings.length - 1, i + 1)) }
       else if (dx > 40 && canPrev) { setSlideDir(-1); setCurrentIdx(i => Math.max(0, i - 1)) }
