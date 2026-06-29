@@ -3,6 +3,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { AudioTrack, SubtitleTrack, MediaVersion } from './types'
+import {
+  CenterFlash,
+  formatTime,
+  IconButton,
+  IconFullscreenEnter,
+  IconFullscreenExit,
+  IconMuted,
+  IconPause,
+  IconPlay,
+  IconSkipBack,
+  IconSkipForward,
+  IconVolume,
+  Slider,
+  useActionFlash,
+} from './playerUi'
 
 interface PlaybackSource {
   itemId: string
@@ -20,17 +35,6 @@ interface PlaybackSource {
 
 type ReportKind = 'start' | 'progress' | 'stopped'
 
-/** Transient center-screen feedback shown on a user action (YouTube-style). */
-type FlashKind =
-  | 'play'
-  | 'pause'
-  | 'rewind'
-  | 'forward'
-  | 'mute'
-  | 'unmute'
-  | 'volume'
-  | 'fs-enter'
-  | 'fs-exit'
 
 /**
  * Structural type for a hls.js instance — declared here so the source-loading
@@ -54,178 +58,6 @@ const STALL_HARD_MS = 15_000 // …this long → full source reload
 const RELOAD_COOLDOWN_MS = 10_000 // min gap between reload escalations
 const HEALTHY_RESET_MS = 30_000 // healthy playback this long → reset recovery counters
 const MAX_RELOADS = 2 // hard cap on watchdog/fatal-driven reloads before giving up
-
-function formatTime(sec: number): string {
-  if (!isFinite(sec) || sec < 0) sec = 0
-  const s = Math.floor(sec % 60)
-  const m = Math.floor(sec / 60) % 60
-  const h = Math.floor(sec / 3600)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
-}
-
-/** Pointer-draggable track used for both the seek bar and the volume slider. */
-function Slider({
-  fraction,
-  buffered = 0,
-  onChange,
-  onChangeStart,
-  onChangeEnd,
-  ariaLabel,
-}: {
-  fraction: number
-  buffered?: number
-  onChange: (f: number) => void
-  onChangeStart?: () => void
-  onChangeEnd?: () => void
-  ariaLabel: string
-}) {
-  const trackRef = useRef<HTMLDivElement>(null)
-  const draggingRef = useRef(false)
-
-  const fracFromEvent = (clientX: number) => {
-    const el = trackRef.current
-    if (!el) return 0
-    const rect = el.getBoundingClientRect()
-    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-  }
-
-  const down = (e: React.PointerEvent) => {
-    e.preventDefault()
-    draggingRef.current = true
-    onChangeStart?.()
-    onChange(fracFromEvent(e.clientX))
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-  const move = (e: React.PointerEvent) => {
-    if (draggingRef.current) onChange(fracFromEvent(e.clientX))
-  }
-  const up = () => {
-    if (!draggingRef.current) return
-    draggingRef.current = false
-    onChangeEnd?.()
-  }
-
-  const pct = `${Math.min(100, Math.max(0, fraction * 100))}%`
-
-  return (
-    <div
-      ref={trackRef}
-      onPointerDown={down}
-      onPointerMove={move}
-      onPointerUp={up}
-      onPointerCancel={up}
-      role="slider"
-      aria-label={ariaLabel}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(fraction * 100)}
-      tabIndex={0}
-      className="group/slider relative flex h-4 w-full cursor-pointer touch-none select-none items-center"
-    >
-      <div className="absolute inset-x-0 h-1.5 rounded-full bg-white/25" />
-      {buffered > 0 && (
-        <div
-          className="absolute h-1.5 rounded-full bg-white/40"
-          style={{ width: `${Math.min(100, buffered * 100)}%` }}
-        />
-      )}
-      <div className="absolute h-1.5 rounded-full" style={{ width: pct, background: 'var(--accent)' }} />
-      <div
-        className="absolute h-3 w-3 -translate-x-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover/slider:opacity-100"
-        style={{ left: pct }}
-      />
-    </div>
-  )
-}
-
-function IconButton({
-  label,
-  onClick,
-  active,
-  children,
-}: {
-  label: string
-  onClick: () => void
-  active?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      style={active ? { color: 'var(--accent)' } : undefined}
-      className={`inline-flex h-9 w-9 items-center justify-center rounded-full transition-colors hover:bg-white/15 ${
-        active ? '' : 'text-zinc-200'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
-
-/** The glyph shown inside the transient center-screen action badge. */
-function FlashIcon({ kind }: { kind: FlashKind }) {
-  const fill = 'h-11 w-11 fill-current'
-  const stroke = 'h-11 w-11 fill-none stroke-current'
-  // Seek glyphs only fill part of their viewBox, so size them up a touch more.
-  const seek = 'h-12 w-12 fill-current'
-  switch (kind) {
-    case 'play':
-      return (
-        <svg viewBox="0 0 16 16" className={fill}>
-          <path d="M4 2.5a.5.5 0 01.768-.422l9 5.5a.5.5 0 010 .844l-9 5.5A.5.5 0 014 13.5v-11z" />
-        </svg>
-      )
-    case 'pause':
-      return (
-        <svg viewBox="0 0 16 16" className={fill}>
-          <path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" />
-        </svg>
-      )
-    case 'rewind':
-      // viewBox origin shifted to center the glyph (true center 9, 8.5), then nudged up ~3px.
-      return (
-        <svg viewBox="-1 -0.3 20 20" className={seek}>
-          <path d="M9 4V1L4 5l5 4V6a4 4 0 11-4 4H3a6 6 0 106-6z" />
-        </svg>
-      )
-    case 'forward':
-      // viewBox origin shifted to center the glyph (true center 11, 8.5), then nudged up ~3px.
-      return (
-        <svg viewBox="1 -0.3 20 20" className={seek}>
-          <path d="M11 4V1l5 4-5 4V6a4 4 0 104 4h2a6 6 0 11-6-6z" />
-        </svg>
-      )
-    case 'mute':
-      return (
-        <svg viewBox="0 0 20 20" className={fill}>
-          <path d="M9 4L5 7H2v6h3l4 3V4z" />
-          <path d="M14.5 7.5l-2 2m0-2l2 2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      )
-    case 'unmute':
-    case 'volume':
-      return (
-        <svg viewBox="0 0 20 20" className={fill}>
-          <path d="M9 4L5 7H2v6h3l4 3V4z" />
-          <path d="M12.5 7a3.5 3.5 0 010 6M14.5 4.5a6.5 6.5 0 010 11" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      )
-    case 'fs-enter':
-      return (
-        <svg viewBox="0 0 20 20" className={stroke} strokeWidth="1.6" strokeLinecap="round">
-          <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" />
-        </svg>
-      )
-    case 'fs-exit':
-      return (
-        <svg viewBox="0 0 20 20" className={stroke} strokeWidth="1.6" strokeLinecap="round">
-          <path d="M8 3v5H3M12 3v5h5M8 17v-5H3M12 17v-5h5" />
-        </svg>
-      )
-  }
-}
 
 function MenuRow({
   label,
@@ -426,33 +258,7 @@ export default function JellyfinPlayer({
   }, [])
 
   // --- transient center-screen action flash (YouTube-style) ---------------
-  const [flash, setFlash] = useState<{ id: number; kind: FlashKind; label?: string } | null>(null)
-  const [announce, setAnnounce] = useState('') // sr-only live-region text (the badge is decorative)
-  const flashIdRef = useRef(0)
-  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const flashAction = useCallback((kind: FlashKind, label?: string) => {
-    flashIdRef.current += 1
-    setFlash({ id: flashIdRef.current, kind, label })
-    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
-    flashTimerRef.current = setTimeout(() => setFlash(null), 600)
-    const phrase: Record<FlashKind, string> = {
-      play: 'Playing',
-      pause: 'Paused',
-      rewind: `Rewind ${label ?? ''}`.trim(),
-      forward: `Forward ${label ?? ''}`.trim(),
-      mute: 'Muted',
-      unmute: 'Unmuted',
-      volume: `Volume ${label ?? ''}`.trim(),
-      'fs-enter': 'Fullscreen',
-      'fs-exit': 'Exited fullscreen',
-    }
-    const msg = phrase[kind]
-    // Re-announce identical consecutive actions by nudging the string (zero-width space).
-    setAnnounce(prev => (prev === msg ? `${msg} ` : msg))
-  }, [])
-  useEffect(() => () => {
-    if (flashTimerRef.current) clearTimeout(flashTimerRef.current)
-  }, [])
+  const { flash, announce, flashAction } = useActionFlash()
 
   // --- imperative controls (stable; read the video ref directly) ----------
   const togglePlay = useCallback(() => {
@@ -999,32 +805,8 @@ export default function JellyfinPlayer({
         </div>
       )}
 
-      {/* Center action flash — brief state feedback on play/pause/seek/etc.
-          Sits above the video/spinner (z-10) but below the chrome (z-20). */}
-      <AnimatePresence>
-        {flash && !error && (
-          <motion.div
-            key={flash.id}
-            aria-hidden
-            initial={{ opacity: 0, scale: 0.7 }}
-            animate={{ opacity: [0, 1, 1, 0], scale: [0.7, 1, 1, 1.18] }}
-            exit={{ opacity: 0, transition: { duration: 0.12 } }}
-            transition={{ duration: 0.6, times: [0, 0.15, 0.5, 1], ease: 'easeOut' }}
-            className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2"
-          >
-            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur-sm">
-              <FlashIcon kind={flash.kind} />
-            </div>
-            {flash.label && (
-              <span className="text-sm font-semibold tabular-nums text-white drop-shadow">{flash.label}</span>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {/* Screen-reader announcement for keyboard/imperative actions (the badge is decorative). */}
-      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        {announce}
-      </div>
+      {/* Center action flash — brief state feedback on play/pause/seek/etc. */}
+      <CenterFlash flash={flash} announce={announce} suppressed={Boolean(error)} />
 
       {error && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 px-6 text-center">
@@ -1106,40 +888,18 @@ export default function JellyfinPlayer({
           <div className="mt-1 flex items-center justify-between">
             <div className="flex items-center gap-1">
               <IconButton label={isPlaying ? 'Pause' : 'Play'} onClick={togglePlay}>
-                {isPlaying ? (
-                  <svg viewBox="0 0 16 16" className="h-5 w-5 fill-current">
-                    <path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" />
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 16 16" className="h-5 w-5 fill-current">
-                    <path d="M4 2.5a.5.5 0 01.768-.422l9 5.5a.5.5 0 010 .844l-9 5.5A.5.5 0 014 13.5v-11z" />
-                  </svg>
-                )}
+                {isPlaying ? <IconPause /> : <IconPlay />}
               </IconButton>
               <IconButton label="Back 10 seconds" onClick={() => seekBy(-10)}>
-                <svg viewBox="0 0 20 20" className="h-5 w-5 fill-current">
-                  <path d="M9 4V1L4 5l5 4V6a4 4 0 11-4 4H3a6 6 0 106-6z" />
-                </svg>
+                <IconSkipBack />
               </IconButton>
               <IconButton label="Forward 10 seconds" onClick={() => seekBy(10)}>
-                <svg viewBox="0 0 20 20" className="h-5 w-5 fill-current">
-                  <path d="M11 4V1l5 4-5 4V6a4 4 0 104 4h2a6 6 0 11-6-6z" />
-                </svg>
+                <IconSkipForward />
               </IconButton>
 
               <div className="ml-1 flex items-center gap-2">
                 <IconButton label={muted ? 'Unmute' : 'Mute'} onClick={toggleMute}>
-                  {muted || volume === 0 ? (
-                    <svg viewBox="0 0 20 20" className="h-5 w-5 fill-current">
-                      <path d="M9 4L5 7H2v6h3l4 3V4zM14.5 7.5l-2 2m0-2l2 2M17 6l-5 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      <path d="M9 4L5 7H2v6h3l4 3V4z" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 20 20" className="h-5 w-5 fill-current">
-                      <path d="M9 4L5 7H2v6h3l4 3V4z" />
-                      <path d="M12.5 7a3.5 3.5 0 010 6M14.5 4.5a6.5 6.5 0 010 11" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    </svg>
-                  )}
+                  {muted || volume === 0 ? <IconMuted /> : <IconVolume />}
                 </IconButton>
                 <div className="w-20">
                   <Slider ariaLabel="Volume" fraction={muted ? 0 : volume} onChange={changeVolume} />
@@ -1181,15 +941,7 @@ export default function JellyfinPlayer({
                 </div>
               )}
               <IconButton label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={toggleFullscreen}>
-                {isFullscreen ? (
-                  <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.6" strokeLinecap="round">
-                    <path d="M8 3v5H3M12 3v5h5M8 17v-5H3M12 17v-5h5" />
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 20 20" className="h-5 w-5 fill-none stroke-current" strokeWidth="1.6" strokeLinecap="round">
-                    <path d="M3 7V3h4M17 7V3h-4M3 13v4h4M17 13v4h-4" />
-                  </svg>
-                )}
+                {isFullscreen ? <IconFullscreenExit /> : <IconFullscreenEnter />}
               </IconButton>
             </div>
           </div>
