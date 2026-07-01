@@ -1,7 +1,7 @@
 import 'server-only'
 import { revalidateTag } from 'next/cache'
 import type { MediaItem } from '@/app/_components/media/MediaCard'
-import type { ReelTitle, ContinueItem, ReelDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion } from '@/app/_components/media/types'
+import type { ReelTitle, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion } from '@/app/_components/media/types'
 import { hueFromId, poster as posterArt, backdrop as backdropArt } from '@/app/_components/media/artwork'
 import {
   MOCK_JELLYFIN_ITEMS,
@@ -280,6 +280,8 @@ interface RawItem {
   SeriesName?: string
   SeriesId?: string
   SeasonId?: string
+  SeasonName?: string
+  PremiereDate?: string
   IndexNumber?: number
   ParentIndexNumber?: number
   ImageTags?: { Primary?: string; Logo?: string }
@@ -941,6 +943,86 @@ function mockDetail(item: JellyfinItem): ReelDetail {
     directors: peopleNames(item.People, 'Director'),
     writers: peopleNames(item.People, 'Writer'),
     seasonList,
+  }
+}
+
+/** Locate a mock episode inside the seasons of any mock series and build a movie-like
+    detail for it, borrowing the series' cast/studios/genres so dev mode looks populated. */
+function mockEpisodeDetail(episodeId: string): ReelEpisodeDetail | null {
+  for (const item of Object.values(MOCK_JELLYFIN_ITEMS)) {
+    if (item.Type !== 'Series' || !item.Seasons) continue
+    for (const s of item.Seasons) {
+      const e = s.Episodes?.find(ep => ep.Id === episodeId)
+      if (!e) continue
+      const series = mockDetail(item)
+      const hue = hueFromId(e.Id)
+      return {
+        ...series,
+        id: e.Id,
+        title: e.Name,
+        type: 'tv',
+        runtime: e.RunTimeTicks ? Math.round(e.RunTimeTicks / 600_000_000) : undefined,
+        seasons: undefined,
+        episodes: undefined,
+        seasonList: undefined,
+        hue,
+        synopsis: e.Overview,
+        backdropUrl: e.imageUrl,
+        posterColor: posterArt(hue),
+        backdropColor: backdropArt(hue),
+        seriesId: item.Id,
+        seriesName: item.Name,
+        seasonId: s.Id,
+        seasonName: s.Name,
+        seasonIndex: s.IndexNumber,
+        episodeIndex: e.IndexNumber,
+      }
+    }
+  }
+  return null
+}
+
+/** Full detail for a single episode — the same rich model as a movie, plus series/season
+    context. Episode items often omit Genres/Studios/cast (those live on the series), so the
+    caller (EpisodeDetail) falls back to the series-level fields. */
+export async function getReelEpisodeDetail(episodeId: string): Promise<ReelEpisodeDetail | null> {
+  if (!isJellyfinConfigured()) return mockEpisodeDetail(episodeId)
+  const { userId } = await getSession()
+  let raw: RawItem
+  try {
+    raw = await jfGet<RawItem>(`/Items/${episodeId}`, {
+      userId,
+      Fields:
+        'Overview,Genres,People,Studios,Taglines,Tags,MediaSources,ProductionYear,CommunityRating,CriticRating,DateCreated,SeriesName,SeriesId,SeasonId,SeasonName,IndexNumber,ParentIndexNumber,PremiereDate',
+    })
+  } catch {
+    return null
+  }
+  const base = toReelTitle(raw, 'tv')
+  const premiereYear = raw.PremiereDate ? new Date(raw.PremiereDate).getFullYear() : undefined
+  const director = (raw.People ?? []).find(p => p.Type === 'Director')
+  return {
+    ...base,
+    // An episode's hero is its still (Primary image), not a landscape Backdrop.
+    backdropUrl: raw.ImageTags?.Primary
+      ? imageUrl(episodeId, 'Primary', { tag: raw.ImageTags.Primary, maxWidth: 1280, quality: 80 })
+      : base.backdropUrl,
+    // ChildCount/RecursiveItemCount are meaningless for an episode; runtime is the episode's own.
+    runtime: raw.RunTimeTicks ? Math.round(raw.RunTimeTicks / 600_000_000) : undefined,
+    seasons: undefined,
+    episodes: undefined,
+    year: raw.ProductionYear ?? premiereYear,
+    studios: (raw.Studios ?? []).map(s => s.Name),
+    cast: castFromRaw(raw.People),
+    createdBy: director?.Name,
+    directors: peopleNames(raw.People, 'Director'),
+    writers: peopleNames(raw.People, 'Writer'),
+    seriesId: raw.SeriesId ?? '',
+    seriesName: raw.SeriesName ?? '',
+    seasonId: raw.SeasonId ?? '',
+    seasonName: raw.SeasonName ?? '',
+    seasonIndex: raw.ParentIndexNumber ?? 0,
+    episodeIndex: raw.IndexNumber ?? 0,
   }
 }
 

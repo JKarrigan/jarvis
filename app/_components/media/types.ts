@@ -197,3 +197,16 @@ export interface ReelDetail extends ReelTitle {
   /** TV only: full season/episode structure (ReelTitle.seasons stays the count). */
   seasonList?: ReelSeasonInfo[]
 }
+
+/** Full detail for a single episode — same shape as a movie (`ReelDetail`) plus the
+    series/season context needed for the breadcrumb and "more in this season". */
+export interface ReelEpisodeDetail extends ReelDetail {
+  seriesId: string
+  seriesName: string
+  seasonId: string
+  seasonName: string
+  /** Season number (Jellyfin ParentIndexNumber). */
+  seasonIndex: number
+  /** Episode number within the season (Jellyfin IndexNumber). */
+  episodeIndex: number
+}
