@@ -13,7 +13,7 @@ import { useFilteredLibrary, LibraryFilterBar, LibraryGridInner } from './librar
 
 export function HomeBody({
   featured, resume, catalog, collections,
-}: { featured: ReelTitle | null; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[] }) {
+}: { featured: ReelTitle[]; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[] }) {
   const { isWatched, isFavorite, watchlist } = useMedia()
   const view: UserView = useMemo(() => ({
     watched: (t) => isWatched(t.id, t.watched),
@@ -41,7 +41,7 @@ export function HomeBody({
 
   return (
     <div className="pb-16">
-      {showRows && featured && <HomeHero title={featured} />}
+      {showRows && featured.length > 0 && <HomeHero titles={featured} />}
 
       <div className="space-y-10 pt-8">
         {showRows && resumeShown.length > 0 && (

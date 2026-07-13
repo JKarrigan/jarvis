@@ -467,12 +467,13 @@ export async function getCatalog(): Promise<ReelTitle[]> {
 }
 
 /** The hero title: prefer a backdrop-having, well-rated movie; fall back to anything. */
-export async function getFeatured(catalog?: ReelTitle[]): Promise<ReelTitle | null> {
+/** Top titles (with artwork) for the rotating home hero, best-rated first. */
+export async function getFeatured(catalog?: ReelTitle[]): Promise<ReelTitle[]> {
   const all = catalog ?? (await getCatalog())
-  if (all.length === 0) return null
+  if (all.length === 0) return []
   const withBackdrop = all.filter(t => t.backdropUrl)
   const pool = withBackdrop.length ? withBackdrop : all
-  return [...pool].sort((a, b) => (b.imdb ?? 0) - (a.imdb ?? 0))[0]
+  return [...pool].sort((a, b) => (b.imdb ?? 0) - (a.imdb ?? 0)).slice(0, 6)
 }
 
 /** Continue-watching entries with progress + a contextual sub-label. */

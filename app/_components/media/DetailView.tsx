@@ -88,7 +88,7 @@ export function DetailView({
       </button>
 
       {/* Backdrop */}
-      <div className="relative h-[50vh] min-h-[360px] w-full overflow-hidden">
+      <div className="relative h-[80vh] min-h-[360px] w-full overflow-hidden">
         <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
           <Poster gradient={detail.backdropUrl ? detail.backdropColor : backdropFallback(detail.hue)} src={detail.backdropUrl} alt={detail.title} rounded="rounded-none" className="h-full w-full" />
         </div>

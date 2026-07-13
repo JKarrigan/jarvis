@@ -68,7 +68,7 @@ export function CollectionDetail({
       </button>
 
       {/* Banner: the collection's own art, else a montage of its films, else a gradient */}
-      <div className="relative h-[50vh] min-h-[360px] w-full overflow-hidden">
+      <div className="relative h-[80vh] min-h-[360px] w-full overflow-hidden">
         <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
           {collection.backdropUrl ? (
             <Poster gradient={collArt(collection.hue)} src={collection.backdropUrl} alt={collection.name} rounded="rounded-none" className="h-full w-full" />
