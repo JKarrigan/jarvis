@@ -8,7 +8,7 @@ import JellyfinPlayer from './JellyfinPlayer'
 import { useMedia } from './MediaProvider'
 import { usePlaybackSelection, PlaybackPicker } from './PlaybackPicker'
 import {
-  ActionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, BODY_PAD, criticColor,
+  ActionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
 } from './DetailSections'
 import type { ReelDetail, ReelEpisodeDetail, ReelTitle, MediaInfo } from './types'
 import { backdropFallback, poster } from './artwork'
@@ -44,7 +44,9 @@ export function EpisodeDetail({
   // Header values: episode-level when the rich fetch succeeded, else the season-list basics.
   const title = episode?.title ?? epBasic.name
   const overview = episode?.synopsis ?? epBasic.overview
-  const heroSrc = episode?.backdropUrl ?? epBasic.imageUrl ?? detail.backdropUrl
+  // Prefer the full-res episode still, then the series backdrop — the season-list
+  // thumbnail (480px) is a last resort; it's too soft for a fullscreen hero.
+  const heroSrc = episode?.backdropUrl ?? detail.backdropUrl ?? epBasic.imageUrl
   const heroHue = episode?.hue ?? epBasic.hue
   const runtime = episode?.runtime ?? epBasic.runtime
   const cert = episode?.cert ?? detail.cert
@@ -78,83 +80,87 @@ export function EpisodeDetail({
         <ChevronLeftIcon className="h-4 w-4" /> Back
       </button>
 
-      {/* Episode still — the hero backdrop */}
-      <div className="relative h-[80vh] min-h-[360px] w-full overflow-hidden">
-        <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
-          <Poster gradient={backdropFallback(heroHue)} src={heroSrc} alt={title} rounded="rounded-none" className="h-full w-full" />
-        </div>
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.2), rgba(8,6,13,0.5) 60%, #0a0810)' }} />
-      </div>
-
-      {/* The season's poster overlaps the backdrop; the info column is pushed down so the
-          title sits at the backdrop's bottom edge — mirrors the movie layout. */}
-      <div className="relative -mt-[90px] flex flex-col gap-5 pl-[var(--rail)] pr-[var(--gx)] md:-mt-[200px] md:flex-row md:items-start md:gap-7">
-        <div className="w-[150px] shrink-0 md:w-[268px]" style={{ animation: 'posterRise 0.5s ease' }}>
-          <div className="aspect-[2/3] w-full">
-            <Poster gradient={poster(season.hue)} src={season.posterUrl ?? detail.posterUrl} alt={season.name} rounded="rounded-[16px]" className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]" />
+      {/* Hero: the episode still as a full-viewport backdrop with the title block anchored
+          to its lower edge. The section grows past 100svh when the content is taller, so
+          everything after it always flows below the artwork — mirrors the movie layout. */}
+      <div className="relative flex min-h-svh flex-col justify-end">
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
+            <Poster gradient={backdropFallback(heroHue)} src={heroSrc} alt={title} rounded="rounded-none" className="h-full w-full" />
           </div>
+          {/* Scrim: darkens toward the bottom for text contrast but stays translucent through
+              the title/overview zone so the artwork still reads behind the content. */}
+          <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.25), rgba(8,6,13,0.45) 40%, rgba(8,6,13,0.72) 60%, rgba(8,6,13,0.88) 78%, #0a0810 96%)' }} />
         </div>
 
-        <div className="min-w-0 flex-1 md:pt-[120px]">
-          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">
-            <Link href={`/media/tv/${detail.id}`} className="hover:text-ink">{detail.title}</Link>
-            <span className="text-white/30"> · {season.name}</span>
-          </p>
-          <h1 className="font-[800] leading-[1.02] tracking-[-0.028em] text-ink" style={{ fontSize: 'clamp(26px, 6vw, 46px)' }}>{title}</h1>
+        {/* Season poster + info, bottom-aligned over the artwork (pt keeps art visible
+            above the content even when a long overview makes the block tall) */}
+        <div className="relative flex flex-col gap-5 pb-12 pl-[var(--rail)] pr-[var(--gx)] pt-[30svh] md:flex-row md:items-end md:gap-7 md:pb-16">
+          <div className="w-[150px] shrink-0 md:w-[268px]" style={{ animation: 'posterRise 0.5s ease' }}>
+            <div className="aspect-[2/3] w-full">
+              <Poster gradient={poster(season.hue)} src={season.posterUrl ?? detail.posterUrl} alt={season.name} rounded="rounded-[16px]" className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]" />
+            </div>
+          </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm text-white/60">
-            <span className="font-semibold text-accent-soft">S{seasonIndex} · E{episodeIndex}</span>
-            {runtime && <><span className="text-white/30">·</span><span>{runtime}m</span></>}
-            {cert && <><span className="text-white/30">·</span><span>{cert}</span></>}
-            {imdb != null && (
-              <>
-                <span className="text-white/30">·</span>
-                <span className="inline-flex items-center gap-1 text-white/80">
-                  <StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} />
-                  {imdb.toFixed(1)}
+          <div className="min-w-0 flex-1">
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">
+              <Link href={`/media/tv/${detail.id}`} className="hover:text-ink">{detail.title}</Link>
+              <span className="text-white/30"> · {season.name}</span>
+            </p>
+            <h1 className="font-[800] leading-[1.02] tracking-[-0.028em] text-ink" style={{ fontSize: 'clamp(26px, 6vw, 46px)' }}>{title}</h1>
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm text-white/60">
+              <span className="font-semibold text-accent-soft">S{seasonIndex} · E{episodeIndex}</span>
+              {runtime && <><span className="text-white/30">·</span><span>{runtime}m</span></>}
+              {cert && <><span className="text-white/30">·</span><span>{cert}</span></>}
+              {imdb != null && (
+                <>
+                  <span className="text-white/30">·</span>
+                  <span className="inline-flex items-center gap-1 text-white/80">
+                    <StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} />
+                    {imdb.toFixed(1)}
+                  </span>
+                </>
+              )}
+              {rt != null && (
+                <>
+                  <span className="text-white/30">·</span>
+                  <span className="inline-flex items-center gap-1 font-semibold" style={{ color: criticColor(rt) }}>
+                    <TomatoIcon className="h-4 w-4" />
+                    {Math.round(rt)}%
+                  </span>
+                </>
+              )}
+              {watched && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
+                  <CheckIcon className="h-3 w-3" style={{ color: 'var(--accent)' }} /> Watched
                 </span>
-              </>
-            )}
-            {rt != null && (
-              <>
-                <span className="text-white/30">·</span>
-                <span className="inline-flex items-center gap-1 font-semibold" style={{ color: criticColor(rt) }}>
-                  <TomatoIcon className="h-4 w-4" />
-                  {Math.round(rt)}%
-                </span>
-              </>
-            )}
-            {watched && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
-                <CheckIcon className="h-3 w-3" style={{ color: 'var(--accent)' }} /> Watched
-              </span>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="mt-5 flex flex-wrap items-center gap-2.5">
+              <ActionButton accent label="Play" onClick={() => setPlaying(true)}>
+                <PlayIcon className="h-4 w-4" /> Play
+              </ActionButton>
+              <ActionButton active={favorite} label="Favorite" onClick={() => toggleFavorite(episodeId, episode?.favorite ?? false)}>
+                <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} style={favorite ? { color: 'var(--fav)' } : undefined} />
+              </ActionButton>
+              <ActionButton active={watched} label="Mark watched" onClick={() => toggleEpWatched(episodeId, false)}>
+                <CheckIcon className="h-4 w-4" /> {watched ? 'Watched' : 'Mark watched'}
+              </ActionButton>
+            </div>
+
+            {/* Version / Audio / Subtitle selection (drives the player) */}
+            <PlaybackPicker selection={selection} />
+
+            {/* Overview — inside the hero so the description reads over the artwork */}
+            {overview && (
+              <p className="mt-5 max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{overview}</p>
             )}
           </div>
-
-          {/* Actions */}
-          <div className="mt-5 flex flex-wrap items-center gap-2.5">
-            <ActionButton accent label="Play" onClick={() => setPlaying(true)}>
-              <PlayIcon className="h-4 w-4" /> Play
-            </ActionButton>
-            <ActionButton active={favorite} label="Favorite" onClick={() => toggleFavorite(episodeId, episode?.favorite ?? false)}>
-              <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} style={favorite ? { color: 'var(--fav)' } : undefined} />
-            </ActionButton>
-            <ActionButton active={watched} label="Mark watched" onClick={() => toggleEpWatched(episodeId, false)}>
-              <CheckIcon className="h-4 w-4" /> {watched ? 'Watched' : 'Mark watched'}
-            </ActionButton>
-          </div>
-
-          {/* Version / Audio / Subtitle selection (drives the player) */}
-          <PlaybackPicker selection={selection} />
         </div>
       </div>
-
-      {/* Overview */}
-      {overview && (
-        <section className={`mt-10 md:mt-2 ${BODY_PAD}`}>
-          <p className="max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{overview}</p>
-        </section>
-      )}
 
       <CreditsGrid detail={merged} />
 

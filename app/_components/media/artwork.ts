@@ -56,3 +56,16 @@ export function posterForId(id: string): string {
 export function backdropForId(id: string): string {
   return backdrop(hueFromId(id))
 }
+
+/** Rewrite a Jellyfin image URL's maxWidth. Backdrop URLs are built hero-res (4K);
+    card-size renders use this to avoid downloading and decoding 4K into a thumbnail. */
+export function resizeImage(url: string | undefined, maxWidth: number): string | undefined {
+  if (!url) return undefined
+  try {
+    const u = new URL(url)
+    u.searchParams.set('maxWidth', String(maxWidth))
+    return u.toString()
+  } catch {
+    return url
+  }
+}

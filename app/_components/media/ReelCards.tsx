@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useMedia } from './MediaProvider'
 import type { ReelTitle, CollectionSummary } from './types'
-import { POSTER_SHEEN, collArt, collColor } from './artwork'
+import { POSTER_SHEEN, collArt, collColor, resizeImage } from './artwork'
 import { RECENTLY_ADDED_DAYS } from './selectors'
 import { CheckIcon, HeartIcon } from './icons'
 
@@ -119,7 +119,7 @@ export function PosterCard({
 export function CollectionCard({
   collection, width = 'w-[260px] md:w-[300px]',
 }: { collection: CollectionSummary; width?: string }) {
-  const art = collection.backdropUrl ?? collection.posterUrl ?? collection.montageUrls?.[0]
+  const art = resizeImage(collection.backdropUrl, 960) ?? collection.posterUrl ?? collection.montageUrls?.[0]
   const count = collection.itemIds.length
   return (
     <Link href={`/media/collections/${collection.id}`} className={`group flex shrink-0 flex-col gap-2 ${width}`}>

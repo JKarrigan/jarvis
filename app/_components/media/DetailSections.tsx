@@ -26,12 +26,21 @@ export function criticColor(rt: number): string {
 }
 
 export function ActionButton({
-  active, accent, label, onClick, children,
-}: { active?: boolean; accent?: boolean; label: string; onClick: () => void; children: React.ReactNode }) {
+  active, accent, label, onClick, onHoverStart, onHoverEnd, children,
+}: {
+  active?: boolean; accent?: boolean; label: string; onClick: () => void
+  /** Optional hover/focus hooks (e.g. the Play button's ambient video preview). */
+  onHoverStart?: () => void; onHoverEnd?: () => void
+  children: React.ReactNode
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
+      onFocus={onHoverStart}
+      onBlur={onHoverEnd}
       aria-label={label}
       title={label}
       className={`inline-flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold transition ${accent

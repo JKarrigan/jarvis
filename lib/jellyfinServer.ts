@@ -1,7 +1,7 @@
 import 'server-only'
 import { revalidateTag } from 'next/cache'
 import type { MediaItem } from '@/app/_components/media/MediaCard'
-import type { ReelTitle, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion } from '@/app/_components/media/types'
+import type { ReelTitle, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion, TrailerInfo } from '@/app/_components/media/types'
 import { hueFromId, poster as posterArt, backdrop as backdropArt } from '@/app/_components/media/artwork'
 import {
   MOCK_JELLYFIN_ITEMS,
@@ -290,6 +290,49 @@ interface RawItem {
   People?: { Id: string; Name: string; Role?: string; Type?: string; PrimaryImageTag?: string }[]
   MediaSources?: RawMediaSource[]
   UserData?: RawUserData
+  RemoteTrailers?: { Url?: string; Name?: string }[]
+}
+
+/** Extract a YouTube video id from watch?v=, youtu.be/, shorts/, or embed/ URL forms. */
+function youtubeIdFromUrl(url?: string): string | undefined {
+  if (!url) return undefined
+  try {
+    const u = new URL(url)
+    const host = u.hostname.replace(/^www\./, '')
+    if (!['youtube.com', 'm.youtube.com', 'youtu.be', 'youtube-nocookie.com'].includes(host)) return undefined
+    const id = host === 'youtu.be'
+      ? u.pathname.slice(1).split('/')[0]
+      : u.searchParams.get('v') ?? u.pathname.match(/^\/(?:shorts|embed)\/([^/?]+)/)?.[1]
+    return id && /^[\w-]{6,20}$/.test(id) ? id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Child trailer items stored alongside the movie/series. Modern path first (10.9+),
+    legacy /Users path as fallback; any failure just means "no local trailer". */
+async function fetchLocalTrailers(id: string, userId: string): Promise<RawItem[]> {
+  try {
+    return await jfGet<RawItem[]>(`/Items/${id}/LocalTrailers`, { userId })
+  } catch {
+    try {
+      return await jfGet<RawItem[]>(`/Users/${userId}/Items/${id}/LocalTrailers`)
+    } catch {
+      return []
+    }
+  }
+}
+
+/** A local trailer wins (Direct-Play through the normal player); otherwise the first
+    RemoteTrailers entry with a parseable YouTube URL. Non-YouTube URLs are skipped. */
+function pickTrailer(raw: Pick<RawItem, 'RemoteTrailers'>, locals: RawItem[]): TrailerInfo | undefined {
+  const local = locals[0]
+  if (local) return { localItemId: local.Id, name: local.Name }
+  for (const t of raw.RemoteTrailers ?? []) {
+    const id = youtubeIdFromUrl(t.Url)
+    if (id) return { youtubeId: id, remoteUrl: t.Url, name: t.Name }
+  }
+  return undefined
 }
 
 function badgeFor(it: RawItem): string | undefined {
@@ -394,7 +437,9 @@ function toReelTitle(it: RawItem, kind: 'movies' | 'tv'): ReelTitle {
       ? imageUrl(it.Id, 'Primary', { tag: it.ImageTags.Primary, maxWidth: 360 })
       : undefined,
     backdropUrl: it.BackdropImageTags?.[0]
-      ? imageUrl(it.Id, 'Backdrop', { tag: it.BackdropImageTags[0], maxWidth: 1280, quality: 80 })
+      // Backdrops only ever render at hero scale (HomeHero, PickerView, detail fallback),
+      // so ask for up to 4K — Jellyfin serves the original if it's smaller.
+      ? imageUrl(it.Id, 'Backdrop', { tag: it.BackdropImageTags[0], maxWidth: 3840, quality: 90 })
       : undefined,
     posterColor: posterArt(hue),
     backdropColor: backdropArt(hue),
@@ -745,7 +790,7 @@ export async function getBoxSets(): Promise<CollectionSummary[]> {
           itemIds: members.Items.map(m => m.Id),
           montageUrls,
           backdropUrl: bs.BackdropImageTags?.[0]
-            ? imageUrl(bs.Id, 'Backdrop', { tag: bs.BackdropImageTags[0], maxWidth: 1920, quality: 80 })
+            ? imageUrl(bs.Id, 'Backdrop', { tag: bs.BackdropImageTags[0], maxWidth: 3840, quality: 90 })
             : undefined,
           posterUrl: bs.ImageTags?.Primary
             ? imageUrl(bs.Id, 'Primary', { tag: bs.ImageTags.Primary, maxWidth: 600 })
@@ -944,6 +989,7 @@ function mockDetail(item: JellyfinItem): ReelDetail {
     directors: peopleNames(item.People, 'Director'),
     writers: peopleNames(item.People, 'Writer'),
     seasonList,
+    trailer: pickTrailer(item, []),
   }
 }
 
@@ -1006,7 +1052,7 @@ export async function getReelEpisodeDetail(episodeId: string): Promise<ReelEpiso
     ...base,
     // An episode's hero is its still (Primary image), not a landscape Backdrop.
     backdropUrl: raw.ImageTags?.Primary
-      ? imageUrl(episodeId, 'Primary', { tag: raw.ImageTags.Primary, maxWidth: 1280, quality: 80 })
+      ? imageUrl(episodeId, 'Primary', { tag: raw.ImageTags.Primary, maxWidth: 3840, quality: 90 })
       : base.backdropUrl,
     // ChildCount/RecursiveItemCount are meaningless for an episode; runtime is the episode's own.
     runtime: raw.RunTimeTicks ? Math.round(raw.RunTimeTicks / 600_000_000) : undefined,
@@ -1035,11 +1081,15 @@ export async function getReelDetail(id: string): Promise<ReelDetail | null> {
   }
   const { userId } = await getSession()
   let raw: RawItem
+  let localTrailers: RawItem[] = []
   try {
-    raw = await jfGet<RawItem>(`/Items/${id}`, {
-      userId,
-      Fields: 'Overview,Genres,People,Studios,Taglines,Tags,MediaSources,ProductionYear,CommunityRating,CriticRating,DateCreated',
-    })
+    ;[raw, localTrailers] = await Promise.all([
+      jfGet<RawItem>(`/Items/${id}`, {
+        userId,
+        Fields: 'Overview,Genres,People,Studios,Taglines,Tags,MediaSources,ProductionYear,CommunityRating,CriticRating,DateCreated,RemoteTrailers',
+      }),
+      fetchLocalTrailers(id, userId),
+    ])
   } catch {
     return null
   }
@@ -1049,13 +1099,14 @@ export async function getReelDetail(id: string): Promise<ReelDetail | null> {
   const detail: ReelDetail = {
     ...base,
     backdropUrl: raw.BackdropImageTags?.[0]
-      ? imageUrl(id, 'Backdrop', { tag: raw.BackdropImageTags[0], maxWidth: 1920, quality: 80 })
+      ? imageUrl(id, 'Backdrop', { tag: raw.BackdropImageTags[0], maxWidth: 3840, quality: 90 })
       : base.backdropUrl,
     studios: (raw.Studios ?? []).map(s => s.Name),
     cast: castFromRaw(raw.People),
     createdBy: director?.Name,
     directors: peopleNames(raw.People, 'Director'),
     writers: peopleNames(raw.People, 'Writer'),
+    trailer: pickTrailer(raw, localTrailers),
   }
   if (kind === 'tv') {
     try {
@@ -1329,7 +1380,7 @@ async function getSeasons(seriesId: string, userId: string): Promise<JellyfinSea
           Overview: e.Overview,
           RunTimeTicks: e.RunTimeTicks,
           imageUrl: e.ImageTags?.Primary
-            ? imageUrl(e.Id, 'Primary', { tag: e.ImageTags.Primary, maxWidth: 480 })
+            ? imageUrl(e.Id, 'Primary', { tag: e.ImageTags.Primary, maxWidth: 960 })
             : undefined,
         })),
       } satisfies JellyfinSeason
@@ -1550,6 +1601,13 @@ export interface PlaybackReport {
   MediaSourceId?: string
   PositionTicks?: number
   IsPaused?: boolean
+}
+
+/** Kill this device's server-side transcode for a play session (e.g. when the hover
+    preview ends). Purely stops ffmpeg — never touches watch state or resume position. */
+export async function stopEncoding(playSessionId: string): Promise<void> {
+  if (!isJellyfinConfigured()) return
+  await jfDelete('/Videos/ActiveEncodings', { deviceId: DEVICE_ID, playSessionId }).catch(() => { })
 }
 
 export async function reportPlayback(

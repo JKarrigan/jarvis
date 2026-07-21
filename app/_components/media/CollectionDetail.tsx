@@ -6,7 +6,7 @@ import { AnimatePresence } from 'framer-motion'
 import { Sheet } from '@/app/_components/HueControls'
 import { useMedia } from './MediaProvider'
 import type { ReelTitle, CollectionSummary } from './types'
-import { collArt, collColor, backdropFallback } from './artwork'
+import { collArt, collColor, backdropFallback, resizeImage } from './artwork'
 import { effectiveRuntime } from './selectors'
 import { Poster, detailHref } from './ReelCards'
 import { StarIcon, CheckIcon, ChevronLeftIcon, PlayIcon, PencilIcon, TrashIcon } from './icons'
@@ -147,7 +147,7 @@ export function CollectionDetail({
                   className="group flex cursor-pointer items-center gap-5 rounded-2xl p-2 transition hover:bg-surface"
                 >
                   <div className="relative aspect-video w-[220px] shrink-0 overflow-hidden rounded-xl sm:w-[340px]">
-                    <Poster gradient={t.backdropUrl ? t.backdropColor : backdropFallback(t.hue)} src={t.backdropUrl} alt={t.title} className="h-full w-full" />
+                    <Poster gradient={t.backdropUrl ? t.backdropColor : backdropFallback(t.hue)} src={resizeImage(t.backdropUrl, 960)} alt={t.title} className="h-full w-full" />
                     <button
                       type="button"
                       aria-label={`Play ${t.title}`}

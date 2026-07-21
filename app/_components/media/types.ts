@@ -187,6 +187,18 @@ export interface CollectionSummary {
   montageUrls?: string[]
 }
 
+/** How the detail page plays a trailer: a local trailer item (through the normal
+    player) or a YouTube embed. Exactly one of the two ids is set. */
+export interface TrailerInfo {
+  /** Jellyfin child-item id of a local trailer file. */
+  localItemId?: string
+  /** YouTube video id parsed from RemoteTrailers[].Url. */
+  youtubeId?: string
+  /** Original watch URL — "Open on YouTube" fallback for embed-blocked videos. */
+  remoteUrl?: string
+  name?: string
+}
+
 /** Full detail view model (ReelTitle + cast/seasons/studios). */
 export interface ReelDetail extends ReelTitle {
   studios: string[]
@@ -196,6 +208,8 @@ export interface ReelDetail extends ReelTitle {
   writers: string[]
   /** TV only: full season/episode structure (ReelTitle.seasons stays the count). */
   seasonList?: ReelSeasonInfo[]
+  /** Best available trailer (local preferred over remote); absent → no trailer button. */
+  trailer?: TrailerInfo
 }
 
 /** Full detail for a single episode — same shape as a movie (`ReelDetail`) plus the

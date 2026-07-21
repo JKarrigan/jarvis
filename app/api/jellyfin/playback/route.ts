@@ -1,4 +1,4 @@
-import { getPlayback } from '@/lib/jellyfinServer'
+import { getPlayback, stopEncoding } from '@/lib/jellyfinServer'
 
 // Resolves a playable stream URL for an item. The Jellyfin token is attached
 // server-side; the client receives a ready-to-play URL (direct or HLS).
@@ -18,4 +18,14 @@ export async function GET(request: Request) {
   })
   if (!source) return Response.json({ error: 'No playable source' }, { status: 404 })
   return Response.json(source)
+}
+
+// Kills the server-side transcode for a play session without touching watch state.
+// Used by the detail-page hover preview so an ambient stream never leaves ffmpeg
+// running on the NAS after the pointer moves away.
+export async function DELETE(request: Request) {
+  const playSessionId = new URL(request.url).searchParams.get('playSessionId')
+  if (!playSessionId) return Response.json({ error: 'Missing playSessionId' }, { status: 400 })
+  await stopEncoding(playSessionId)
+  return Response.json({ ok: true })
 }

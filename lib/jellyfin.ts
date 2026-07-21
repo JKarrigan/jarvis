@@ -56,6 +56,7 @@ export interface JellyfinItem {
   SeasonCount?: number
   EpisodeCount?: number
   Seasons?: JellyfinSeason[]
+  RemoteTrailers?: { Url: string; Name?: string }[]
 }
 
 function mins(m: number): number {
@@ -86,6 +87,7 @@ export const MOCK_JELLYFIN_ITEMS: Record<string, JellyfinItem> = {
     OfficialRating: 'PG-13',
     CommunityRating: 8.5,
     Studios: [{ Name: 'Legendary Pictures', Id: 's1' }],
+    RemoteTrailers: [{ Url: 'https://www.youtube.com/watch?v=Way9Dexny3w', Name: 'Official Trailer' }],
     Type: 'Movie',
     posterColor: 'linear-gradient(135deg, #92400e, #b45309)',
     backdropColor: 'linear-gradient(160deg, #78350f 0%, #1c1917 50%, #09090b 100%)',
@@ -573,6 +575,7 @@ export const MOCK_JELLYFIN_ITEMS: Record<string, JellyfinItem> = {
     ProductionYear: 2025,
     OfficialRating: 'TV-MA',
     CommunityRating: 8.8,
+    RemoteTrailers: [{ Url: 'https://www.youtube.com/watch?v=xEQP4VVuyrY', Name: 'Season 1 Trailer' }],
     Type: 'Series',
     Status: 'Continuing',
     SeasonCount: 2,

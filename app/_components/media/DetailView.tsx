@@ -1,21 +1,22 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { AnimatePresence } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import JellyfinPlayer from './JellyfinPlayer'
+import TrailerModal from './TrailerModal'
 import { EpisodeList } from './EpisodeList'
 import { useMedia } from './MediaProvider'
 import { usePlaybackSelection, PlaybackPicker } from './PlaybackPicker'
 import {
-  ActionButton, AddToCollectionButton, BODY_PAD, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
+  ActionButton, AddToCollectionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
 } from './DetailSections'
 import type { ReelDetail, ReelTitle, MediaInfo, ReelSeasonInfo } from './types'
 import { backdropFallback, poster } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
 import {
-  PlayIcon, StarIcon, CheckIcon, HeartIcon, BookmarkIcon, PlusIcon, ChevronLeftIcon, TomatoIcon,
+  PlayIcon, StarIcon, CheckIcon, HeartIcon, BookmarkIcon, PlusIcon, ChevronLeftIcon, TomatoIcon, TrailerIcon,
 } from './icons'
 
 function runtimeLabel(t: ReelDetail): string {
@@ -25,6 +26,53 @@ function runtimeLabel(t: ReelDetail): string {
   if (t.type === 'tv' && t.seasons) bits.push(`${t.seasons} Season${t.seasons > 1 ? 's' : ''}`)
   if (t.cert) bits.push(t.cert)
   return bits.join('  ·  ')
+}
+
+interface PreviewSource {
+  url: string
+  method: 'direct' | 'hls'
+  startAt: number
+}
+
+/** Muted ambient stream for the hero backdrop. Direct sources start at the random
+    point via a #t media fragment; HLS sources go through hls.js (same as the player).
+    Tearing down (hover end) stops all segment requests — Jellyfin reaps the idle
+    transcode on its own, and the preview never reports playback progress. */
+function HeroPreviewVideo({ source }: { source: PreviewSource }) {
+  const ref = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    const video = ref.current
+    if (!video) return
+    let hls: { destroy(): void } | undefined
+    let cancelled = false
+    if (source.method === 'direct') {
+      video.src = `${source.url}#t=${source.startAt}`
+      video.play().catch(() => {})
+    } else {
+      import('hls.js').then(({ default: Hls }) => {
+        if (cancelled || !ref.current) return
+        if (Hls.isSupported()) {
+          hls = new Hls({ startPosition: source.startAt })
+          ;(hls as InstanceType<typeof Hls>).loadSource(source.url)
+          ;(hls as InstanceType<typeof Hls>).attachMedia(video)
+          video.play().catch(() => {})
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = source.url
+          video.currentTime = source.startAt
+          video.play().catch(() => {})
+        }
+      })
+    }
+    return () => {
+      cancelled = true
+      hls?.destroy()
+      video.removeAttribute('src')
+      video.load()
+    }
+  }, [source])
+
+  return <video ref={ref} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
 }
 
 /** First unwatched episode walking seasons in order (falls back to the first). */
@@ -73,6 +121,71 @@ export function DetailView({
     : detail.backdropUrl ?? detail.posterUrl
 
   const [playing, setPlaying] = useState(autoPlay && Boolean(playTarget))
+  // Trailer playback: a local trailer file goes through JellyfinPlayer, a
+  // RemoteTrailers entry through the YouTube embed modal.
+  const [trailerPlaying, setTrailerPlaying] = useState(false)
+  const [trailerOpen, setTrailerOpen] = useState(false)
+
+  // Ambient preview: hovering Play fades the hero backdrop into a muted stream of the
+  // movie (or next episode) at a random point. The resolved source is cached so repeat
+  // hovers reuse one playback session instead of spawning new transcodes. Deliberately
+  // never reported to Jellyfin — a preview must not touch the real resume position.
+  const [preview, setPreview] = useState<PreviewSource | null>(null)
+  const previewSource = useRef<{ url: string; method: 'direct' | 'hls'; runtimeTicks: number; playSessionId: string } | null | undefined>(undefined)
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const previewWanted = useRef(false)
+
+  function startPreview() {
+    if (!playTarget) return
+    previewWanted.current = true
+    clearTimeout(previewTimer.current)
+    // Small delay so skimming past the button doesn't open a stream.
+    previewTimer.current = setTimeout(async () => {
+      if (previewSource.current === undefined) {
+        try {
+          const res = await fetch(`/api/jellyfin/playback?id=${playTarget.id}`)
+          const source = res.ok ? await res.json() : null
+          previewSource.current = source?.url
+            ? { url: source.url, method: source.method, runtimeTicks: source.runtimeTicks, playSessionId: source.playSessionId }
+            : null
+        } catch {
+          previewSource.current = null
+        }
+      }
+      const src = previewSource.current
+      if (!src || !previewWanted.current) return
+      const runtime = src.runtimeTicks / 10_000_000
+      // Random point between 10% and 70% — skips titles and avoids ending spoilers.
+      const startAt = runtime > 120 ? Math.floor(runtime * (0.1 + 0.6 * Math.random())) : 0
+      setPreview({ ...src, startAt })
+    }, 350)
+  }
+
+  // Transcoded (HLS) previews leave ffmpeg running on the NAS after the last segment
+  // request — tell the server to kill the encoding, and drop the cached session (a
+  // killed session can't be resumed; the next hover resolves a fresh one).
+  function releasePreviewEncoding() {
+    const src = previewSource.current
+    if (src?.method === 'hls') {
+      previewSource.current = undefined
+      fetch(`/api/jellyfin/playback?playSessionId=${encodeURIComponent(src.playSessionId)}`, {
+        method: 'DELETE',
+        keepalive: true,
+      }).catch(() => {})
+    }
+  }
+
+  function stopPreview() {
+    previewWanted.current = false
+    clearTimeout(previewTimer.current)
+    setPreview(null)
+    releasePreviewEncoding()
+  }
+
+  useEffect(() => () => {
+    clearTimeout(previewTimer.current)
+    releasePreviewEncoding()
+  }, [])
 
   const resumeLabel = detail.type === 'movie' && detail.progress > 0 && detail.progress < 1 ? 'Resume' : 'Play'
 
@@ -87,100 +200,135 @@ export function DetailView({
         <ChevronLeftIcon className="h-4 w-4" /> Back
       </button>
 
-      {/* Backdrop */}
-      <div className="relative h-[80vh] min-h-[360px] w-full overflow-hidden">
-        <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
-          <Poster gradient={detail.backdropUrl ? detail.backdropColor : backdropFallback(detail.hue)} src={detail.backdropUrl} alt={detail.title} rounded="rounded-none" className="h-full w-full" />
-        </div>
-        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.2), rgba(8,6,13,0.5) 60%, #0a0810)' }} />
-      </div>
-
-      {/* Poster overlaps the backdrop; the info column is pushed down (md:pt) so the
-          title sits up at the backdrop's bottom edge. */}
-      <div className="relative -mt-[90px] flex flex-col gap-5 pl-[var(--rail)] pr-[var(--gx)] md:-mt-[200px] md:flex-row md:items-start md:gap-7">
-        <div className="w-[150px] shrink-0 md:w-[268px]" style={{ animation: 'posterRise 0.5s ease' }}>
-          <div className="aspect-[2/3] w-full">
-            <Poster gradient={detail.posterColor} src={detail.posterUrl} alt={detail.title} rounded="rounded-[16px]" className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]" />
+      {/* Hero: full-viewport backdrop with the title block anchored to its lower edge.
+          The section grows past 100svh when the content is taller, so everything after
+          it (credits, tags, seasons) always flows below the artwork. */}
+      <div className="relative flex min-h-svh flex-col justify-end">
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
+            <Poster gradient={detail.backdropUrl ? detail.backdropColor : backdropFallback(detail.hue)} src={detail.backdropUrl} alt={detail.title} rounded="rounded-none" className="h-full w-full" />
           </div>
+          {/* Ambient preview — streams from a random point while Play is hovered */}
+          <AnimatePresence>
+            {preview && (
+              <motion.div
+                key={`${preview.url}#${preview.startAt}`}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.7, ease: 'easeOut' }}
+                className="absolute inset-0"
+              >
+                <HeroPreviewVideo source={preview} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {/* Scrim: darkens toward the bottom for text contrast but stays translucent through
+              the title/overview zone so the artwork still reads behind the content. */}
+          <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.25), rgba(8,6,13,0.45) 40%, rgba(8,6,13,0.72) 60%, rgba(8,6,13,0.88) 78%, #0a0810 96%)' }} />
         </div>
 
-        <div className="min-w-0 flex-1 md:pt-[120px]">
-          <div className="mb-2 flex items-center gap-3">
-            <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">
-              {detail.type === 'tv' ? 'Series' : 'Film'}
-            </span>
-            {watched && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
-                <CheckIcon className="h-3 w-3" style={{ color: 'var(--accent)' }} /> Watched
+        {/* Poster + info, bottom-aligned over the artwork (pt keeps art visible above
+            the content even when a long overview makes the block tall) */}
+        <div className="relative flex flex-col gap-5 pb-12 pl-[var(--rail)] pr-[var(--gx)] pt-[30svh] md:flex-row md:items-end md:gap-7 md:pb-16">
+          <div className="w-[150px] shrink-0 md:w-[268px]" style={{ animation: 'posterRise 0.5s ease' }}>
+            <div className="aspect-[2/3] w-full">
+              <Poster gradient={detail.posterColor} src={detail.posterUrl} alt={detail.title} rounded="rounded-[16px]" className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]" />
+            </div>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="mb-2 flex items-center gap-3">
+              <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">
+                {detail.type === 'tv' ? 'Series' : 'Film'}
               </span>
-            )}
-          </div>
-
-          <h1 className="font-[800] leading-[1] tracking-[-0.028em] text-ink" style={{ fontSize: 'clamp(30px, 7.5vw, 52px)' }}>
-            {detail.title}
-          </h1>
-
-          <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm text-white/60">
-            <span>{runtimeLabel(detail)}</span>
-            {detail.imdb != null && (
-              <>
-                <span className="text-white/30">·</span>
-                <span className="inline-flex items-center gap-1 text-white/80">
-                  <StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} />
-                  {detail.imdb.toFixed(1)}
+              {watched && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-semibold text-ink">
+                  <CheckIcon className="h-3 w-3" style={{ color: 'var(--accent)' }} /> Watched
                 </span>
-              </>
-            )}
-            {detail.rt != null && (
-              <>
-                <span className="text-white/30">·</span>
-                <span className="inline-flex items-center gap-1 font-semibold" style={{ color: criticColor(detail.rt) }}>
-                  <TomatoIcon className="h-4 w-4" />
-                  {Math.round(detail.rt)}%
-                </span>
-              </>
-            )}
-          </div>
+              )}
+            </div>
 
-          {/* Actions */}
-          <div className="mt-5 flex flex-wrap items-center gap-2.5">
-            {playTarget && (
-              <ActionButton accent label={resumeLabel} onClick={() => setPlaying(true)}>
-                <PlayIcon className="h-4 w-4" /> {resumeLabel}
+            <h1 className="font-[800] leading-[1] tracking-[-0.028em] text-ink" style={{ fontSize: 'clamp(30px, 7.5vw, 52px)' }}>
+              {detail.title}
+            </h1>
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-sm text-white/60">
+              <span>{runtimeLabel(detail)}</span>
+              {detail.imdb != null && (
+                <>
+                  <span className="text-white/30">·</span>
+                  <span className="inline-flex items-center gap-1 text-white/80">
+                    <StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} />
+                    {detail.imdb.toFixed(1)}
+                  </span>
+                </>
+              )}
+              {detail.rt != null && (
+                <>
+                  <span className="text-white/30">·</span>
+                  <span className="inline-flex items-center gap-1 font-semibold" style={{ color: criticColor(detail.rt) }}>
+                    <TomatoIcon className="h-4 w-4" />
+                    {Math.round(detail.rt)}%
+                  </span>
+                </>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="mt-5 flex flex-wrap items-center gap-2.5">
+              {playTarget && (
+                <ActionButton
+                  accent
+                  label={resumeLabel}
+                  onClick={() => { stopPreview(); setPlaying(true) }}
+                  onHoverStart={startPreview}
+                  onHoverEnd={stopPreview}
+                >
+                  <PlayIcon className="h-4 w-4" /> {resumeLabel}
+                </ActionButton>
+              )}
+              {detail.trailer && (
+                <ActionButton
+                  label="Watch trailer"
+                  onClick={() => detail.trailer?.localItemId ? setTrailerPlaying(true) : setTrailerOpen(true)}
+                >
+                  <TrailerIcon className="h-4 w-4" /> Trailer
+                </ActionButton>
+              )}
+              <ActionButton active={favorite} label="Favorite" onClick={() => toggleFavorite(detail.id, detail.favorite)}>
+                <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} style={favorite ? { color: 'var(--fav)' } : undefined} />
               </ActionButton>
-            )}
-            <ActionButton active={favorite} label="Favorite" onClick={() => toggleFavorite(detail.id, detail.favorite)}>
-              <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} style={favorite ? { color: 'var(--fav)' } : undefined} />
-            </ActionButton>
-            <ActionButton active={watched} label="Mark watched" onClick={() => toggleWatched(detail.id, detail.watched)}>
-              <CheckIcon className="h-4 w-4" />
-            </ActionButton>
-            <ActionButton active={inList} label="Add to picker list" onClick={() => togglePickList(detail.id)}>
-              {inList ? <CheckIcon className="h-4 w-4" /> : <PlusIcon className="h-4 w-4" />}
-              {inList ? 'In picker list' : 'Add to picker list'}
-            </ActionButton>
-            <ActionButton active={onWatchlist} label="Watchlist" onClick={() => toggleWatchlist(detail.id)}>
-              <BookmarkIcon className="h-4 w-4" fill={onWatchlist ? 'currentColor' : 'none'} />
-            </ActionButton>
-            <AddToCollectionButton titleId={detail.id} />
-          </div>
+              <ActionButton active={watched} label="Mark watched" onClick={() => toggleWatched(detail.id, detail.watched)}>
+                <CheckIcon className="h-4 w-4" />
+              </ActionButton>
+              <ActionButton active={inList} label="Add to picker list" onClick={() => togglePickList(detail.id)}>
+                {inList ? <CheckIcon className="h-4 w-4" /> : <PlusIcon className="h-4 w-4" />}
+                {inList ? 'In picker list' : 'Add to picker list'}
+              </ActionButton>
+              <ActionButton active={onWatchlist} label="Watchlist" onClick={() => toggleWatchlist(detail.id)}>
+                <BookmarkIcon className="h-4 w-4" fill={onWatchlist ? 'currentColor' : 'none'} />
+              </ActionButton>
+              <AddToCollectionButton titleId={detail.id} />
+            </div>
 
-          {/* Version / Audio / Subtitle selection (drives the player) */}
-          <PlaybackPicker selection={selection} />
+            {/* Version / Audio / Subtitle selection (drives the player) */}
+            <PlaybackPicker selection={selection} />
+
+            {/* Tagline + overview — inside the hero so the description reads over the artwork */}
+            {(detail.tagline || detail.synopsis) && (
+              <div className="mt-5">
+                {detail.tagline && (
+                  <p className="mb-2 max-w-[820px] text-[15px] italic text-white/50 [text-wrap:pretty]">{detail.tagline}</p>
+                )}
+                {detail.synopsis && (
+                  <p className="max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{detail.synopsis}</p>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-
-      {/* Tagline + overview */}
-      {(detail.tagline || detail.synopsis) && (
-        <section className={`mt-10 md:mt-2 ${BODY_PAD}`}>
-          {detail.tagline && (
-            <p className="mb-2 max-w-[820px] text-[15px] italic text-white/50 [text-wrap:pretty]">{detail.tagline}</p>
-          )}
-          {detail.synopsis && (
-            <p className="max-w-[820px] text-[16px] leading-[1.7] text-white/75 [text-wrap:pretty]">{detail.synopsis}</p>
-          )}
-        </section>
-      )}
 
       <CreditsGrid detail={detail} />
 
@@ -269,6 +417,22 @@ export function DetailView({
             initialAudioIndex={selection.audioIndex}
             initialSubtitleIndex={selection.subtitleIndex}
             onClose={() => setPlaying(false)}
+          />
+        )}
+        {trailerPlaying && detail.trailer?.localItemId && (
+          <JellyfinPlayer
+            itemId={detail.trailer.localItemId}
+            title={`${detail.title} — Trailer`}
+            splashUrl={splashUrl}
+            onClose={() => setTrailerPlaying(false)}
+          />
+        )}
+        {trailerOpen && detail.trailer?.youtubeId && (
+          <TrailerModal
+            youtubeId={detail.trailer.youtubeId}
+            remoteUrl={detail.trailer.remoteUrl}
+            title={`${detail.title} — ${detail.trailer.name ?? 'Trailer'}`}
+            onClose={() => setTrailerOpen(false)}
           />
         )}
       </AnimatePresence>
