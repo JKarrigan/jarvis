@@ -7,8 +7,9 @@ import { useMedia } from './MediaProvider'
 import type { ReelTitle } from './types'
 import {
   allGenres, pickerPool, shuffle,
-  type PickerType, type PickerMood, type PickerSort, type UserView,
+  type PickerType, type PickerMood, type PickerSort, type PickerMatch, type UserView,
 } from './selectors'
+import { AmbientClip } from './AmbientClip'
 import { Poster, detailHref } from './ReelCards'
 import { StarIcon, ThumbUpIcon, ThumbDownIcon, PlayIcon } from './icons'
 
@@ -16,9 +17,14 @@ const TYPES: { v: PickerType; label: string }[] = [
   { v: 'all', label: 'Everything' }, { v: 'movie', label: 'Movies' }, { v: 'tv', label: 'TV Shows' },
 ]
 const MOODS: { v: PickerMood; label: string }[] = [
-  { v: 'any', label: 'Anything' }, { v: 'crowd', label: 'Crowd-pleasers' }, { v: 'hidden', label: 'Hidden gems' },
+  { v: 'crowd', label: 'Crowd-pleasers' }, { v: 'hidden', label: 'Hidden gems' },
   { v: 'quick', label: 'Quick watch' }, { v: 'epic', label: 'Go epic' },
 ]
+
+/** Toggle a value in/out of a multi-select array. */
+function toggleIn<T>(arr: T[], v: T): T[] {
+  return arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v]
+}
 const SORTS: { v: PickerSort; label: string }[] = [
   { v: 'shuffle', label: 'Shuffle' }, { v: 'top', label: 'Top rated' }, { v: 'newest', label: 'Newest' }, { v: 'shortest', label: 'Shortest' },
 ]
@@ -88,10 +94,14 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   }), [isWatched, isFavorite])
 
   const [type, setType] = useState<PickerType>('all')
-  const [genre, setGenre] = useState('any')
-  const [mood, setMood] = useState<PickerMood>('any')
+  const [genres, setGenres] = useState<string[]>([])
+  const [moods, setMoods] = useState<PickerMood[]>([])
+  const [match, setMatch] = useState<PickerMatch>('any')
   const [sort, setSort] = useState<PickerSort>('shuffle')
   const [hideWatched, setHideWatched] = useState(false)
+  // One-way flag: the first touch of a pool-affecting control splits the setup
+  // layout (form left, live deck preview right) for the rest of the session.
+  const [touched, setTouched] = useState(false)
 
   const [stage, setStage] = useState<'setup' | 'swipe'>('setup')
   const [pool, setPool] = useState<ReelTitle[]>([])
@@ -99,12 +109,15 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   const [kept, setKept] = useState<ReelTitle[]>([])
   const [exitDir, setExitDir] = useState<'keep' | 'pass' | null>(null)
 
-  const genres = useMemo(() => allGenres(catalog), [catalog])
-  // Count only — use a deterministic sort so render stays pure (sort doesn't change length).
-  const deckCount = useMemo(
-    () => pickerPool(catalog, { type, genre, mood, sort: 'top', hideWatched }, view).length,
-    [catalog, type, genre, mood, hideWatched, view],
+  const genreList = useMemo(() => allGenres(catalog), [catalog])
+  // Live preview of the deck — deterministic sort so render stays pure (sort doesn't
+  // change membership; the real deck order is applied in startPicking).
+  const previewPool = useMemo(
+    () => pickerPool(catalog, { type, genres, moods, match, sort: 'top', hideWatched }, view),
+    [catalog, type, genres, moods, match, hideWatched, view],
   )
+  const deckCount = previewPool.length
+  const examples = previewPool.slice(0, 6)
 
   // Entry from the picker list ("Start the roundup"). Re-runs as pickList hydrates
   // from localStorage; the ref guard makes it a one-time initialization.
@@ -119,7 +132,7 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const startPicking = () => {
-    setPool(pickerPool(catalog, { type, genre, mood, sort, hideWatched }, view))
+    setPool(pickerPool(catalog, { type, genres, moods, match, sort, hideWatched }, view))
     setIdx(0); setKept([]); setStage('swipe')
   }
 
@@ -148,44 +161,87 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   // ---- Setup ----
   if (stage === 'setup') {
     return (
-      <div className="mx-auto max-w-[880px] px-[var(--rail)] py-16 md:px-[var(--gx)]">
-        <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">Movie picker</p>
-        <h1 className="mt-2 text-[clamp(32px,7vw,56px)] font-[800] leading-[1.02] tracking-[-0.025em] text-ink">Can&rsquo;t decide?<br />Let&rsquo;s narrow it down.</h1>
-        <p className="mt-4 max-w-[560px] text-[15px] leading-[1.6] text-white/60">
-          Pick a couple of filters, then thumbs-up or thumbs-down each title. Run as many rounds as you like until you&rsquo;re down to tonight&rsquo;s movie.
-        </p>
-
-        <Group label="Show me">{TYPES.map(t => <Chip key={t.v} active={type === t.v} onClick={() => setType(t.v)}>{t.label}</Chip>)}</Group>
-        <Group label="Genre">
-          <Chip active={genre === 'any'} onClick={() => setGenre('any')}>Any genre</Chip>
-          {genres.map(g => <Chip key={g} active={genre === g} onClick={() => setGenre(g)}>{g}</Chip>)}
-        </Group>
-        <Group label="In the mood for">{MOODS.map(m => <Chip key={m.v} active={mood === m.v} onClick={() => setMood(m.v)}>{m.label}</Chip>)}</Group>
-        <Group label="Order the deck">{SORTS.map(s => <Chip key={s.v} active={sort === s.v} onClick={() => setSort(s.v)}>{s.label}</Chip>)}</Group>
-
-        <button
-          type="button"
-          onClick={() => setHideWatched(v => !v)}
-          className="mt-6 flex items-center gap-2.5 rounded-full bg-white/[0.06] px-4 py-2.5 text-sm text-white/80 transition hover:bg-white/10"
+      <div className="mx-auto flex w-full max-w-[1280px] items-start gap-10 px-[var(--rail)] py-16 md:px-[var(--gx)]">
+        <motion.div
+          layout
+          transition={{ duration: 0.45, ease: [0.2, 0.7, 0.2, 1] }}
+          className={touched ? 'min-w-0 flex-1' : 'mx-auto w-full max-w-[880px]'}
         >
-          <span className="grid h-5 w-5 place-items-center rounded-md border" style={hideWatched ? { background: 'var(--accent)', borderColor: 'transparent' } : { borderColor: 'rgba(255,255,255,0.25)' }}>
-            {hideWatched && <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="var(--ink-on-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4.5 10.5 8 14l7.5-8" /></svg>}
-          </span>
-          Hide movies I&rsquo;ve already watched
-        </button>
+          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">Movie picker</p>
+          <h1 className="mt-2 text-[clamp(32px,7vw,56px)] font-[800] leading-[1.02] tracking-[-0.025em] text-ink">Can&rsquo;t decide?<br />Let&rsquo;s narrow it down.</h1>
+          <p className="mt-4 max-w-[560px] text-[15px] leading-[1.6] text-white/60">
+            Pick a couple of filters, then thumbs-up or thumbs-down each title. Run as many rounds as you like until you&rsquo;re down to tonight&rsquo;s movie.
+          </p>
 
-        <div className="mt-8 flex items-center gap-4">
+          <Group label="Show me">{TYPES.map(t => <Chip key={t.v} active={type === t.v} onClick={() => { setType(t.v); setTouched(true) }}>{t.label}</Chip>)}</Group>
+          <Group label="Genre">
+            <Chip active={genres.length === 0} onClick={() => { setGenres([]); setTouched(true) }}>Any genre</Chip>
+            {genreList.map(g => <Chip key={g} active={genres.includes(g)} onClick={() => { setGenres(a => toggleIn(a, g)); setTouched(true) }}>{g}</Chip>)}
+          </Group>
+          <Group label="In the mood for">
+            <Chip active={moods.length === 0} onClick={() => { setMoods([]); setTouched(true) }}>Anything</Chip>
+            {MOODS.map(m => <Chip key={m.v} active={moods.includes(m.v)} onClick={() => { setMoods(a => toggleIn(a, m.v)); setTouched(true) }}>{m.label}</Chip>)}
+          </Group>
+
+          {/* Only meaningful once a facet has 2+ selections to combine */}
+          <AnimatePresence initial={false}>
+            {(genres.length > 1 || moods.length > 1) && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.3, ease: [0.2, 0.7, 0.2, 1] }}
+                className="overflow-hidden"
+              >
+                <Group label="Combine picks">
+                  <Chip active={match === 'any'} onClick={() => setMatch('any')}>Match any &mdash; this or that</Chip>
+                  <Chip active={match === 'all'} onClick={() => setMatch('all')}>Match all &mdash; this and that</Chip>
+                </Group>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <Group label="Order the deck">{SORTS.map(s => <Chip key={s.v} active={sort === s.v} onClick={() => setSort(s.v)}>{s.label}</Chip>)}</Group>
+
           <button
             type="button"
-            onClick={startPicking}
-            disabled={deckCount === 0}
-            className="inline-flex items-center gap-2 rounded-2xl px-6 py-3.5 text-[15px] font-semibold text-ink-on-accent shadow-[0_12px_34px_var(--glow)] transition hover:brightness-[1.06] disabled:opacity-40"
-            style={{ background: 'var(--accent)' }}
+            onClick={() => { setHideWatched(v => !v); setTouched(true) }}
+            className="mt-6 flex items-center gap-2.5 rounded-full bg-white/[0.06] px-4 py-2.5 text-sm text-white/80 transition hover:bg-white/10"
           >
-            Start picking <span aria-hidden>›</span>
+            <span className="grid h-5 w-5 place-items-center rounded-md border" style={hideWatched ? { background: 'var(--accent)', borderColor: 'transparent' } : { borderColor: 'rgba(255,255,255,0.25)' }}>
+              {hideWatched && <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="var(--ink-on-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4.5 10.5 8 14l7.5-8" /></svg>}
+            </span>
+            Hide movies I&rsquo;ve already watched
           </button>
-          <span className="text-sm text-white/45">{deckCount} title{deckCount === 1 ? '' : 's'} in the deck</span>
-        </div>
+
+          <div className="mt-8 flex items-center gap-4">
+            <button
+              type="button"
+              onClick={startPicking}
+              disabled={deckCount === 0}
+              className="inline-flex items-center gap-2 rounded-2xl px-6 py-3.5 text-[15px] font-semibold text-ink-on-accent shadow-[0_12px_34px_var(--glow)] transition hover:brightness-[1.06] disabled:opacity-40"
+              style={{ background: 'var(--accent)' }}
+            >
+              Start picking <span aria-hidden>›</span>
+            </button>
+            <span className="text-sm text-white/45">{deckCount} title{deckCount === 1 ? '' : 's'} in the deck</span>
+          </div>
+        </motion.div>
+
+        <AnimatePresence>
+          {touched && (
+            <motion.aside
+              layout
+              initial={{ opacity: 0, x: 28 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 28 }}
+              transition={{ duration: 0.45, ease: [0.2, 0.7, 0.2, 1] }}
+              className="sticky top-16 hidden w-[320px] shrink-0 md:block"
+            >
+              <DeckPreview titles={examples} total={deckCount} />
+            </motion.aside>
+          )}
+        </AnimatePresence>
       </div>
     )
   }
@@ -241,11 +297,13 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
 
   // ---- Swipe ----
   return (
-    <div className="relative min-h-[88vh] w-full overflow-hidden">
+    <div className="relative min-h-svh w-full overflow-hidden">
       {current && (
         <div className="absolute inset-0">
           <Poster gradient={current.backdropColor} src={current.backdropUrl} alt={current.title} rounded="rounded-none" className="h-full w-full" />
-          <div className="absolute inset-0" style={{ background: 'linear-gradient(90deg, rgba(8,6,13,0.95), rgba(8,6,13,0.6) 50%, rgba(8,6,13,0.4))' }} />
+          {/* Movies only — picker TV titles are series ids with no playable MediaSources */}
+          {current.type === 'movie' && <AmbientClip key={current.id} itemId={current.id} />}
+          <div className="absolute inset-0" style={{ background: 'radial-gradient(90% 90% at 50% 55%, rgba(8,6,13,0.7), rgba(8,6,13,0.45) 60%, rgba(8,6,13,0.3)), linear-gradient(180deg, rgba(8,6,13,0.35), rgba(8,6,13,0.55))' }} />
         </div>
       )}
 
@@ -255,8 +313,9 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
         <span className="text-white/60">♥ {kept.length} kept</span>
       </div>
 
-      <div className="relative z-10 flex min-h-[88vh] items-center">
-        <AnimatePresence custom={exitDir} onExitComplete={() => setExitDir(null)}>
+      <div className="relative z-10 flex min-h-svh items-center justify-center">
+        {/* wait: the outgoing card fully animates out before the next one rises in. */}
+        <AnimatePresence mode="wait" custom={exitDir} onExitComplete={() => setExitDir(null)}>
           {current && (
             <motion.div
               key={idx}
@@ -271,17 +330,17 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
                 exit: (dir: 'keep' | 'pass' | null) => ({ opacity: 0, x: dir === 'keep' ? 140 : -140, rotate: dir === 'keep' ? 3 : -3, transition: { duration: 0.27 } }),
               }}
               initial="initial" animate="animate" exit="exit"
-              className="w-full max-w-[880px] cursor-grab px-[var(--rail)] active:cursor-grabbing md:px-[var(--gx)]"
+              className="w-full max-w-[880px] cursor-grab px-[var(--rail)] text-center active:cursor-grabbing md:px-[var(--gx)]"
             >
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">{current.type === 'tv' ? 'TV Series' : 'Film'}</p>
               <h1 className="mt-2 font-[800] leading-[0.98] tracking-[-0.025em] text-ink" style={{ fontSize: 'clamp(36px, 9vw, 62px)' }}>{current.title}</h1>
-              <p className="mt-3 flex items-center gap-1.5 text-white/70">
+              <p className="mt-3 flex items-center justify-center gap-1.5 text-white/70">
                 {current.imdb != null && <span className="inline-flex items-center gap-1 font-semibold text-white"><StarIcon className="h-4 w-4" style={{ color: 'var(--star)' }} />{current.imdb.toFixed(1)}</span>}
                 <span>{metaLine(current)}</span>
               </p>
-              {current.synopsis && <p className="mt-4 max-w-[600px] text-[15px] leading-[1.6] text-white/70 [text-wrap:pretty] line-clamp-4">{current.synopsis}</p>}
+              {current.synopsis && <p className="mx-auto mt-4 max-w-[600px] text-[15px] leading-[1.6] text-white/70 [text-wrap:pretty] line-clamp-4">{current.synopsis}</p>}
 
-              <div className="mt-8 flex items-center gap-4">
+              <div className="mt-8 flex items-center justify-center gap-4">
                 <button type="button" onClick={() => vote(false)} aria-label="Pass" className="grid h-16 w-16 place-items-center rounded-full border border-white/15 bg-black/40 backdrop-blur-md transition hover:scale-105" style={{ color: 'var(--pass)' }}>
                   <ThumbDownIcon className="h-6 w-6" />
                 </button>
@@ -293,6 +352,36 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
           )}
         </AnimatePresence>
       </div>
+    </div>
+  )
+}
+
+/** Live sample of the filtered deck shown beside the setup form. */
+function DeckPreview({ titles, total }: { titles: ReelTitle[]; total: number }) {
+  return (
+    <div>
+      <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.14em] text-white/40">In your deck · {total}</p>
+      {total === 0 ? (
+        <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-5 text-sm text-white/50">Nothing matches — loosen a filter.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <AnimatePresence mode="popLayout">
+            {titles.map(t => (
+              <motion.div
+                key={t.id}
+                layout
+                initial={{ opacity: 0, scale: 0.92 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.92 }}
+                transition={{ duration: 0.25 }}
+              >
+                <div className="aspect-[2/3]"><Poster gradient={t.posterColor} src={t.posterUrl} alt={t.title} className="h-full w-full" /></div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      )}
+      {total > 6 && <p className="mt-3 text-sm text-white/45">+{total - 6} more in the deck</p>}
     </div>
   )
 }

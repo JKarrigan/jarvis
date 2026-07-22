@@ -13,6 +13,7 @@ import {
   ActionButton, AddToCollectionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
 } from './DetailSections'
 import type { ReelDetail, ReelTitle, MediaInfo, ReelSeasonInfo } from './types'
+import { ClipVideo, releasePlaybackEncoding, rollStartAt, type CachedPlayback, type PreviewSource } from './AmbientClip'
 import { backdropFallback, poster } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
 import {
@@ -26,53 +27,6 @@ function runtimeLabel(t: ReelDetail): string {
   if (t.type === 'tv' && t.seasons) bits.push(`${t.seasons} Season${t.seasons > 1 ? 's' : ''}`)
   if (t.cert) bits.push(t.cert)
   return bits.join('  ·  ')
-}
-
-interface PreviewSource {
-  url: string
-  method: 'direct' | 'hls'
-  startAt: number
-}
-
-/** Muted ambient stream for the hero backdrop. Direct sources start at the random
-    point via a #t media fragment; HLS sources go through hls.js (same as the player).
-    Tearing down (hover end) stops all segment requests — Jellyfin reaps the idle
-    transcode on its own, and the preview never reports playback progress. */
-function HeroPreviewVideo({ source }: { source: PreviewSource }) {
-  const ref = useRef<HTMLVideoElement>(null)
-
-  useEffect(() => {
-    const video = ref.current
-    if (!video) return
-    let hls: { destroy(): void } | undefined
-    let cancelled = false
-    if (source.method === 'direct') {
-      video.src = `${source.url}#t=${source.startAt}`
-      video.play().catch(() => {})
-    } else {
-      import('hls.js').then(({ default: Hls }) => {
-        if (cancelled || !ref.current) return
-        if (Hls.isSupported()) {
-          hls = new Hls({ startPosition: source.startAt })
-          ;(hls as InstanceType<typeof Hls>).loadSource(source.url)
-          ;(hls as InstanceType<typeof Hls>).attachMedia(video)
-          video.play().catch(() => {})
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = source.url
-          video.currentTime = source.startAt
-          video.play().catch(() => {})
-        }
-      })
-    }
-    return () => {
-      cancelled = true
-      hls?.destroy()
-      video.removeAttribute('src')
-      video.load()
-    }
-  }, [source])
-
-  return <video ref={ref} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
 }
 
 /** First unwatched episode walking seasons in order (falls back to the first). */
@@ -131,7 +85,7 @@ export function DetailView({
   // hovers reuse one playback session instead of spawning new transcodes. Deliberately
   // never reported to Jellyfin — a preview must not touch the real resume position.
   const [preview, setPreview] = useState<PreviewSource | null>(null)
-  const previewSource = useRef<{ url: string; method: 'direct' | 'hls'; runtimeTicks: number; playSessionId: string } | null | undefined>(undefined)
+  const previewSource = useRef<CachedPlayback | null | undefined>(undefined)
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const previewWanted = useRef(false)
 
@@ -154,10 +108,7 @@ export function DetailView({
       }
       const src = previewSource.current
       if (!src || !previewWanted.current) return
-      const runtime = src.runtimeTicks / 10_000_000
-      // Random point between 10% and 70% — skips titles and avoids ending spoilers.
-      const startAt = runtime > 120 ? Math.floor(runtime * (0.1 + 0.6 * Math.random())) : 0
-      setPreview({ ...src, startAt })
+      setPreview({ ...src, startAt: rollStartAt(src.runtimeTicks / 10_000_000) })
     }, 350)
   }
 
@@ -165,14 +116,8 @@ export function DetailView({
   // request — tell the server to kill the encoding, and drop the cached session (a
   // killed session can't be resumed; the next hover resolves a fresh one).
   function releasePreviewEncoding() {
-    const src = previewSource.current
-    if (src?.method === 'hls') {
-      previewSource.current = undefined
-      fetch(`/api/jellyfin/playback?playSessionId=${encodeURIComponent(src.playSessionId)}`, {
-        method: 'DELETE',
-        keepalive: true,
-      }).catch(() => {})
-    }
+    releasePlaybackEncoding(previewSource.current)
+    if (previewSource.current?.method === 'hls') previewSource.current = undefined
   }
 
   function stopPreview() {
@@ -219,7 +164,7 @@ export function DetailView({
                 transition={{ duration: 0.7, ease: 'easeOut' }}
                 className="absolute inset-0"
               >
-                <HeroPreviewVideo source={preview} />
+                <ClipVideo source={preview} />
               </motion.div>
             )}
           </AnimatePresence>

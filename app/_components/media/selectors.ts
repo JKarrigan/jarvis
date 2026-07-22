@@ -51,28 +51,47 @@ export function shuffle<T>(input: T[]): T[] {
 }
 
 export type PickerType = 'all' | 'movie' | 'tv'
-export type PickerMood = 'any' | 'crowd' | 'hidden' | 'quick' | 'epic'
+export type PickerMood = 'crowd' | 'hidden' | 'quick' | 'epic'
 export type PickerSort = 'shuffle' | 'top' | 'newest' | 'shortest'
+export type PickerMatch = 'any' | 'all'
 
 export interface PickerFilters {
   type: PickerType
-  genre: string
-  mood: PickerMood
+  /** Empty array = any genre. */
+  genres: string[]
+  /** Empty array = any mood. */
+  moods: PickerMood[]
+  /** Combines selections within the genres facet and within the moods facet; facets always AND. */
+  match: PickerMatch
   sort: PickerSort
   hideWatched: boolean
 }
 
+const MOOD_PRED: Record<PickerMood, (t: ReelTitle) => boolean> = {
+  crowd: t => (t.imdb ?? 0) >= 7.5,
+  hidden: t => (t.imdb ?? 0) >= 6.5 && (t.imdb ?? 0) < 8,
+  quick: t => effectiveRuntime(t) <= 110,
+  epic: t => effectiveRuntime(t) >= 140,
+}
+
 export function pickerPool(catalog: ReelTitle[], f: PickerFilters, view: UserView): ReelTitle[] {
-  let pool = catalog.filter(t => {
+  const pool = catalog.filter(t => {
     if (f.type !== 'all' && t.type !== f.type) return false
-    if (f.genre && f.genre !== 'any' && !t.genres.includes(f.genre)) return false
     if (f.hideWatched && view.watched(t)) return false
+    if (f.genres.length) {
+      const hit = f.match === 'all'
+        ? f.genres.every(g => t.genres.includes(g))
+        : f.genres.some(g => t.genres.includes(g))
+      if (!hit) return false
+    }
+    if (f.moods.length) {
+      const hit = f.match === 'all'
+        ? f.moods.every(m => MOOD_PRED[m](t))
+        : f.moods.some(m => MOOD_PRED[m](t))
+      if (!hit) return false
+    }
     return true
   })
-  if (f.mood === 'crowd') pool = pool.filter(t => (t.imdb ?? 0) >= 7.5)
-  else if (f.mood === 'hidden') pool = pool.filter(t => (t.imdb ?? 0) >= 6.5 && (t.imdb ?? 0) < 8)
-  else if (f.mood === 'quick') pool = pool.filter(t => effectiveRuntime(t) <= 110)
-  else if (f.mood === 'epic') pool = pool.filter(t => effectiveRuntime(t) >= 140)
 
   if (f.sort === 'top') return [...pool].sort((a, b) => (b.imdb ?? 0) - (a.imdb ?? 0))
   if (f.sort === 'newest') return [...pool].sort((a, b) => (b.year ?? 0) - (a.year ?? 0))
