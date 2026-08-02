@@ -1,4 +1,4 @@
-import type { ReelTitle } from './types'
+import type { CollectionSummary, ReelTitle } from './types'
 
 /** Days within which a title still counts as "recently added" (drives the New badge). */
 export const RECENTLY_ADDED_DAYS = 30
@@ -63,6 +63,8 @@ export interface PickerFilters {
   moods: PickerMood[]
   /** Combines selections within the genres facet and within the moods facet; facets always AND. */
   match: PickerMatch
+  /** Empty array = any collection. Selected collections union together, then AND with every other facet (match does not apply). */
+  collectionIds: string[]
   sort: PickerSort
   hideWatched: boolean
 }
@@ -74,8 +76,12 @@ const MOOD_PRED: Record<PickerMood, (t: ReelTitle) => boolean> = {
   epic: t => effectiveRuntime(t) >= 140,
 }
 
-export function pickerPool(catalog: ReelTitle[], f: PickerFilters, view: UserView): ReelTitle[] {
+export function pickerPool(catalog: ReelTitle[], f: PickerFilters, view: UserView, collections: CollectionSummary[] = []): ReelTitle[] {
+  const collectionMembers = f.collectionIds.length
+    ? new Set(collections.filter(c => f.collectionIds.includes(c.id)).flatMap(c => c.itemIds))
+    : null
   const pool = catalog.filter(t => {
+    if (collectionMembers && !collectionMembers.has(t.id)) return false
     if (f.type !== 'all' && t.type !== f.type) return false
     if (f.hideWatched && view.watched(t)) return false
     if (f.genres.length) {

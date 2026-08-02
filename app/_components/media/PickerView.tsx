@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMedia } from './MediaProvider'
-import type { ReelTitle } from './types'
+import type { CollectionSummary, ReelTitle } from './types'
 import {
   allGenres, pickerPool, shuffle,
   type PickerType, type PickerMood, type PickerSort, type PickerMatch, type UserView,
@@ -85,7 +85,7 @@ function Confetti() {
   )
 }
 
-export function PickerView({ catalog, startFromList = false }: { catalog: ReelTitle[]; startFromList?: boolean }) {
+export function PickerView({ catalog, collections = [], startFromList = false }: { catalog: ReelTitle[]; collections?: CollectionSummary[]; startFromList?: boolean }) {
   const router = useRouter()
   const { pickList, isWatched, isFavorite } = useMedia()
   const view: UserView = useMemo(() => ({
@@ -97,6 +97,7 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   const [genres, setGenres] = useState<string[]>([])
   const [moods, setMoods] = useState<PickerMood[]>([])
   const [match, setMatch] = useState<PickerMatch>('any')
+  const [collectionIds, setCollectionIds] = useState<string[]>([])
   const [sort, setSort] = useState<PickerSort>('shuffle')
   const [hideWatched, setHideWatched] = useState(false)
   // One-way flag: the first touch of a pool-affecting control splits the setup
@@ -113,8 +114,8 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   // Live preview of the deck — deterministic sort so render stays pure (sort doesn't
   // change membership; the real deck order is applied in startPicking).
   const previewPool = useMemo(
-    () => pickerPool(catalog, { type, genres, moods, match, sort: 'top', hideWatched }, view),
-    [catalog, type, genres, moods, match, hideWatched, view],
+    () => pickerPool(catalog, { type, genres, moods, match, collectionIds, sort: 'top', hideWatched }, view, collections),
+    [catalog, type, genres, moods, match, collectionIds, hideWatched, view, collections],
   )
   const deckCount = previewPool.length
   const examples = previewPool.slice(0, 6)
@@ -132,7 +133,7 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const startPicking = () => {
-    setPool(pickerPool(catalog, { type, genres, moods, match, sort, hideWatched }, view))
+    setPool(pickerPool(catalog, { type, genres, moods, match, collectionIds, sort, hideWatched }, view, collections))
     setIdx(0); setKept([]); setStage('swipe')
   }
 
@@ -178,6 +179,12 @@ export function PickerView({ catalog, startFromList = false }: { catalog: ReelTi
             <Chip active={genres.length === 0} onClick={() => { setGenres([]); setTouched(true) }}>Any genre</Chip>
             {genreList.map(g => <Chip key={g} active={genres.includes(g)} onClick={() => { setGenres(a => toggleIn(a, g)); setTouched(true) }}>{g}</Chip>)}
           </Group>
+          {collections.length > 0 && (
+            <Group label="Collection">
+              <Chip active={collectionIds.length === 0} onClick={() => { setCollectionIds([]); setTouched(true) }}>Any collection</Chip>
+              {collections.map(c => <Chip key={c.id} active={collectionIds.includes(c.id)} onClick={() => { setCollectionIds(a => toggleIn(a, c.id)); setTouched(true) }}>{c.name}</Chip>)}
+            </Group>
+          )}
           <Group label="In the mood for">
             <Chip active={moods.length === 0} onClick={() => { setMoods([]); setTouched(true) }}>Anything</Chip>
             {MOODS.map(m => <Chip key={m.v} active={moods.includes(m.v)} onClick={() => { setMoods(a => toggleIn(a, m.v)); setTouched(true) }}>{m.label}</Chip>)}
