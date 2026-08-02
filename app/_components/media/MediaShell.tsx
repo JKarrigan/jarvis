@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { MediaRail } from './MediaRail'
 import { SearchModal } from './SearchModal'
@@ -16,6 +16,18 @@ export function MediaShell({
   catalog, collections, children,
 }: { catalog: ReelTitle[]; collections: CollectionSummary[]; children: React.ReactNode }) {
   const [searchOpen, setSearchOpen] = useState(false)
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setSearchOpen(o => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <>
       <MediaRail onSearch={() => setSearchOpen(true)} />

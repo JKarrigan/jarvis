@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useMedia } from './MediaProvider'
@@ -32,6 +33,11 @@ export function MediaRail({ onSearch }: { onSearch?: () => void }) {
   const pathname = usePathname()
   const { pickList } = useMedia()
   const pickCount = pickList.length
+  // Shortcut hint resolves after mount — the platform sniff would mismatch SSR markup.
+  const [searchLabel, setSearchLabel] = useState('Search')
+  useEffect(() => {
+    setSearchLabel(`Search (${/Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+'}K)`)
+  }, [])
 
   const railLink = (item: RailItem) => {
     const active = isActive(pathname, item)
@@ -59,8 +65,8 @@ export function MediaRail({ onSearch }: { onSearch?: () => void }) {
           <button
             type="button"
             onClick={onSearch}
-            aria-label="Search"
-            title="Search"
+            aria-label={searchLabel}
+            title={searchLabel}
             className="grid place-items-center h-11 w-11 rounded-xl text-white/60 hover:text-white hover:bg-white/5 transition-colors"
           >
             <SearchIcon className="h-5 w-5" />
