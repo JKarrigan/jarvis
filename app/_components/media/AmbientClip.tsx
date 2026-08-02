@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion, usePresence } from 'framer-motion'
 
 export interface PreviewSource {
   url: string
@@ -17,15 +17,32 @@ export interface CachedPlayback {
   playSessionId: string
 }
 
-/** Muted ambient stream for a backdrop. Direct sources start at the random
-    point via a #t media fragment; HLS sources go through hls.js (same as the player).
-    Tearing down stops all segment requests — Jellyfin reaps the idle transcode on
-    its own, and the clip never reports playback progress. */
-export function ClipVideo({ source, onPlaying }: { source: PreviewSource; onPlaying?: () => void }) {
+/** Ambient stream for a backdrop, muted by default. Direct sources start at the
+    random point via a #t media fragment; HLS sources go through hls.js (same as the
+    player). Tearing down stops all segment requests — Jellyfin reaps the idle
+    transcode on its own, and the clip never reports playback progress. */
+export function ClipVideo({ source, onPlaying, muted = true, volume = 0.6, onAutoplayBlocked }: {
+  source: PreviewSource
+  onPlaying?: () => void
+  muted?: boolean
+  /** Attenuated for ambient feel; only applies while unmuted. */
+  volume?: number
+  /** Unmuted play() was rejected by autoplay policy — playback fell back to muted. */
+  onAutoplayBlocked?: () => void
+}) {
   const ref = useRef<HTMLVideoElement>(null)
   // Ref'd so a changing callback doesn't tear down and restart the stream.
   const onPlayingRef = useRef(onPlaying)
   useEffect(() => { onPlayingRef.current = onPlaying }, [onPlaying])
+  const onAutoplayBlockedRef = useRef(onAutoplayBlocked)
+  useEffect(() => { onAutoplayBlockedRef.current = onAutoplayBlocked }, [onAutoplayBlocked])
+
+  // Declared before the source effect so audio state is set before play() runs on
+  // mount; kept separate so toggling mute doesn't tear down the stream.
+  useEffect(() => {
+    const video = ref.current
+    if (video) { video.muted = muted; video.volume = volume }
+  }, [muted, volume])
 
   useEffect(() => {
     const video = ref.current
@@ -34,9 +51,17 @@ export function ClipVideo({ source, onPlaying }: { source: PreviewSource; onPlay
     let cancelled = false
     const handlePlaying = () => onPlayingRef.current?.()
     video.addEventListener('playing', handlePlaying)
+    const tryPlay = () => {
+      video.play().catch(() => {
+        if (video.muted) return
+        video.muted = true
+        onAutoplayBlockedRef.current?.()
+        video.play().catch(() => {})
+      })
+    }
     if (source.method === 'direct') {
       video.src = `${source.url}#t=${source.startAt}`
-      video.play().catch(() => {})
+      tryPlay()
     } else {
       import('hls.js').then(({ default: Hls }) => {
         if (cancelled || !ref.current) return
@@ -44,11 +69,11 @@ export function ClipVideo({ source, onPlaying }: { source: PreviewSource; onPlay
           hls = new Hls({ startPosition: source.startAt })
           ;(hls as InstanceType<typeof Hls>).loadSource(source.url)
           ;(hls as InstanceType<typeof Hls>).attachMedia(video)
-          video.play().catch(() => {})
+          tryPlay()
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = source.url
           video.currentTime = source.startAt
-          video.play().catch(() => {})
+          tryPlay()
         }
       })
     }
@@ -61,7 +86,7 @@ export function ClipVideo({ source, onPlaying }: { source: PreviewSource; onPlay
     }
   }, [source])
 
-  return <video ref={ref} muted playsInline className="absolute inset-0 h-full w-full object-cover" />
+  return <video ref={ref} muted={muted} playsInline className="absolute inset-0 h-full w-full object-cover" />
 }
 
 /** Random point between 10% and 70% of the runtime — skips titles and avoids
@@ -85,8 +110,8 @@ export function releasePlaybackEncoding(src: Pick<CachedPlayback, 'method' | 'pl
     crossfades to a new random point in the title every rotateMs. Renders nothing
     until a clip is playing — the static backdrop behind it stays visible. */
 export function AmbientClip({
-  itemId, startDelayMs = 1000, rotateMs = 10_000,
-}: { itemId: string; startDelayMs?: number; rotateMs?: number }) {
+  itemId, startDelayMs = 1000, rotateMs = 10_000, muted = true, onAutoplayBlocked,
+}: { itemId: string; startDelayMs?: number; rotateMs?: number; muted?: boolean; onAutoplayBlocked?: () => void }) {
   const [clip, setClip] = useState<PreviewSource | null>(null)
   // undefined = not resolved yet, null = no playable source (mock mode / 404)
   const sourceRef = useRef<CachedPlayback | null | undefined>(undefined)
@@ -153,7 +178,7 @@ export function AmbientClip({
 
   return (
     <AnimatePresence>
-      {clip && <ClipLayer key={`${clip.url}#${clip.startAt}`} source={clip} />}
+      {clip && <ClipLayer key={`${clip.url}#${clip.startAt}`} source={clip} muted={muted} onAutoplayBlocked={onAutoplayBlocked} />}
     </AnimatePresence>
   )
 }
@@ -162,8 +187,12 @@ export function AmbientClip({
     rendering frames — fading on mount would blend in a still-black element.
     The outgoing layer keeps playing while it fades, so clip-to-clip rotations
     dissolve into each other instead of dipping through the backdrop. */
-function ClipLayer({ source }: { source: PreviewSource }) {
+function ClipLayer({ source, muted = true, onAutoplayBlocked }: { source: PreviewSource; muted?: boolean; onAutoplayBlocked?: () => void }) {
   const [ready, setReady] = useState(false)
+  // AnimatePresence freezes an exiting child's props, so presence is read here:
+  // the outgoing layer keeps its video through the fade but drops audio instantly —
+  // two clips at different timestamps would double up the soundtrack.
+  const [isPresent] = usePresence()
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -172,7 +201,7 @@ function ClipLayer({ source }: { source: PreviewSource }) {
       transition={{ duration: 1.4, ease: 'easeInOut' }}
       className="absolute inset-0"
     >
-      <ClipVideo source={source} onPlaying={() => setReady(true)} />
+      <ClipVideo source={source} muted={muted || !isPresent} onAutoplayBlocked={onAutoplayBlocked} onPlaying={() => setReady(true)} />
     </motion.div>
   )
 }

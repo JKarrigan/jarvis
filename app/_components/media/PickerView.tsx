@@ -12,6 +12,9 @@ import {
 import { AmbientClip } from './AmbientClip'
 import { Poster, detailHref } from './ReelCards'
 import { StarIcon, ThumbUpIcon, ThumbDownIcon, PlayIcon } from './icons'
+import { IconMuted, IconVolume } from './playerUi'
+
+const CLIP_MUTE_KEY = 'reel.pickerClipMuted'
 
 const TYPES: { v: PickerType; label: string }[] = [
   { v: 'all', label: 'Everything' }, { v: 'movie', label: 'Movies' }, { v: 'tv', label: 'TV Shows' },
@@ -105,6 +108,15 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const [touched, setTouched] = useState(false)
 
   const [stage, setStage] = useState<'setup' | 'swipe'>('setup')
+  // Sound on by default; lazy localStorage read is hydration-safe because the
+  // swipe screen (the only consumer) never renders during SSR.
+  const [clipMuted, setClipMuted] = useState(() =>
+    typeof window !== 'undefined' && window.localStorage.getItem(CLIP_MUTE_KEY) === '1')
+  const toggleClipMuted = () => setClipMuted(m => {
+    const next = !m
+    try { window.localStorage.setItem(CLIP_MUTE_KEY, next ? '1' : '0') } catch {}
+    return next
+  })
   const [pool, setPool] = useState<ReelTitle[]>([])
   const [idx, setIdx] = useState(0)
   const [kept, setKept] = useState<ReelTitle[]>([])
@@ -309,7 +321,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         <div className="absolute inset-0">
           <Poster gradient={current.backdropColor} src={current.backdropUrl} alt={current.title} rounded="rounded-none" className="h-full w-full" />
           {/* Movies only — picker TV titles are series ids with no playable MediaSources */}
-          {current.type === 'movie' && <AmbientClip key={current.id} itemId={current.id} />}
+          {/* Autoplay block is a browser decision, not a preference — don't persist it */}
+          {current.type === 'movie' && <AmbientClip key={current.id} itemId={current.id} muted={clipMuted} onAutoplayBlocked={() => setClipMuted(true)} />}
           <div className="absolute inset-0" style={{ background: 'radial-gradient(90% 90% at 50% 55%, rgba(8,6,13,0.7), rgba(8,6,13,0.45) 60%, rgba(8,6,13,0.3)), linear-gradient(180deg, rgba(8,6,13,0.35), rgba(8,6,13,0.55))' }} />
         </div>
       )}
@@ -319,6 +332,22 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         <span className="rounded-full bg-black/45 px-3 py-1 font-semibold text-white backdrop-blur-sm">{Math.min(idx + 1, pool.length)} / {pool.length}</span>
         <span className="text-white/60">♥ {kept.length} kept</span>
       </div>
+
+      <AnimatePresence>
+        {current?.type === 'movie' && (
+          <motion.button
+            type="button"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={toggleClipMuted}
+            aria-label={clipMuted ? 'Unmute ambient audio' : 'Mute ambient audio'}
+            className="absolute right-5 top-5 z-20 grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur-sm transition hover:bg-white/10"
+          >
+            {clipMuted ? <IconMuted /> : <IconVolume />}
+          </motion.button>
+        )}
+      </AnimatePresence>
 
       <div className="relative z-10 flex min-h-svh items-center justify-center">
         {/* wait: the outgoing card fully animates out before the next one rises in. */}
