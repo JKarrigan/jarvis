@@ -95,6 +95,28 @@ export function rollStartAt(runtimeSeconds: number): number {
   return runtimeSeconds > 120 ? Math.floor(runtimeSeconds * (0.1 + 0.6 * Math.random())) : 0
 }
 
+const AMBIENT_MUTE_KEY = 'reel.ambientMuted'
+
+/** Shared mute preference for ambient clips (picker + detail views). Sound on by
+    default. localStorage is read in an effect — the detail hero is server-rendered,
+    so a render-time read would mismatch hydration. */
+export function useAmbientMute(): { muted: boolean; toggle: () => void; forceMute: () => void } {
+  const [muted, setMuted] = useState(false)
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    try { setMuted(window.localStorage.getItem(AMBIENT_MUTE_KEY) === '1') } catch {}
+  }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
+  const toggle = () => setMuted(m => {
+    const next = !m
+    try { window.localStorage.setItem(AMBIENT_MUTE_KEY, next ? '1' : '0') } catch {}
+    return next
+  })
+  // An autoplay-policy block is a browser decision, not a preference — never persisted.
+  const forceMute = () => setMuted(true)
+  return { muted, toggle, forceMute }
+}
+
 /** Transcoded (HLS) clips leave ffmpeg running on the NAS after the last segment
     request — tell the server to kill the encoding. No-op for direct play. */
 export function releasePlaybackEncoding(src: Pick<CachedPlayback, 'method' | 'playSessionId'> | null | undefined): void {
@@ -107,20 +129,43 @@ export function releasePlaybackEncoding(src: Pick<CachedPlayback, 'method' | 'pl
 
 /** Ambient rotating background clip for an item: waits startDelayMs before
     resolving a stream (so rapid item changes make zero network calls), then
-    crossfades to a new random point in the title every rotateMs. Renders nothing
-    until a clip is playing — the static backdrop behind it stays visible. */
+    crossfades to a new random point in the title after every rotateMs of actual
+    playback. Renders nothing until a clip is playing — the static backdrop behind
+    it stays visible. */
 export function AmbientClip({
-  itemId, startDelayMs = 1000, rotateMs = 10_000, muted = true, onAutoplayBlocked,
-}: { itemId: string; startDelayMs?: number; rotateMs?: number; muted?: boolean; onAutoplayBlocked?: () => void }) {
+  itemId, startDelayMs = 1000, rotateMs = 10_000, muted = true, onAutoplayBlocked, onClipPlaying,
+}: { itemId: string; startDelayMs?: number; rotateMs?: number; muted?: boolean; onAutoplayBlocked?: () => void; onClipPlaying?: () => void }) {
   const [clip, setClip] = useState<PreviewSource | null>(null)
   // undefined = not resolved yet, null = no playable source (mock mode / 404)
   const sourceRef = useRef<CachedPlayback | null | undefined>(undefined)
+  const rotateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const onClipPlayingRef = useRef(onClipPlaying)
+  useEffect(() => { onClipPlayingRef.current = onClipPlaying }, [onClipPlaying])
+
+  // Heavy remuxes can take seconds to load, so the rotation countdown starts when
+  // the active clip actually renders frames — not when it was requested. A repeat
+  // 'playing' event (rebuffer recovery) just re-arms the timer.
+  const handleClipPlaying = () => {
+    onClipPlayingRef.current?.()
+    const src = sourceRef.current
+    if (!src) return
+    const runtime = src.runtimeTicks / 10_000_000
+    if (runtime <= 120) return
+    clearTimeout(rotateTimer.current)
+    rotateTimer.current = setTimeout(() => {
+      setClip(c => {
+        let next = rollStartAt(runtime)
+        // The AnimatePresence key includes startAt — nudge so it always changes.
+        if (c && next === c.startAt) next += 30
+        return { url: src.url, method: src.method, startAt: next }
+      })
+    }, rotateMs)
+  }
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     let cancelled = false
     let startTimer: ReturnType<typeof setTimeout> | undefined
-    let rotateTimer: ReturnType<typeof setInterval> | undefined
     setClip(null)
     sourceRef.current = undefined
 
@@ -139,22 +184,13 @@ export function AmbientClip({
       const src = sourceRef.current
       if (cancelled || !src) return
       const runtime = src.runtimeTicks / 10_000_000
+      // Rotation is armed by handleClipPlaying once this clip reports playback.
       setClip({ url: src.url, method: src.method, startAt: rollStartAt(runtime) })
-      if (runtime > 120) {
-        rotateTimer = setInterval(() => {
-          setClip(c => {
-            let next = rollStartAt(runtime)
-            // The AnimatePresence key includes startAt — nudge so it always changes.
-            if (c && next === c.startAt) next += 30
-            return { url: src.url, method: src.method, startAt: next }
-          })
-        }, rotateMs)
-      }
     }
 
     function stop() {
       clearTimeout(startTimer)
-      clearInterval(rotateTimer)
+      clearTimeout(rotateTimer.current)
       setClip(null)
       releasePlaybackEncoding(sourceRef.current)
       // A killed HLS session can't be resumed; the next start resolves a fresh one.
@@ -178,7 +214,7 @@ export function AmbientClip({
 
   return (
     <AnimatePresence>
-      {clip && <ClipLayer key={`${clip.url}#${clip.startAt}`} source={clip} muted={muted} onAutoplayBlocked={onAutoplayBlocked} />}
+      {clip && <ClipLayer key={`${clip.url}#${clip.startAt}`} source={clip} muted={muted} onAutoplayBlocked={onAutoplayBlocked} onPlaying={handleClipPlaying} />}
     </AnimatePresence>
   )
 }
@@ -187,7 +223,7 @@ export function AmbientClip({
     rendering frames — fading on mount would blend in a still-black element.
     The outgoing layer keeps playing while it fades, so clip-to-clip rotations
     dissolve into each other instead of dipping through the backdrop. */
-function ClipLayer({ source, muted = true, onAutoplayBlocked }: { source: PreviewSource; muted?: boolean; onAutoplayBlocked?: () => void }) {
+function ClipLayer({ source, muted = true, onAutoplayBlocked, onPlaying }: { source: PreviewSource; muted?: boolean; onAutoplayBlocked?: () => void; onPlaying?: () => void }) {
   const [ready, setReady] = useState(false)
   // AnimatePresence freezes an exiting child's props, so presence is read here:
   // the outgoing layer keeps its video through the fade but drops audio instantly —
@@ -201,7 +237,14 @@ function ClipLayer({ source, muted = true, onAutoplayBlocked }: { source: Previe
       transition={{ duration: 1.4, ease: 'easeInOut' }}
       className="absolute inset-0"
     >
-      <ClipVideo source={source} muted={muted || !isPresent} onAutoplayBlocked={onAutoplayBlocked} onPlaying={() => setReady(true)} />
+      {/* Only the live layer reports upward — an exiting layer recovering from a
+          stall must not re-arm the rotation timer. */}
+      <ClipVideo
+        source={source}
+        muted={muted || !isPresent}
+        onAutoplayBlocked={onAutoplayBlocked}
+        onPlaying={() => { setReady(true); if (isPresent) onPlaying?.() }}
+      />
     </motion.div>
   )
 }

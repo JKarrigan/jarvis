@@ -9,13 +9,11 @@ import {
   allGenres, pickerPool, shuffle,
   type PickerType, type PickerMood, type PickerSort, type PickerMatch, type UserView,
 } from './selectors'
-import { AmbientClip } from './AmbientClip'
+import { AmbientClip, useAmbientMute } from './AmbientClip'
 import { DetailView } from './DetailView'
 import { Poster, detailHref } from './ReelCards'
 import { StarIcon, ThumbUpIcon, ThumbDownIcon, PlayIcon } from './icons'
 import { IconMuted, IconVolume } from './playerUi'
-
-const CLIP_MUTE_KEY = 'reel.pickerClipMuted'
 
 const TYPES: { v: PickerType; label: string }[] = [
   { v: 'all', label: 'Everything' }, { v: 'movie', label: 'Movies' }, { v: 'tv', label: 'TV Shows' },
@@ -109,15 +107,12 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const [touched, setTouched] = useState(false)
 
   const [stage, setStage] = useState<'setup' | 'swipe'>('setup')
-  // Sound on by default; lazy localStorage read is hydration-safe because the
-  // swipe screen (the only consumer) never renders during SSR.
-  const [clipMuted, setClipMuted] = useState(() =>
-    typeof window !== 'undefined' && window.localStorage.getItem(CLIP_MUTE_KEY) === '1')
-  const toggleClipMuted = () => setClipMuted(m => {
-    const next = !m
-    try { window.localStorage.setItem(CLIP_MUTE_KEY, next ? '1' : '0') } catch {}
-    return next
-  })
+  const { muted: clipMuted, toggle: toggleClipMuted, forceMute: forceClipMute } = useAmbientMute()
+  // Lean-back mode: once a clip is actually playing, 3s without mouse/key/pointer
+  // activity dims the overlay text so the clip can breathe; any activity restores it.
+  const [clipLive, setClipLive] = useState(false)
+  const [idle, setIdle] = useState(false)
+  const dim = clipLive && idle
   const [pool, setPool] = useState<ReelTitle[]>([])
   const [idx, setIdx] = useState(0)
   const [kept, setKept] = useState<ReelTitle[]>([])
@@ -147,7 +142,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
 
   const startPicking = () => {
     setPool(pickerPool(catalog, { type, genres, moods, match, collectionIds, sort, hideWatched }, view, collections))
-    setIdx(0); setKept([]); setStage('swipe')
+    setIdx(0); setKept([]); setClipLive(false); setStage('swipe')
   }
 
   const current = pool[idx]
@@ -177,8 +172,26 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const vote = useCallback((keep: boolean) => {
     setKept(k => (keep && pool[idx] ? [...k, pool[idx]] : k))
     setExitDir(keep ? 'keep' : 'pass')
+    setClipLive(false)
     setIdx(i => i + 1)
   }, [pool, idx])
+
+  useEffect(() => {
+    if (stage !== 'swipe' || done) return
+    let t: ReturnType<typeof setTimeout>
+    const arm = () => { clearTimeout(t); t = setTimeout(() => setIdle(true), 3000) }
+    const wake = () => { setIdle(false); arm() }
+    arm()
+    window.addEventListener('mousemove', wake)
+    window.addEventListener('pointerdown', wake)
+    window.addEventListener('keydown', wake)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('mousemove', wake)
+      window.removeEventListener('pointerdown', wake)
+      window.removeEventListener('keydown', wake)
+    }
+  }, [stage, done])
 
   useEffect(() => {
     if (stage !== 'swipe' || done) return
@@ -190,8 +203,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     return () => window.removeEventListener('keydown', onKey)
   }, [stage, done, vote])
 
-  const anotherRound = () => { setPool(shuffle(kept)); setIdx(0); setKept([]) }
-  const newPicker = () => { setStage('setup'); setPool([]); setIdx(0); setKept([]) }
+  const anotherRound = () => { setPool(shuffle(kept)); setIdx(0); setKept([]); setClipLive(false) }
+  const newPicker = () => { setStage('setup'); setPool([]); setIdx(0); setKept([]); setClipLive(false) }
 
   // ---- Setup ----
   if (stage === 'setup') {
@@ -293,12 +306,15 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     return (
       <div className="relative">
         <Confetti />
-        {/* Compact banner keeps the pop moment; the full detail view loads in below */}
-        <div className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-10 pt-20 md:px-[var(--gx)]" style={{ animation: 'winnerPop 0.6s ease' }}>
-          <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">★ Tonight&rsquo;s pick</p>
-          <h1 className="mt-2 text-[clamp(40px,10vw,72px)] font-[800] leading-[0.98] tracking-[-0.025em] text-ink">{w.title}</h1>
-          <div className="mt-6">
-            <button type="button" onClick={newPicker} className="rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-ink hover:bg-white/10">Pick again</button>
+        {/* Banner floats over the detail hero's backdrop (its content is bottom-anchored,
+            so the top of the artwork is free) instead of pushing the hero down. */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-30">
+          <div className="mx-auto max-w-[880px] px-[var(--rail)] pt-16 md:px-[var(--gx)]" style={{ animation: 'winnerPop 0.6s ease' }}>
+            <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">★ Tonight&rsquo;s pick</p>
+            <h1 className="mt-2 text-[clamp(40px,10vw,72px)] font-[800] leading-[0.98] tracking-[-0.025em] text-ink [text-shadow:0_2px_24px_rgba(0,0,0,0.55)]">{w.title}</h1>
+            <div className="mt-6">
+              <button type="button" onClick={newPicker} className="pointer-events-auto rounded-xl border border-white/10 bg-black/45 px-5 py-2.5 text-sm font-semibold text-ink backdrop-blur-sm hover:bg-white/10">Pick again</button>
+            </div>
           </div>
         </div>
 
@@ -308,7 +324,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
               <DetailView detail={winner.detail} media={winner.media} similar={winner.similar} hideBack />
             </motion.div>
           ) : winnerError ? (
-            <motion.div key="fallback" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 md:px-[var(--gx)]">
+            <motion.div key="fallback" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 pt-64 md:px-[var(--gx)]">
               <p className="text-white/65">{metaLine(w)}</p>
               {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
               <div className="mt-7 flex flex-wrap gap-3">
@@ -317,7 +333,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
               </div>
             </motion.div>
           ) : (
-            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 md:px-[var(--gx)]">
+            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 pt-64 md:px-[var(--gx)]">
               <p className="text-white/65">{metaLine(w)}</p>
               {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
               <div className="mt-8 h-[40vh] animate-pulse rounded-3xl bg-white/[0.04]" />
@@ -363,25 +379,25 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         <div className="absolute inset-0">
           <Poster gradient={current.backdropColor} src={current.backdropUrl} alt={current.title} rounded="rounded-none" className="h-full w-full" />
           {/* Movies only — picker TV titles are series ids with no playable MediaSources */}
-          {/* Autoplay block is a browser decision, not a preference — don't persist it */}
-          {current.type === 'movie' && <AmbientClip key={current.id} itemId={current.id} muted={clipMuted} onAutoplayBlocked={() => setClipMuted(true)} />}
+          {current.type === 'movie' && <AmbientClip key={current.id} itemId={current.id} muted={clipMuted} onAutoplayBlocked={forceClipMute} onClipPlaying={() => setClipLive(true)} />}
           <div className="absolute inset-0" style={{ background: 'radial-gradient(90% 90% at 50% 55%, rgba(8,6,13,0.7), rgba(8,6,13,0.45) 60%, rgba(8,6,13,0.3)), linear-gradient(180deg, rgba(8,6,13,0.35), rgba(8,6,13,0.55))' }} />
         </div>
       )}
 
       {/* progress */}
-      <div className="absolute inset-x-0 top-5 z-20 flex flex-col items-center gap-1 text-sm">
+      <motion.div animate={{ opacity: dim ? 0.15 : 1 }} transition={{ duration: 0.6 }} className="absolute inset-x-0 top-5 z-20 flex flex-col items-center gap-1 text-sm">
         <span className="rounded-full bg-black/45 px-3 py-1 font-semibold text-white backdrop-blur-sm">{Math.min(idx + 1, pool.length)} / {pool.length}</span>
         <span className="text-white/60">♥ {kept.length} kept</span>
-      </div>
+      </motion.div>
 
       <AnimatePresence>
         {current?.type === 'movie' && (
           <motion.button
             type="button"
             initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+            animate={{ opacity: dim ? 0.15 : 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: 0.6 }}
             onClick={toggleClipMuted}
             aria-label={clipMuted ? 'Unmute ambient audio' : 'Mute ambient audio'}
             className="absolute right-5 top-5 z-20 grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/45 text-white backdrop-blur-sm transition hover:bg-white/10"
@@ -391,7 +407,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         )}
       </AnimatePresence>
 
-      <div className="relative z-10 flex min-h-svh items-center justify-center">
+      <motion.div animate={{ opacity: dim ? 0.15 : 1 }} transition={{ duration: 0.6 }} className="relative z-10 flex min-h-svh items-center justify-center">
         {/* wait: the outgoing card fully animates out before the next one rises in. */}
         <AnimatePresence mode="wait" custom={exitDir} onExitComplete={() => setExitDir(null)}>
           {current && (
@@ -429,7 +445,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
+      </motion.div>
     </div>
   )
 }

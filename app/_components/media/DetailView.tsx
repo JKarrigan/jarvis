@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -13,7 +13,8 @@ import {
   ActionButton, AddToCollectionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
 } from './DetailSections'
 import type { ReelDetail, ReelTitle, MediaInfo, ReelSeasonInfo } from './types'
-import { ClipVideo, releasePlaybackEncoding, rollStartAt, type CachedPlayback, type PreviewSource } from './AmbientClip'
+import { AmbientClip, useAmbientMute } from './AmbientClip'
+import { IconMuted, IconVolume } from './playerUi'
 import { backdropFallback, poster } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
 import {
@@ -80,57 +81,12 @@ export function DetailView({
   const [trailerPlaying, setTrailerPlaying] = useState(false)
   const [trailerOpen, setTrailerOpen] = useState(false)
 
-  // Ambient preview: hovering Play fades the hero backdrop into a muted stream of the
-  // movie (or next episode) at a random point. The resolved source is cached so repeat
-  // hovers reuse one playback session instead of spawning new transcodes. Deliberately
-  // never reported to Jellyfin — a preview must not touch the real resume position.
-  const [preview, setPreview] = useState<PreviewSource | null>(null)
-  const previewSource = useRef<CachedPlayback | null | undefined>(undefined)
-  const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  const previewWanted = useRef(false)
-
-  function startPreview() {
-    if (!playTarget) return
-    previewWanted.current = true
-    clearTimeout(previewTimer.current)
-    // Small delay so skimming past the button doesn't open a stream.
-    previewTimer.current = setTimeout(async () => {
-      if (previewSource.current === undefined) {
-        try {
-          const res = await fetch(`/api/jellyfin/playback?id=${playTarget.id}`)
-          const source = res.ok ? await res.json() : null
-          previewSource.current = source?.url
-            ? { url: source.url, method: source.method, runtimeTicks: source.runtimeTicks, playSessionId: source.playSessionId }
-            : null
-        } catch {
-          previewSource.current = null
-        }
-      }
-      const src = previewSource.current
-      if (!src || !previewWanted.current) return
-      setPreview({ ...src, startAt: rollStartAt(src.runtimeTicks / 10_000_000) })
-    }, 350)
-  }
-
-  // Transcoded (HLS) previews leave ffmpeg running on the NAS after the last segment
-  // request — tell the server to kill the encoding, and drop the cached session (a
-  // killed session can't be resumed; the next hover resolves a fresh one).
-  function releasePreviewEncoding() {
-    releasePlaybackEncoding(previewSource.current)
-    if (previewSource.current?.method === 'hls') previewSource.current = undefined
-  }
-
-  function stopPreview() {
-    previewWanted.current = false
-    clearTimeout(previewTimer.current)
-    setPreview(null)
-    releasePreviewEncoding()
-  }
-
-  useEffect(() => () => {
-    clearTimeout(previewTimer.current)
-    releasePreviewEncoding()
-  }, [])
+  // Ambient background: the hero backdrop fades into a rotating stream of the movie
+  // (or next episode), sharing the picker's mute preference. Suspended while the real
+  // player or a trailer is up — the clip would double the audio and burn a transcode.
+  // AmbientClip never reports playback progress, so the resume position is untouched.
+  const { muted: ambientMuted, toggle: toggleAmbientMute, forceMute: forceAmbientMute } = useAmbientMute()
+  const ambientActive = Boolean(playTarget) && !playing && !trailerPlaying && !trailerOpen
 
   const resumeLabel = detail.type === 'movie' && detail.progress > 0 && detail.progress < 1 ? 'Resume' : 'Play'
 
@@ -147,6 +103,22 @@ export function DetailView({
         </button>
       )}
 
+      <AnimatePresence>
+        {ambientActive && (
+          <motion.button
+            type="button"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={toggleAmbientMute}
+            aria-label={ambientMuted ? 'Unmute ambient audio' : 'Mute ambient audio'}
+            className="absolute right-4 top-3 z-50 grid h-10 w-10 place-items-center rounded-full border border-white/10 bg-black/45 text-ink backdrop-blur-xl transition hover:bg-white/10"
+          >
+            {ambientMuted ? <IconMuted /> : <IconVolume />}
+          </motion.button>
+        )}
+      </AnimatePresence>
+
       {/* Hero: full-viewport backdrop with the title block anchored to its lower edge.
           The section grows past 100svh when the content is taller, so everything after
           it (credits, tags, seasons) always flows below the artwork. */}
@@ -155,21 +127,10 @@ export function DetailView({
           <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
             <Poster gradient={detail.backdropUrl ? detail.backdropColor : backdropFallback(detail.hue)} src={detail.backdropUrl} alt={detail.title} rounded="rounded-none" className="h-full w-full" />
           </div>
-          {/* Ambient preview — streams from a random point while Play is hovered */}
-          <AnimatePresence>
-            {preview && (
-              <motion.div
-                key={`${preview.url}#${preview.startAt}`}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.7, ease: 'easeOut' }}
-                className="absolute inset-0"
-              >
-                <ClipVideo source={preview} />
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* Ambient background clip — plays automatically at random points in the title */}
+          {ambientActive && playTarget && (
+            <AmbientClip key={playTarget.id} itemId={playTarget.id} muted={ambientMuted} onAutoplayBlocked={forceAmbientMute} />
+          )}
           {/* Scrim: darkens toward the bottom for text contrast but stays translucent through
               the title/overview zone so the artwork still reads behind the content. */}
           <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.25), rgba(8,6,13,0.45) 40%, rgba(8,6,13,0.72) 60%, rgba(8,6,13,0.88) 78%, #0a0810 96%)' }} />
@@ -225,13 +186,7 @@ export function DetailView({
             {/* Actions */}
             <div className="mt-5 flex flex-wrap items-center gap-2.5">
               {playTarget && (
-                <ActionButton
-                  accent
-                  label={resumeLabel}
-                  onClick={() => { stopPreview(); setPlaying(true) }}
-                  onHoverStart={startPreview}
-                  onHoverEnd={stopPreview}
-                >
+                <ActionButton accent label={resumeLabel} onClick={() => setPlaying(true)}>
                   <PlayIcon className="h-4 w-4" /> {resumeLabel}
                 </ActionButton>
               )}
