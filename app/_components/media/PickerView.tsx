@@ -30,6 +30,11 @@ function toggleIn<T>(arr: T[], v: T): T[] {
 const SORTS: { v: PickerSort; label: string }[] = [
   { v: 'shuffle', label: 'Shuffle' }, { v: 'top', label: 'Top rated' }, { v: 'newest', label: 'Newest' }, { v: 'shortest', label: 'Shortest' },
 ]
+// Round ends once this many titles are kept (0 = swipe the whole deck) — keeps a
+// 100+ title category from requiring 100+ votes before the first shortlist.
+const KEEP_LIMITS: { v: number; label: string }[] = [
+  { v: 5, label: '5 keeps' }, { v: 10, label: '10 keeps' }, { v: 15, label: '15 keeps' }, { v: 0, label: 'No limit' },
+]
 
 function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -101,6 +106,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const [match, setMatch] = useState<PickerMatch>('any')
   const [collectionIds, setCollectionIds] = useState<string[]>([])
   const [sort, setSort] = useState<PickerSort>('shuffle')
+  const [keepLimit, setKeepLimit] = useState(15)
   const [hideWatched, setHideWatched] = useState(false)
   // One-way flag: the first touch of a pool-affecting control splits the setup
   // layout (form left, live deck preview right) for the rest of the session.
@@ -116,7 +122,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const [pool, setPool] = useState<ReelTitle[]>([])
   const [idx, setIdx] = useState(0)
   const [kept, setKept] = useState<ReelTitle[]>([])
-  const [exitDir, setExitDir] = useState<'keep' | 'pass' | null>(null)
+  const [exitDir, setExitDir] = useState<'keep' | 'pass' | 'skip' | null>(null)
 
   const genreList = useMemo(() => allGenres(catalog), [catalog])
   // Live preview of the deck — deterministic sort so render stays pure (sort doesn't
@@ -146,7 +152,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   }
 
   const current = pool[idx]
-  const done = stage === 'swipe' && idx >= pool.length
+  const done = stage === 'swipe' && (idx >= pool.length || (keepLimit > 0 && kept.length >= keepLimit))
 
   // Winner detail: the picker only holds lightweight ReelTitles, so the full
   // detail/media/similar payload is fetched once a single winner emerges.
@@ -182,6 +188,24 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     setIdx(i => i + 1)
   }, [pool, idx])
 
+  // Not ready to decide: drop the card back into the queue at a random later spot.
+  // idx stays put — the next card slides into the current position, and the card key
+  // includes the title id so the swap still animates.
+  const skip = useCallback(() => {
+    const t = pool[idx]
+    if (!t || idx >= pool.length - 1) return
+    setExitDir('skip')
+    setClipLive(false)
+    setPool(p => {
+      const next = [...p]
+      next.splice(idx, 1)
+      const min = Math.min(idx + 2, next.length)
+      const at = min + Math.floor(Math.random() * (next.length - min + 1))
+      next.splice(at, 0, t)
+      return next
+    })
+  }, [pool, idx])
+
   useEffect(() => {
     if (stage !== 'swipe' || done) return
     let t: ReturnType<typeof setTimeout>
@@ -203,11 +227,12 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     if (stage !== 'swipe' || done) return
     function onKey(e: KeyboardEvent) {
       if (e.key === 'ArrowRight' || e.key === 'ArrowUp') vote(true)
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') vote(false)
+      else if (e.key === 'ArrowLeft') vote(false)
+      else if (e.key === 'ArrowDown') skip()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [stage, done, vote])
+  }, [stage, done, vote, skip])
 
   const anotherRound = () => { setPool(shuffle(kept)); setIdx(0); setKept([]); setClipLive(false) }
   const newPicker = () => { setStage('setup'); setPool([]); setIdx(0); setKept([]); setClipLive(false) }
@@ -262,6 +287,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
           </AnimatePresence>
 
           <Group label="Order the deck">{SORTS.map(s => <Chip key={s.v} active={sort === s.v} onClick={() => setSort(s.v)}>{s.label}</Chip>)}</Group>
+
+          <Group label="Stop after">{KEEP_LIMITS.map(l => <Chip key={l.v} active={keepLimit === l.v} onClick={() => setKeepLimit(l.v)}>{l.label}</Chip>)}</Group>
 
           <button
             type="button"
@@ -393,7 +420,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
       {/* progress */}
       <motion.div animate={{ opacity: dim ? 0.15 : 1 }} transition={{ duration: 0.6 }} className="absolute inset-x-0 top-5 z-20 flex flex-col items-center gap-1 text-sm">
         <span className="rounded-full bg-black/45 px-3 py-1 font-semibold text-white backdrop-blur-sm">{Math.min(idx + 1, pool.length)} / {pool.length}</span>
-        <span className="text-white/60">♥ {kept.length} kept</span>
+        <span className="text-white/60">♥ {kept.length}{keepLimit > 0 ? ` / ${keepLimit}` : ''} kept</span>
       </motion.div>
 
       <AnimatePresence>
@@ -418,7 +445,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         <AnimatePresence mode="wait" custom={exitDir} onExitComplete={() => setExitDir(null)}>
           {current && (
             <motion.div
-              key={idx}
+              key={`${idx}-${current.id}`}
               custom={exitDir}
               drag="x"
               dragSnapToOrigin
@@ -427,7 +454,9 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
               variants={{
                 initial: { opacity: 0, y: 28, scale: 0.985 },
                 animate: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.44, ease: [0.2, 0.7, 0.2, 1] } },
-                exit: (dir: 'keep' | 'pass' | null) => ({ opacity: 0, x: dir === 'keep' ? 140 : -140, rotate: dir === 'keep' ? 3 : -3, transition: { duration: 0.27 } }),
+                exit: (dir: 'keep' | 'pass' | 'skip' | null) => dir === 'skip'
+                  ? { opacity: 0, y: 90, transition: { duration: 0.27 } }
+                  : { opacity: 0, x: dir === 'keep' ? 140 : -140, rotate: dir === 'keep' ? 3 : -3, transition: { duration: 0.27 } },
               }}
               initial="initial" animate="animate" exit="exit"
               className="w-full max-w-[880px] cursor-grab px-[var(--rail)] text-center active:cursor-grabbing md:px-[var(--gx)]"
@@ -444,6 +473,21 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
                 <button type="button" onClick={() => vote(false)} aria-label="Pass" className="grid h-16 w-16 place-items-center rounded-full border border-white/15 bg-black/40 backdrop-blur-md transition hover:scale-105" style={{ color: 'var(--pass)' }}>
                   <ThumbDownIcon className="h-6 w-6" />
                 </button>
+                <AnimatePresence>
+                  {idx < pool.length - 1 && (
+                    <motion.button
+                      type="button"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={skip}
+                      aria-label="Skip for now"
+                      className="grid h-12 place-items-center rounded-full border border-white/15 bg-black/40 px-5 text-sm font-semibold text-white/80 backdrop-blur-md transition hover:scale-105 hover:text-white"
+                    >
+                      Skip
+                    </motion.button>
+                  )}
+                </AnimatePresence>
                 <button type="button" onClick={() => vote(true)} aria-label="Keep" className="grid h-16 w-16 place-items-center rounded-full text-ink-on-accent shadow-[0_12px_34px_var(--glow)] transition hover:scale-105" style={{ background: 'var(--accent)' }}>
                   <ThumbUpIcon className="h-6 w-6" />
                 </button>
