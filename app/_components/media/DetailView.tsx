@@ -43,8 +43,8 @@ function findNextEpisode(seasons: ReelSeasonInfo[] | undefined, isEpWatched: (id
 }
 
 export function DetailView({
-  detail, media, similar, autoPlay = false,
-}: { detail: ReelDetail; media: MediaInfo | null; similar: ReelTitle[]; autoPlay?: boolean }) {
+  detail, media, similar, autoPlay = false, hideBack = false,
+}: { detail: ReelDetail; media: MediaInfo | null; similar: ReelTitle[]; autoPlay?: boolean; hideBack?: boolean }) {
   const router = useRouter()
   const mediaState = useMedia()
   const {
@@ -137,13 +137,15 @@ export function DetailView({
   return (
     <div className="relative pb-20">
       {/* Back */}
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="absolute left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
-      >
-        <ChevronLeftIcon className="h-4 w-4" /> Back
-      </button>
+      {!hideBack && (
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="absolute left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
+        >
+          <ChevronLeftIcon className="h-4 w-4" /> Back
+        </button>
+      )}
 
       {/* Hero: full-viewport backdrop with the title block anchored to its lower edge.
           The section grows past 100svh when the content is taller, so everything after

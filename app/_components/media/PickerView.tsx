@@ -4,12 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMedia } from './MediaProvider'
-import type { CollectionSummary, ReelTitle } from './types'
+import type { CollectionSummary, MediaInfo, ReelDetail, ReelTitle } from './types'
 import {
   allGenres, pickerPool, shuffle,
   type PickerType, type PickerMood, type PickerSort, type PickerMatch, type UserView,
 } from './selectors'
 import { AmbientClip } from './AmbientClip'
+import { DetailView } from './DetailView'
 import { Poster, detailHref } from './ReelCards'
 import { StarIcon, ThumbUpIcon, ThumbDownIcon, PlayIcon } from './icons'
 import { IconMuted, IconVolume } from './playerUi'
@@ -152,6 +153,27 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const current = pool[idx]
   const done = stage === 'swipe' && idx >= pool.length
 
+  // Winner detail: the picker only holds lightweight ReelTitles, so the full
+  // detail/media/similar payload is fetched once a single winner emerges.
+  type WinnerData = { detail: ReelDetail; media: MediaInfo | null; similar: ReelTitle[] }
+  const [winner, setWinner] = useState<WinnerData | null>(null)
+  const [winnerError, setWinnerError] = useState(false)
+  const winnerId = done && kept.length === 1 ? kept[0].id : null
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    setWinner(null)
+    setWinnerError(false)
+    if (!winnerId) return
+    window.scrollTo(0, 0)
+    let cancelled = false
+    fetch(`/api/jellyfin/detail/${winnerId}`)
+      .then(res => (res.ok ? res.json() : Promise.reject()))
+      .then((data: WinnerData) => { if (!cancelled) setWinner(data) })
+      .catch(() => { if (!cancelled) setWinnerError(true) })
+    return () => { cancelled = true }
+  }, [winnerId])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
   const vote = useCallback((keep: boolean) => {
     setKept(k => (keep && pool[idx] ? [...k, pool[idx]] : k))
     setExitDir(keep ? 'keep' : 'pass')
@@ -269,19 +291,39 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   if (done && kept.length === 1) {
     const w = kept[0]
     return (
-      <div className="relative min-h-[80vh]">
+      <div className="relative">
         <Confetti />
-        <div className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] py-20 md:px-[var(--gx)]" style={{ animation: 'winnerPop 0.6s ease' }}>
+        {/* Compact banner keeps the pop moment; the full detail view loads in below */}
+        <div className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-10 pt-20 md:px-[var(--gx)]" style={{ animation: 'winnerPop 0.6s ease' }}>
           <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">★ Tonight&rsquo;s pick</p>
           <h1 className="mt-2 text-[clamp(40px,10vw,72px)] font-[800] leading-[0.98] tracking-[-0.025em] text-ink">{w.title}</h1>
-          <p className="mt-3 text-white/65">{metaLine(w)}</p>
-          {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
-          <div className="mt-7 flex flex-wrap gap-3">
-            <button type="button" onClick={() => router.push(`${detailHref(w)}?play=1`)} className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-ink-on-accent shadow-[0_12px_34px_var(--glow)]" style={{ background: 'var(--accent)' }}><PlayIcon className="h-4 w-4" /> Play now</button>
-            <button type="button" onClick={() => router.push(detailHref(w))} className="rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-ink hover:bg-white/10">View details</button>
+          <div className="mt-6">
             <button type="button" onClick={newPicker} className="rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-ink hover:bg-white/10">Pick again</button>
           </div>
         </div>
+
+        <AnimatePresence mode="wait">
+          {winner ? (
+            <motion.div key="detail" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, ease: [0.2, 0.7, 0.2, 1] }} className="relative z-10">
+              <DetailView detail={winner.detail} media={winner.media} similar={winner.similar} hideBack />
+            </motion.div>
+          ) : winnerError ? (
+            <motion.div key="fallback" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 md:px-[var(--gx)]">
+              <p className="text-white/65">{metaLine(w)}</p>
+              {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
+              <div className="mt-7 flex flex-wrap gap-3">
+                <button type="button" onClick={() => router.push(`${detailHref(w)}?play=1`)} className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-ink-on-accent shadow-[0_12px_34px_var(--glow)]" style={{ background: 'var(--accent)' }}><PlayIcon className="h-4 w-4" /> Play now</button>
+                <button type="button" onClick={() => router.push(detailHref(w))} className="rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-ink hover:bg-white/10">View details</button>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 md:px-[var(--gx)]">
+              <p className="text-white/65">{metaLine(w)}</p>
+              {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
+              <div className="mt-8 h-[40vh] animate-pulse rounded-3xl bg-white/[0.04]" />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     )
   }
