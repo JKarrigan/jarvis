@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { AnimatePresence, motion, usePresence } from 'framer-motion'
 
 export interface PreviewSource {
@@ -97,24 +97,42 @@ export function rollStartAt(runtimeSeconds: number): number {
 
 const AMBIENT_MUTE_KEY = 'reel.ambientMuted'
 
-/** Shared mute preference for ambient clips (picker + detail views). Sound on by
-    default. localStorage is read in an effect — the detail hero is server-rendered,
-    so a render-time read would mismatch hydration. */
+// Application-wide mute state, shared live across every mounted consumer — two hook
+// instances can be on screen at once (e.g. the picker and its embedded detail view),
+// and a localStorage-on-mount read would let the stale one win on the next clip.
+let ambientMuted = false
+let ambientMuteLoaded = false
+const muteListeners = new Set<() => void>()
+
+function loadAmbientMuted() {
+  if (ambientMuteLoaded) return
+  ambientMuteLoaded = true
+  try { ambientMuted = window.localStorage.getItem(AMBIENT_MUTE_KEY) === '1' } catch {}
+}
+
+function setAmbientMuted(next: boolean, persist: boolean) {
+  ambientMuted = next
+  if (persist) { try { window.localStorage.setItem(AMBIENT_MUTE_KEY, next ? '1' : '0') } catch {} }
+  muteListeners.forEach(l => l())
+}
+
+function subscribeMute(cb: () => void) {
+  // Stored preference loads on first subscribe (never during SSR); React re-reads the
+  // snapshot right after subscribing, so a loaded value still reaches the first render.
+  loadAmbientMuted()
+  muteListeners.add(cb)
+  return () => { muteListeners.delete(cb) }
+}
+
+/** Shared mute preference for ambient clips (picker + detail views). Sound on by default. */
 export function useAmbientMute(): { muted: boolean; toggle: () => void; forceMute: () => void } {
-  const [muted, setMuted] = useState(false)
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    try { setMuted(window.localStorage.getItem(AMBIENT_MUTE_KEY) === '1') } catch {}
-  }, [])
-  /* eslint-enable react-hooks/set-state-in-effect */
-  const toggle = () => setMuted(m => {
-    const next = !m
-    try { window.localStorage.setItem(AMBIENT_MUTE_KEY, next ? '1' : '0') } catch {}
-    return next
-  })
-  // An autoplay-policy block is a browser decision, not a preference — never persisted.
-  const forceMute = () => setMuted(true)
-  return { muted, toggle, forceMute }
+  const muted = useSyncExternalStore(subscribeMute, () => ambientMuted, () => false)
+  return {
+    muted,
+    toggle: () => setAmbientMuted(!ambientMuted, true),
+    // An autoplay-policy block is a browser decision, not a preference — never persisted.
+    forceMute: () => setAmbientMuted(true, false),
+  }
 }
 
 /** Transcoded (HLS) clips leave ffmpeg running on the NAS after the last segment
