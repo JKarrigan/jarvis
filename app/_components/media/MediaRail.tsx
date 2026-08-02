@@ -35,9 +35,11 @@ export function MediaRail({ onSearch }: { onSearch?: () => void }) {
   const pickCount = pickList.length
   // Shortcut hint resolves after mount — the platform sniff would mismatch SSR markup.
   const [searchLabel, setSearchLabel] = useState('Search')
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setSearchLabel(`Search (${/Mac/.test(navigator.platform) ? '⌘' : 'Ctrl+'}K)`)
   }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const railLink = (item: RailItem) => {
     const active = isActive(pathname, item)
