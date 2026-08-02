@@ -52,8 +52,11 @@ export function ClipVideo({ source, onPlaying, muted = true, volume = 0.6, onAut
     const handlePlaying = () => onPlayingRef.current?.()
     video.addEventListener('playing', handlePlaying)
     const tryPlay = () => {
-      video.play().catch(() => {
-        if (video.muted) return
+      video.play().catch((err: unknown) => {
+        // Only a NotAllowedError is an autoplay block. Teardown mid-load (voting to
+        // the next card, navigating away) rejects with AbortError — falling back on
+        // that would force-mute the shared preference for no reason.
+        if (video.muted || (err as DOMException)?.name !== 'NotAllowedError') return
         video.muted = true
         onAutoplayBlockedRef.current?.()
         video.play().catch(() => {})
