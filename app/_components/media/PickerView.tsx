@@ -89,7 +89,7 @@ function Confetti() {
 
 export function PickerView({ catalog, collections = [], startFromList = false }: { catalog: ReelTitle[]; collections?: CollectionSummary[]; startFromList?: boolean }) {
   const router = useRouter()
-  const { pickList, isWatched, isFavorite } = useMedia()
+  const { pickList, clearPickList, isWatched, isFavorite } = useMedia()
   const view: UserView = useMemo(() => ({
     watched: (t) => isWatched(t.id, t.watched),
     favorite: (t) => isFavorite(t.id, t.favorite),
@@ -168,6 +168,12 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     return () => { cancelled = true }
   }, [winnerId])
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  // A roundup that reached a final pick has consumed its list — clear it so the
+  // next visit starts fresh instead of replaying the same titles.
+  useEffect(() => {
+    if (winnerId && startFromList && startedRef.current) clearPickList()
+  }, [winnerId, startFromList, clearPickList])
 
   const vote = useCallback((keep: boolean) => {
     setKept(k => (keep && pool[idx] ? [...k, pool[idx]] : k))
