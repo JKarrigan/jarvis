@@ -8,6 +8,7 @@ import { Sheet } from '@/app/_components/HueControls'
 import { useMedia } from './MediaProvider'
 import type { PlaybackSelection } from './PlaybackPicker'
 import { fetchCollections, createCollection, addToCollection, removeFromCollection } from './collectionsApi'
+import { canonicalizeGenres } from './selectors'
 import type { ReelDetail, ReelCastMember, CollectionSummary } from './types'
 import { avatar } from './artwork'
 import { Row, SectionHeader } from './ReelCards'
@@ -77,7 +78,7 @@ export function CreditsGrid({ detail, pad = BODY_PAD }: { detail: ReelDetail; pa
         {detail.genres.length > 0 && (
           <CreditRow
             label="Genres"
-            value={detail.genres.map((g, i) => (
+            value={canonicalizeGenres(detail.genres).map((g, i) => (
               <span key={g}>
                 {i > 0 && ', '}
                 <Link

@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { useMedia } from './MediaProvider'
 import type { ReelTitle } from './types'
 import {
-  allGenres, allTags, applyShow, sortTitles,
+  allGenres, allTags, applyShow, effectiveGenres, sortTitles,
   type LibrarySort, type LibraryShow, type UserView,
 } from './selectors'
 import { FilterDropdown } from './FilterDropdown'
@@ -49,7 +49,7 @@ export function useFilteredLibrary(catalog: ReelTitle[], base?: LibraryBase, ini
     if (base === 'movie') list = list.filter(t => t.type === 'movie')
     else if (base === 'tv') list = list.filter(t => t.type === 'tv')
     else if (base === 'favorites') list = list.filter(t => view.favorite(t))
-    if (genre !== 'any') list = list.filter(t => t.genres.includes(genre))
+    if (genre !== 'any') list = list.filter(t => effectiveGenres(t).includes(genre))
     if (tag !== 'any') list = list.filter(t => t.tags?.includes(tag))
     list = applyShow(list, show, view)
     return sortTitles(list, sort)

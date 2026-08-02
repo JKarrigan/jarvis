@@ -9,6 +9,32 @@ export interface UserView {
   favorite: (t: ReelTitle) => boolean
 }
 
+/** Metadata providers label the same genre differently per library — TMDB's TV
+    genres are compounds ("Sci-Fi & Fantasy", "Action & Adventure") while movies use
+    the plain names, so a compound chip matches zero titles once a type filter is on.
+    Aliases fan each raw label out to canonical names; lookup is case-insensitive. */
+const GENRE_ALIASES: Record<string, string[]> = {
+  'sci-fi': ['Science Fiction'],
+  'sci-fi & fantasy': ['Science Fiction', 'Fantasy'],
+  'science-fiction': ['Science Fiction'],
+  'action & adventure': ['Action', 'Adventure'],
+  'war & politics': ['War'],
+  'kids': ['Family'],
+  'children': ['Family'],
+}
+
+/** Raw genre labels with aliases resolved to canonical names (deduped). */
+export function canonicalizeGenres(genres: string[]): string[] {
+  const out = new Set<string>()
+  for (const g of genres) for (const c of GENRE_ALIASES[g.toLowerCase()] ?? [g]) out.add(c)
+  return [...out]
+}
+
+/** A title's genres in canonical form. */
+export function effectiveGenres(t: ReelTitle): string[] {
+  return canonicalizeGenres(t.genres)
+}
+
 /** A show's runtime ≈ episodes × 45m; movies use their own runtime. */
 export function effectiveRuntime(t: ReelTitle): number {
   if (t.type === 'tv') return (t.episodes ?? (t.seasons ?? 1) * 8) * 45
@@ -24,10 +50,10 @@ export function recommendations(
   const weights = new Map<string, number>()
   for (const t of catalog) {
     if (view.watched(t) || view.favorite(t)) {
-      for (const g of t.genres) weights.set(g, (weights.get(g) ?? 0) + 1)
+      for (const g of effectiveGenres(t)) weights.set(g, (weights.get(g) ?? 0) + 1)
     }
   }
-  const affinity = (t: ReelTitle) => t.genres.reduce((s, g) => s + (weights.get(g) ?? 0), 0)
+  const affinity = (t: ReelTitle) => effectiveGenres(t).reduce((s, g) => s + (weights.get(g) ?? 0), 0)
   const scored = catalog
     .filter(t => !view.watched(t) && t.progress === 0)
     .map(t => ({ t, score: affinity(t) * 2 + (t.imdb ?? 0) }))
@@ -85,9 +111,10 @@ export function pickerPool(catalog: ReelTitle[], f: PickerFilters, view: UserVie
     if (f.type !== 'all' && t.type !== f.type) return false
     if (f.hideWatched && view.watched(t)) return false
     if (f.genres.length) {
+      const tg = effectiveGenres(t)
       const hit = f.match === 'all'
-        ? f.genres.every(g => t.genres.includes(g))
-        : f.genres.some(g => t.genres.includes(g))
+        ? f.genres.every(g => tg.includes(g))
+        : f.genres.some(g => tg.includes(g))
       if (!hit) return false
     }
     if (f.moods.length) {
@@ -131,7 +158,7 @@ export function applyShow(list: ReelTitle[], show: LibraryShow, view: UserView):
 
 export function allGenres(catalog: ReelTitle[]): string[] {
   const set = new Set<string>()
-  for (const t of catalog) for (const g of t.genres) set.add(g)
+  for (const t of catalog) for (const g of effectiveGenres(t)) set.add(g)
   return [...set].sort()
 }
 
@@ -164,7 +191,7 @@ export function computeStats(
   const ratingVals = Object.values(ratings).filter(v => v > 0)
   const avgRating = ratingVals.length ? ratingVals.reduce((a, b) => a + b, 0) / ratingVals.length : 0
   const genreCount = new Map<string, number>()
-  for (const t of watched) for (const g of t.genres) genreCount.set(g, (genreCount.get(g) ?? 0) + 1)
+  for (const t of watched) for (const g of effectiveGenres(t)) genreCount.set(g, (genreCount.get(g) ?? 0) + 1)
   const topGenres = [...genreCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
   return {
     hours,
