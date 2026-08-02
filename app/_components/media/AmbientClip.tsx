@@ -149,37 +149,65 @@ export function releasePlaybackEncoding(src: Pick<CachedPlayback, 'method' | 'pl
 }
 
 /** Ambient rotating background clip for an item: waits startDelayMs before
-    resolving a stream (so rapid item changes make zero network calls), then
-    crossfades to a new random point in the title after every rotateMs of actual
-    playback. Renders nothing until a clip is playing — the static backdrop behind
-    it stays visible. */
+    resolving a stream (so rapid item changes make zero network calls), then rotates
+    to a new random point in the title after every rotateMs of actual playback. The
+    incoming clip preloads hidden on top of the current one and only takes over once
+    it is rendering frames, so rotations dissolve clip-into-clip without dipping
+    through the static backdrop. Renders nothing until the first clip is playing. */
 export function AmbientClip({
-  itemId, startDelayMs = 1000, rotateMs = 10_000, muted = true, onAutoplayBlocked, onClipPlaying,
+  itemId, startDelayMs = 1000, rotateMs = 13_000, muted = true, onAutoplayBlocked, onClipPlaying,
 }: { itemId: string; startDelayMs?: number; rotateMs?: number; muted?: boolean; onAutoplayBlocked?: () => void; onClipPlaying?: () => void }) {
-  const [clip, setClip] = useState<PreviewSource | null>(null)
+  // Up to two layers: [current] or [current, incoming]. State and ref move together —
+  // timer callbacks and 'playing' handlers need the latest value synchronously.
+  const [clips, setClips] = useState<PreviewSource[]>([])
+  const clipsRef = useRef<PreviewSource[]>([])
+  const apply = (next: PreviewSource[]) => { clipsRef.current = next; setClips(next) }
+  // The outgoing layer during a swap: silenced but still rendered under the fade.
+  const [retiringKey, setRetiringKey] = useState<string | null>(null)
   // undefined = not resolved yet, null = no playable source (mock mode / 404)
   const sourceRef = useRef<CachedPlayback | null | undefined>(undefined)
   const rotateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const swapTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const onClipPlayingRef = useRef(onClipPlaying)
   useEffect(() => { onClipPlayingRef.current = onClipPlaying }, [onClipPlaying])
 
-  // Heavy remuxes can take seconds to load, so the rotation countdown starts when
-  // the active clip actually renders frames — not when it was requested. A repeat
-  // 'playing' event (rebuffer recovery) just re-arms the timer.
-  const handleClipPlaying = () => {
+  const clipKey = (c: PreviewSource) => `${c.url}#${c.startAt}`
+
+  // Heavy remuxes can take seconds to load, so both the layer swap and the rotation
+  // countdown key off the incoming clip actually rendering frames — not off when it
+  // was requested. Only the newest layer drives either: an older layer recovering
+  // from a rebuffer must not tear down a still-loading incoming clip. A repeat
+  // 'playing' event from the newest layer just re-arms the timer.
+  const handleClipPlaying = (key: string) => {
+    const cur = clipsRef.current
+    const last = cur[cur.length - 1]
+    if (!last || clipKey(last) !== key) return
     onClipPlayingRef.current?.()
+    if (cur.length > 1) {
+      // The incoming layer is rendering on top: silence the outgoing layer now
+      // (keeping it audible would double the soundtrack) but leave it fully visible
+      // beneath the fade — dropping it mid-fade would dip through the backdrop.
+      setRetiringKey(clipKey(cur[0]))
+      clearTimeout(swapTimer.current)
+      swapTimer.current = setTimeout(() => {
+        const latest = clipsRef.current
+        const tail = latest[latest.length - 1]
+        if (latest.length > 1 && tail && clipKey(tail) === key) { apply([tail]); setRetiringKey(null) }
+      }, 1600) // just past the 1.4s fade-in, when the incoming layer fully covers it
+    }
     const src = sourceRef.current
     if (!src) return
     const runtime = src.runtimeTicks / 10_000_000
     if (runtime <= 120) return
     clearTimeout(rotateTimer.current)
     rotateTimer.current = setTimeout(() => {
-      setClip(c => {
-        let next = rollStartAt(runtime)
-        // The AnimatePresence key includes startAt — nudge so it always changes.
-        if (c && next === c.startAt) next += 30
-        return { url: src.url, method: src.method, startAt: next }
-      })
+      const prev = clipsRef.current[clipsRef.current.length - 1]
+      let next = rollStartAt(runtime)
+      // Layer keys include startAt — nudge so it always changes.
+      if (prev && next === prev.startAt) next += 30
+      // Mount the incoming clip hidden above the current one; handleClipPlaying
+      // swaps the layers once it reports playback.
+      apply([...clipsRef.current.slice(-1), { url: src.url, method: src.method, startAt: next }])
     }, rotateMs)
   }
 
@@ -187,7 +215,7 @@ export function AmbientClip({
   useEffect(() => {
     let cancelled = false
     let startTimer: ReturnType<typeof setTimeout> | undefined
-    setClip(null)
+    apply([])
     sourceRef.current = undefined
 
     async function begin() {
@@ -206,13 +234,15 @@ export function AmbientClip({
       if (cancelled || !src) return
       const runtime = src.runtimeTicks / 10_000_000
       // Rotation is armed by handleClipPlaying once this clip reports playback.
-      setClip({ url: src.url, method: src.method, startAt: rollStartAt(runtime) })
+      apply([{ url: src.url, method: src.method, startAt: rollStartAt(runtime) }])
     }
 
     function stop() {
       clearTimeout(startTimer)
       clearTimeout(rotateTimer.current)
-      setClip(null)
+      clearTimeout(swapTimer.current)
+      apply([])
+      setRetiringKey(null)
       releasePlaybackEncoding(sourceRef.current)
       // A killed HLS session can't be resumed; the next start resolves a fresh one.
       if (sourceRef.current?.method === 'hls') sourceRef.current = undefined
@@ -235,7 +265,9 @@ export function AmbientClip({
 
   return (
     <AnimatePresence>
-      {clip && <ClipLayer key={`${clip.url}#${clip.startAt}`} source={clip} muted={muted} onAutoplayBlocked={onAutoplayBlocked} onPlaying={handleClipPlaying} />}
+      {clips.map(c => (
+        <ClipLayer key={clipKey(c)} source={c} muted={muted || clipKey(c) === retiringKey} onAutoplayBlocked={onAutoplayBlocked} onPlaying={() => handleClipPlaying(clipKey(c))} />
+      ))}
     </AnimatePresence>
   )
 }
