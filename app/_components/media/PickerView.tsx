@@ -122,6 +122,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   const [pool, setPool] = useState<ReelTitle[]>([])
   const [idx, setIdx] = useState(0)
   const [kept, setKept] = useState<ReelTitle[]>([])
+  // "Round up" pressed: end the round with the current keeps without finishing the deck.
+  const [endedEarly, setEndedEarly] = useState(false)
   const [exitDir, setExitDir] = useState<'keep' | 'pass' | 'skip' | null>(null)
 
   const genreList = useMemo(() => allGenres(catalog), [catalog])
@@ -148,11 +150,11 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
 
   const startPicking = () => {
     setPool(pickerPool(catalog, { type, genres, moods, match, collectionIds, sort, hideWatched }, view, collections))
-    setIdx(0); setKept([]); setClipLive(false); setStage('swipe')
+    setIdx(0); setKept([]); setClipLive(false); setEndedEarly(false); setStage('swipe')
   }
 
   const current = pool[idx]
-  const done = stage === 'swipe' && (idx >= pool.length || (keepLimit > 0 && kept.length >= keepLimit))
+  const done = stage === 'swipe' && (endedEarly || idx >= pool.length || (keepLimit > 0 && kept.length >= keepLimit))
 
   // Winner detail: the picker only holds lightweight ReelTitles, so the full
   // detail/media/similar payload is fetched once a single winner emerges.
@@ -234,8 +236,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     return () => window.removeEventListener('keydown', onKey)
   }, [stage, done, vote, skip])
 
-  const anotherRound = () => { setPool(shuffle(kept)); setIdx(0); setKept([]); setClipLive(false) }
-  const newPicker = () => { setStage('setup'); setPool([]); setIdx(0); setKept([]); setClipLive(false) }
+  const anotherRound = () => { setPool(shuffle(kept)); setIdx(0); setKept([]); setClipLive(false); setEndedEarly(false) }
+  const newPicker = () => { setStage('setup'); setPool([]); setIdx(0); setKept([]); setClipLive(false); setEndedEarly(false) }
 
   // ---- Setup ----
   if (stage === 'setup') {
@@ -412,7 +414,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         <div className="absolute inset-0">
           <Poster gradient={current.backdropColor} src={current.backdropUrl} alt={current.title} rounded="rounded-none" className="h-full w-full" />
           {/* Movies only — picker TV titles are series ids with no playable MediaSources */}
-          {current.type === 'movie' && <AmbientClip key={current.id} itemId={current.id} muted={clipMuted} onAutoplayBlocked={forceClipMute} onClipPlaying={() => setClipLive(true)} />}
+          {/* Series ids resolve to a random episode server-side (getPlayback) */}
+          <AmbientClip key={current.id} itemId={current.id} muted={clipMuted} onAutoplayBlocked={forceClipMute} onClipPlaying={() => setClipLive(true)} />
           <div className="absolute inset-0" style={{ background: 'radial-gradient(90% 90% at 50% 55%, rgba(8,6,13,0.7), rgba(8,6,13,0.45) 60%, rgba(8,6,13,0.3)), linear-gradient(180deg, rgba(8,6,13,0.35), rgba(8,6,13,0.55))' }} />
         </div>
       )}
@@ -421,10 +424,24 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
       <motion.div animate={{ opacity: dim ? 0.15 : 1 }} transition={{ duration: 0.6 }} className="absolute inset-x-0 top-5 z-20 flex flex-col items-center gap-1 text-sm">
         <span className="rounded-full bg-black/45 px-3 py-1 font-semibold text-white backdrop-blur-sm">{Math.min(idx + 1, pool.length)} / {pool.length}</span>
         <span className="text-white/60">♥ {kept.length}{keepLimit > 0 ? ` / ${keepLimit}` : ''} kept</span>
+        <AnimatePresence>
+          {kept.length >= 2 && (
+            <motion.button
+              type="button"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              onClick={() => setEndedEarly(true)}
+              className="mt-1 rounded-full border border-white/15 bg-black/45 px-4 py-1.5 text-[13px] font-semibold text-white backdrop-blur-sm transition hover:bg-white/10"
+            >
+              Round up ({kept.length})
+            </motion.button>
+          )}
+        </AnimatePresence>
       </motion.div>
 
       <AnimatePresence>
-        {current?.type === 'movie' && (
+        {current && (
           <motion.button
             type="button"
             initial={{ opacity: 0 }}

@@ -1510,6 +1510,18 @@ export async function getPlayback(
   const url = baseUrl()!
   const { userId, accessToken } = await getSession()
 
+  // Ambient clips pass series ids, but a series has no MediaSources of its own —
+  // represent the show with a random episode (random season falls out of picking
+  // uniformly across all episodes). The item is fetched here anyway for the resume
+  // position further down.
+  const item = await jfGet<RawItem>(`/Items/${itemId}`, { userId }).catch(() => null)
+  if (item?.Type === 'Series') {
+    const eps = await jfGet<{ Items: RawItem[] }>(`/Shows/${itemId}/Episodes`, { userId }).catch(() => null)
+    const playable = eps?.Items?.filter(e => e.Id) ?? []
+    const pick = playable[Math.floor(Math.random() * playable.length)]
+    return pick ? getPlayback(pick.Id, opts) : null
+  }
+
   // Send a real browser device profile so Jellyfin only reports DirectPlay when the
   // browser can actually decode the file. For DTS/AC3 audio or MKV it instead returns a
   // TranscodingUrl that copies the H.264 video and transcodes the audio to AAC. Passing
@@ -1530,9 +1542,7 @@ export async function getPlayback(
     info.MediaSources?.[0]
   if (!ms) return null
 
-  const positionTicks = await jfGet<RawItem>(`/Items/${itemId}`, { userId })
-    .then(d => d.UserData?.PlaybackPositionTicks ?? 0)
-    .catch(() => 0)
+  const positionTicks = item?.UserData?.PlaybackPositionTicks ?? 0
 
   // A subtitle index here means "burn it into the video" — used for image subs (PGS/VOBSUB)
   // that can't become VTT. Text subtitles are overlaid client-side as a sidecar <track>
