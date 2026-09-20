@@ -209,7 +209,11 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
   const chapter = chapterAt(book.chapters, time)
   const multi = book.chapters.length > 1
   const canPlay = status === 'ready' || status === 'loading'
-  const pill = 'flex h-[46px] items-center gap-2 rounded-[13px] border border-border px-4 text-[13.5px] font-bold transition-colors'
+  const pill = 'flex h-[46px] shrink-0 items-center gap-2 whitespace-nowrap rounded-[13px] border border-border px-4 text-[13.5px] font-bold transition-colors'
+
+  // Shared horizontal gutter so the header, stage and timeline line up edge to edge.
+  const gutter = 'px-5 md:px-[clamp(28px,4.2vw,84px)]'
+  const glassBtn = 'grid h-11 w-11 place-items-center rounded-full border border-white/10 bg-black/35 backdrop-blur-xl transition-colors hover:bg-white/10 md:h-12 md:w-12'
 
   return (
     <motion.div
@@ -220,106 +224,126 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
       exit={{ y: '100%', transition: { duration: 0.3, ease: [0.32, 0, 0.67, 0] } }}
       transition={{ type: 'spring', bounce: 0.12, duration: 0.55 }}
       className="fixed inset-0 z-50 overflow-y-auto bg-[#08060d]"
-      style={{ backgroundImage: `radial-gradient(70% 90% at 20% 35%, hsl(${book.hue} 46% 28% / 0.8) 0%, transparent 70%), radial-gradient(60% 70% at 90% 0%, hsl(${book.hue + 28} 40% 22% / 0.5) 0%, transparent 70%), var(--bg-gradient)` }}
     >
-      <div className="flex items-center justify-between px-5 pt-5 md:px-10 md:pt-8">
-        <button type="button" aria-label="Collapse player" onClick={() => setExpanded(false)} className="grid h-11 w-11 place-items-center rounded-full border border-border bg-black/40 backdrop-blur-lg transition-colors hover:bg-white/10 md:h-12 md:w-12">
-          <ChevronDownIcon className="h-[22px] w-[22px]" />
-        </button>
-        {playMethodLabel && <span className="text-[11.5px] font-bold uppercase tracking-[0.14em] text-white/50">{playMethodLabel}</span>}
-        <div className="flex items-center gap-2.5">
-          {multi && (
-            <button type="button" aria-label="Chapters" onClick={() => onSheet('chapters')} className="grid h-11 w-11 place-items-center rounded-full border border-border bg-black/40 backdrop-blur-lg transition-colors hover:bg-white/10 md:h-12 md:w-12 lg:hidden">
-              <ListIcon className="h-[21px] w-[21px]" />
-            </button>
-          )}
-          <button type="button" aria-label="Stop and close player" title="Stop and close player" onClick={close} className="grid h-11 w-11 place-items-center rounded-full border border-border bg-black/40 text-white/70 backdrop-blur-lg transition-colors hover:bg-white/10 md:h-12 md:w-12">
-            <CloseIcon className="h-[18px] w-[18px]" />
-          </button>
-        </div>
+      {/* Backdrop: the book's own cover, blown up and defocused, so the whole screen takes
+          on its colours; books without art fall back to their hue gradient. */}
+      <div aria-hidden className="pointer-events-none fixed inset-0 overflow-hidden">
+        {book.coverUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={book.coverUrl} alt="" className="absolute inset-0 h-full w-full scale-[1.4] object-cover opacity-80 blur-[90px] saturate-[1.4]" />
+        ) : (
+          <div className="absolute inset-0" style={{ backgroundImage: `radial-gradient(70% 90% at 20% 35%, hsl(${book.hue} 46% 28% / 0.8) 0%, transparent 70%), radial-gradient(60% 70% at 90% 0%, hsl(${book.hue + 28} 40% 22% / 0.5) 0%, transparent 70%), var(--bg-gradient)` }} />
+        )}
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.55) 0%, rgba(8,6,13,0.3) 40%, rgba(8,6,13,0.82) 100%)' }} />
       </div>
 
-      <div className="mx-auto grid max-w-[1400px] items-center gap-7 px-6 pb-10 pt-5 md:min-h-[calc(100svh-140px)] md:grid-cols-[minmax(240px,430px)_minmax(0,1fr)] md:gap-14 md:px-16 lg:grid-cols-[minmax(240px,430px)_minmax(0,1fr)_330px]">
-        <Cover book={book} rounded="rounded-[20px] md:rounded-[22px]" titleClass="text-[clamp(28px,4vw,50px)]" className="mx-auto w-[min(78vw,340px)] shadow-[0_30px_90px_rgba(0,0,0,0.6)] md:w-full" />
-
-        <div className="flex min-w-0 flex-col gap-6 md:gap-7">
-          <div className="flex flex-col gap-2">
-            {multi && chapter && (
-              <div className="text-[11.5px] font-bold uppercase tracking-[0.14em] text-accent-soft">
-                {/* "Track 20" already carries its number — don't print "Track 20 · 20 of 38". */}
-                {new RegExp(`\\b${chapter.index + 1}$`).test(chapter.title)
-                  ? `${chapter.title} of ${book.chapters.length}`
-                  : `${chapter.title} · ${chapter.index + 1} of ${book.chapters.length}`}
-              </div>
-            )}
-            <h1 className="text-[clamp(25px,3.6vw,46px)] font-[800] leading-[1.04] tracking-[-0.028em] text-ink">{book.title}</h1>
-            <div className="text-[14px] text-white/65 md:text-[16px]">
-              {[book.author, book.narrator && `read by ${book.narrator}`].filter(Boolean).join(' · ')}
-            </div>
-            {error && <div className="text-[13.5px] font-semibold text-[var(--pass)]">{error}</div>}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <ChapterScrubber showTimes={false} />
-            <div className="flex justify-between text-[13px] font-bold tabular-nums text-white/80">
-              <span>{clock(time - (chapter?.start ?? 0))}</span>
-              <span>-{clock((chapter?.start ?? 0) + (chapter?.duration ?? book.duration) - time)}</span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between md:justify-center md:gap-5">
-            <button type="button" aria-label="Previous chapter" disabled={!canPlay} onClick={prevChapter} className={`${ROUND_BTN} h-12 w-12 text-white/80 md:h-[52px] md:w-[52px]`}>
-              <PrevChapterIcon className="h-6 w-6" />
-            </button>
-            <button type="button" aria-label="Back 15 seconds" disabled={!canPlay} onClick={() => skip(-15)} className={`${ROUND_BTN} h-14 w-14 md:h-[60px] md:w-[60px]`}>
-              <Back15Icon className="h-8 w-8 md:h-[34px] md:w-[34px]" />
-            </button>
-            <button
-              type="button"
-              aria-label="Play or pause"
-              disabled={!canPlay}
-              onClick={toggle}
-              className="grid h-[78px] w-[78px] shrink-0 place-items-center rounded-full bg-accent text-ink-on-accent shadow-[0_12px_34px_var(--glow)] transition hover:brightness-[1.06] disabled:opacity-40 md:h-[86px] md:w-[86px]"
-            >
-              <PlayGlyph className="h-8 w-8" />
-            </button>
-            <button type="button" aria-label="Forward 30 seconds" disabled={!canPlay} onClick={() => skip(30)} className={`${ROUND_BTN} h-14 w-14 md:h-[60px] md:w-[60px]`}>
-              <Forward30Icon className="h-8 w-8 md:h-[34px] md:w-[34px]" />
-            </button>
-            <button type="button" aria-label="Next chapter" disabled={!canPlay} onClick={nextChapter} className={`${ROUND_BTN} h-12 w-12 text-white/80 md:h-[52px] md:w-[52px]`}>
-              <NextChapterIcon className="h-6 w-6" />
-            </button>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <ChapterSegments chapters={book.chapters} position={time} onSeek={multi ? goToChapter : undefined} />
-            <div className="flex justify-between text-[12.5px] text-white/50">
-              <span>Whole book</span>
-              <span className="font-bold text-accent-soft">{timeLeft(book.duration - time)}</span>
-            </div>
-          </div>
-
+      <div className="relative flex min-h-full flex-col md:h-full md:min-h-[600px]">
+        <header className={`flex shrink-0 items-center justify-between pt-5 md:pt-7 ${gutter}`}>
+          <button type="button" aria-label="Collapse player" onClick={() => setExpanded(false)} className={glassBtn}>
+            <ChevronDownIcon className="h-[22px] w-[22px]" />
+          </button>
+          {playMethodLabel && <span className="text-[11.5px] font-bold uppercase tracking-[0.14em] text-white/55">{playMethodLabel}</span>}
           <div className="flex items-center gap-2.5">
-            <button type="button" onClick={() => onSheet('speed')} className={`${pill} bg-surface text-white/80 hover:bg-white/10`}>{rate}× speed</button>
-            <button type="button" onClick={() => onSheet('sleep')} className={`${pill} ${sleep.kind === 'off' ? 'bg-surface text-white/80 hover:bg-white/10' : 'bg-surface-2 text-accent-soft'}`}>
-              <MoonIcon className="h-[18px] w-[18px]" />{sleepLabel(sleep)}
+            {multi && (
+              <button type="button" aria-label="Chapters" onClick={() => onSheet('chapters')} className={`${glassBtn} xl:hidden`}>
+                <ListIcon className="h-[21px] w-[21px]" />
+              </button>
+            )}
+            <button type="button" aria-label="Stop and close player" title="Stop and close player" onClick={close} className={`${glassBtn} text-white/70`}>
+              <CloseIcon className="h-[18px] w-[18px]" />
             </button>
-            <div className="hidden flex-1 md:block" />
-            <div className="hidden w-[130px] shrink-0 items-center gap-2.5 text-white/80 md:flex">
-              <VolumeIcon className="h-5 w-5 shrink-0" />
-              <Slider ariaLabel="Volume" fraction={volume} onChange={setVolume} />
+          </div>
+        </header>
+
+        {/* Stage: cover sized off the viewport height, controls, and a chapter rail that runs the full height. */}
+        <main className={`grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] items-center gap-5 py-4 md:grid-cols-[auto_minmax(0,1fr)] md:gap-[clamp(28px,3.2vw,72px)] md:py-[clamp(16px,3vh,40px)] xl:grid-cols-[auto_minmax(0,1fr)_clamp(280px,22vw,400px)] ${gutter}`}>
+          <Cover
+            book={book}
+            rounded="rounded-[20px] md:rounded-[26px]"
+            titleClass="text-[clamp(28px,4vw,56px)]"
+            className="mx-auto w-[min(70vw,34vh)] rounded-[20px] shadow-[0_40px_120px_rgba(0,0,0,0.65)] md:mx-0 md:w-[min(38vw,60vh)] md:rounded-[26px] xl:w-[min(30vw,62vh)]"
+          />
+
+          <div className="mx-auto flex w-full min-w-0 max-w-[680px] flex-col gap-[clamp(20px,3.4vh,44px)] md:mx-0">
+            <div className="flex flex-col gap-2.5">
+              {multi && chapter && (
+                <div className="text-[11.5px] font-bold uppercase tracking-[0.14em] text-accent-soft md:text-[12.5px]">
+                  {/* "Track 20" already carries its number — don't print "Track 20 · 20 of 38". */}
+                  {new RegExp(`\\b${chapter.index + 1}$`).test(chapter.title)
+                    ? `${chapter.title} of ${book.chapters.length}`
+                    : `${chapter.title} · ${chapter.index + 1} of ${book.chapters.length}`}
+                </div>
+              )}
+              <h1 className="text-[clamp(26px,2.6vw+1.6vh,62px)] font-[800] leading-[1.02] tracking-[-0.03em] text-ink [text-wrap:balance]">{book.title}</h1>
+              <div className="text-[14px] text-white/70 md:text-[clamp(15px,1.1vw,19px)]">
+                {[book.author, book.narrator && `read by ${book.narrator}`].filter(Boolean).join(' · ')}
+              </div>
+              {error && <div className="text-[13.5px] font-semibold text-[var(--pass)]">{error}</div>}
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <ChapterScrubber showTimes={false} />
+              <div className="flex justify-between text-[13px] font-bold tabular-nums text-white/80 md:text-[14px]">
+                <span>{clock(time - (chapter?.start ?? 0))}</span>
+                <span>-{clock((chapter?.start ?? 0) + (chapter?.duration ?? book.duration) - time)}</span>
+              </div>
+            </div>
+
+            <div className="flex w-full max-w-[480px] items-center justify-between">
+              <button type="button" aria-label="Previous chapter" disabled={!canPlay} onClick={prevChapter} className={`${ROUND_BTN} h-12 w-12 text-white/80 md:h-14 md:w-14`}>
+                <PrevChapterIcon className="h-6 w-6 md:h-7 md:w-7" />
+              </button>
+              <button type="button" aria-label="Back 15 seconds" disabled={!canPlay} onClick={() => skip(-15)} className={`${ROUND_BTN} h-14 w-14 md:h-16 md:w-16`}>
+                <Back15Icon className="h-8 w-8 md:h-9 md:w-9" />
+              </button>
+              <button
+                type="button"
+                aria-label="Play or pause"
+                disabled={!canPlay}
+                onClick={toggle}
+                className="grid h-[78px] w-[78px] shrink-0 place-items-center rounded-full bg-accent text-ink-on-accent shadow-[0_14px_44px_var(--glow)] transition hover:scale-[1.03] hover:brightness-[1.06] disabled:opacity-40 md:h-[96px] md:w-[96px]"
+              >
+                <PlayGlyph className="h-8 w-8 md:h-10 md:w-10" />
+              </button>
+              <button type="button" aria-label="Forward 30 seconds" disabled={!canPlay} onClick={() => skip(30)} className={`${ROUND_BTN} h-14 w-14 md:h-16 md:w-16`}>
+                <Forward30Icon className="h-8 w-8 md:h-9 md:w-9" />
+              </button>
+              <button type="button" aria-label="Next chapter" disabled={!canPlay} onClick={nextChapter} className={`${ROUND_BTN} h-12 w-12 text-white/80 md:h-14 md:w-14`}>
+                <NextChapterIcon className="h-6 w-6 md:h-7 md:w-7" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <button type="button" onClick={() => onSheet('speed')} className={`${pill} bg-black/30 text-white/85 backdrop-blur-xl hover:bg-white/10`}>{rate}× speed</button>
+              <button type="button" onClick={() => onSheet('sleep')} className={`${pill} backdrop-blur-xl ${sleep.kind === 'off' ? 'bg-black/30 text-white/85 hover:bg-white/10' : 'bg-white/10 text-accent-soft'}`}>
+                <MoonIcon className="h-[18px] w-[18px]" />{sleepLabel(sleep)}
+              </button>
+              <div className="hidden w-2 shrink md:block" />
+              <div className="hidden min-w-[96px] max-w-[190px] flex-1 items-center gap-2.5 text-white/80 md:flex">
+                <VolumeIcon className="h-5 w-5 shrink-0" />
+                <Slider ariaLabel="Volume" fraction={volume} onChange={setVolume} />
+              </div>
             </div>
           </div>
-        </div>
 
-        {multi && (
-          <section className="hidden flex-col gap-3.5 lg:flex">
-            <h2 className="text-[20px] font-bold tracking-[-0.01em] text-ink">Chapters</h2>
-            <div className="scrollbar-hide max-h-[min(62vh,560px)] overflow-y-auto rounded-[18px] border border-border bg-black/40 p-2 backdrop-blur-xl">
-              <ChapterList chapters={book.chapters} position={time} started followCurrent rowClass="h-[50px] px-2.5" onSelect={goToChapter} />
-            </div>
-          </section>
-        )}
+          {multi && (
+            <section className="hidden h-full min-h-0 flex-col gap-3.5 xl:flex">
+              <h2 className="shrink-0 text-[20px] font-bold tracking-[-0.01em] text-ink">Chapters</h2>
+              <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-white/10 bg-black/35 p-2 backdrop-blur-2xl">
+                <ChapterList chapters={book.chapters} position={time} started followCurrent rowClass="h-[52px] px-3" onSelect={goToChapter} />
+              </div>
+            </section>
+          )}
+        </main>
+
+        {/* The whole book, edge to edge: one segment per chapter, each a jump target. */}
+        <footer className={`flex shrink-0 flex-col gap-2.5 pb-[max(22px,env(safe-area-inset-bottom))] md:pb-[max(30px,env(safe-area-inset-bottom))] ${gutter}`}>
+          <div className="flex items-baseline justify-between text-[12.5px] text-white/55 md:text-[13.5px]">
+            <span>Whole book</span>
+            <span className="font-bold text-accent-soft">{timeLeft(book.duration - time)}</span>
+          </div>
+          <ChapterSegments chapters={book.chapters} position={time} className="h-2 md:h-2.5" onSeek={multi ? goToChapter : undefined} />
+        </footer>
       </div>
     </motion.div>
   )
