@@ -224,3 +224,49 @@ export interface ReelEpisodeDetail extends ReelDetail {
   /** Episode number within the season (Jellyfin IndexNumber). */
   episodeIndex: number
 }
+
+/** One chapter marker inside an audiobook file (seconds from the start of the book). */
+export interface AudiobookChapter {
+  index: number
+  title: string
+  start: number
+  duration: number
+}
+
+/** An audiobook (a Jellyfin AudioBook item — one M4B per book). Times are in seconds. */
+export interface Audiobook {
+  id: string
+  title: string
+  author?: string
+  narrator?: string
+  year?: number
+  duration: number
+  /** Resume position (Jellyfin UserData.PlaybackPositionTicks). */
+  position: number
+  finished: boolean
+  favorite: boolean
+  /** Epoch ms of the last listen — orders "Continue listening". */
+  lastPlayedAt?: number
+  /** Epoch ms when added to the library. */
+  addedAt?: number
+  /** 0–360, drives the gradient cover fallback. */
+  hue: number
+  coverUrl?: string
+}
+
+export interface AudiobookDetail extends Audiobook {
+  synopsis?: string
+  genres: string[]
+  chapters: AudiobookChapter[]
+  file?: { container?: string; audio?: string; size?: string }
+}
+
+/** A resolved audio stream for the persistent audiobook player. */
+export interface AudiobookPlayback {
+  url: string
+  itemId: string
+  mediaSourceId: string
+  playSessionId: string
+  transcoding: boolean
+  playMethodLabel: string
+}

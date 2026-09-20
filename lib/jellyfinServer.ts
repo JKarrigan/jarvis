@@ -23,7 +23,7 @@ const DEVICE = 'Raspberry Pi'
 const DEVICE_ID = 'jarvis-dashboard'
 const VERSION = '1.0.0'
 
-function baseUrl(): string | undefined {
+export function baseUrl(): string | undefined {
   return process.env.JELLYFIN_URL?.replace(/\/+$/, '')
 }
 
@@ -89,7 +89,7 @@ async function authenticate(): Promise<JfSession> {
   return { accessToken: data.AccessToken, userId: data.User.Id }
 }
 
-async function getSession(): Promise<JfSession> {
+export async function getSession(): Promise<JfSession> {
   const s = store()
   if (s.session) return s.session
   if (!s.pending) {
@@ -121,14 +121,14 @@ function clearSession() {
 const JF_TIMEOUT_MS = 10_000
 
 type Params = Record<string, string | number | boolean | undefined>
-function qs(params: Params): string {
+export function qs(params: Params): string {
   const usp = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) if (v !== undefined) usp.set(k, String(v))
   const s = usp.toString()
   return s ? `?${s}` : ''
 }
 
-async function jfGet<T>(
+export async function jfGet<T>(
   path: string,
   params: Params = {},
   opts: { revalidate?: number; tags?: string[] } = {},
@@ -152,7 +152,7 @@ async function jfGet<T>(
   return res.json() as Promise<T>
 }
 
-async function jfPost(path: string, body?: unknown, params: Params = {}): Promise<Response> {
+export async function jfPost(path: string, body?: unknown, params: Params = {}): Promise<Response> {
   const url = baseUrl()!
   const session = await getSession()
   return fetch(`${url}${path}${qs(params)}`, {
@@ -168,7 +168,7 @@ async function jfPost(path: string, body?: unknown, params: Params = {}): Promis
   })
 }
 
-async function jfDelete(path: string, params: Params = {}): Promise<Response> {
+export async function jfDelete(path: string, params: Params = {}): Promise<Response> {
   const url = baseUrl()!
   const session = await getSession()
   return fetch(`${url}${path}${qs(params)}`, {
@@ -577,7 +577,7 @@ export async function getReelResume(): Promise<ContinueItem[]> {
   }
 }
 
-function fmtBytes(n?: number): string | undefined {
+export function fmtBytes(n?: number): string | undefined {
   if (!n) return undefined
   const gb = n / 1_073_741_824
   if (gb >= 1) return `${gb.toFixed(1)} GB`
@@ -1457,7 +1457,7 @@ function transcodeDetail(ms: RawMediaSource): string {
 // A browser-shaped device profile. The key effect: only mp4/webm with browser-decodable
 // audio (aac/mp3/opus/flac/vorbis) is allowed to Direct Play — so DTS/AC3 audio and MKV
 // are routed to an HLS transcode that copies H.264 video and converts audio to AAC.
-const BROWSER_PROFILE = {
+export const BROWSER_PROFILE = {
   MaxStreamingBitrate: 120_000_000,
   MaxStaticBitrate: 100_000_000,
   MusicStreamingTranscodingBitrate: 384_000,
@@ -1496,7 +1496,7 @@ const BROWSER_PROFILE = {
   SubtitleProfiles: [{ Format: 'vtt', Method: 'External' }],
 }
 
-function withApiKey(rawUrl: string, token: string): string {
+export function withApiKey(rawUrl: string, token: string): string {
   const full = rawUrl.startsWith('http') ? rawUrl : `${baseUrl()}${rawUrl}`
   if (/[?&]api_key=/.test(full)) return full
   return `${full}${full.includes('?') ? '&' : '?'}api_key=${token}`

@@ -90,3 +90,43 @@ export const PencilIcon = (p: IconProps) => (
 export const TrashIcon = (p: IconProps) => (
   <svg {...base(p)}><path d="M4.5 6h11M8 6V4.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V6M6 6.5l.6 9a1 1 0 0 0 1 .94h4.8a1 1 0 0 0 1-.94l.6-9M8.5 9v4.5M11.5 9v4.5" /></svg>
 )
+
+// ── Audiobook player icons (drawn on a 24px grid) ──
+const base24 = (p: IconProps) => base({ viewBox: '0 0 24 24', strokeWidth: 1.8, ...p })
+
+export const HeadphonesIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M4 15v-3a8 8 0 0 1 16 0v3" /><rect x="3" y="14" width="4.5" height="7" rx="1.6" /><rect x="16.5" y="14" width="4.5" height="7" rx="1.6" /></svg>
+)
+export const PauseIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M7 4.5h3.5v15H7zM13.5 4.5H17v15h-3.5z" fill="currentColor" stroke="none" /></svg>
+)
+export const PlaySolidIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M7.5 4.5v15l12.5-7.5z" fill="currentColor" stroke="none" /></svg>
+)
+export const Back15Icon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M12 5a8 8 0 1 1-7.4 5" /><path d="M12 1.5 8.5 5 12 8.5" /><text x="12" y="16" textAnchor="middle" fontSize="7.5" fontWeight="800" fill="currentColor" stroke="none">15</text></svg>
+)
+export const Forward30Icon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M12 5a8 8 0 1 0 7.4 5" /><path d="M12 1.5 15.5 5 12 8.5" /><text x="12" y="16" textAnchor="middle" fontSize="7.5" fontWeight="800" fill="currentColor" stroke="none">30</text></svg>
+)
+export const PrevChapterIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M19 5v14L9 12z" fill="currentColor" stroke="none" /><path d="M6 5v14" /></svg>
+)
+export const NextChapterIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M5 5v14l10-7z" fill="currentColor" stroke="none" /><path d="M18 5v14" /></svg>
+)
+export const MoonIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" /></svg>
+)
+export const ChevronDownIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="m6 9 6 6 6-6" /></svg>
+)
+export const ChevronUpIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="m6 15 6-6 6 6" /></svg>
+)
+export const VolumeIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z" /><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" /></svg>
+)
+export const RestartIcon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M4 12a8 8 0 1 0 2.6-5.9" /><path d="M4 4v4.5h4.5" /></svg>
+)

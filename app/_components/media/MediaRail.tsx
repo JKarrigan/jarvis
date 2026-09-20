@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useMedia } from './MediaProvider'
 import {
   HomeIcon, FilmIcon, TvIcon, HeartIcon, CollectionsIcon, DieIcon,
-  ListIcon, GearIcon, SearchIcon,
+  ListIcon, GearIcon, SearchIcon, HeadphonesIcon,
 } from './icons'
 
 interface RailItem {
@@ -20,6 +20,7 @@ const PRIMARY: RailItem[] = [
   { href: '/media', label: 'Home', Icon: HomeIcon, exact: true },
   { href: '/media/movies', label: 'Movies', Icon: FilmIcon },
   { href: '/media/tv', label: 'TV Shows', Icon: TvIcon },
+  { href: '/media/audiobooks', label: 'Audiobooks', Icon: HeadphonesIcon },
   { href: '/media/favorites', label: 'Favorites', Icon: HeartIcon },
   { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
   { href: '/media/picker', label: 'Movie Picker', Icon: DieIcon },
@@ -110,6 +111,7 @@ export function MediaRail({ onSearch }: { onSearch?: () => void }) {
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 h-[68px] flex items-stretch justify-around px-2 pb-[env(safe-area-inset-bottom)] bg-black/55 backdrop-blur-xl backdrop-saturate-150 border-t border-white/10">
         {[
           { href: '/media', label: 'Home', Icon: HomeIcon, exact: true },
+          { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon },
           { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
           { href: '/media/picker', label: 'Picker', Icon: DieIcon },
           pickCount > 0

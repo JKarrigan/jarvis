@@ -51,6 +51,10 @@ This is a Next.js 16 App Router app that polls a local [AirGradient](https://www
 
 When none of the `JELLYFIN_*` vars are set, `lib/jellyfinServer.ts` serves mock data so the media UI still renders in dev.
 
+### Audiobooks
+
+Audiobooks are a separate model from movies/TV (`Audiobook*` types, not `ReelTitle`) — `lib/jellyfinAudiobooks.ts` reads Jellyfin `AudioBook` items (a **Books** library, one M4B per book). Jellyfin 10.11 does not return chapter markers for audiobooks, so they are read with `ffprobe` over the Direct Play stream and cached in the SQLite `settings` table (`audiobook.chapters.<id>.<size>`); Jellyfin's own `Chapters` win if a future release provides them. Playback is *not* `JellyfinPlayer`: `app/_components/media/audiobooks/AudiobookPlayer.tsx` is a provider mounted in `MediaShell` (outside `PageTransition`) that owns a single `<audio>` element so a book keeps playing across navigation; `PlayerChrome.tsx` renders the docked mini player and the full now-playing sheet. Resume position lives in Jellyfin (progress reported through `/api/jellyfin/report`); only the loaded book id, speed and volume are in `localStorage` (`reel.audiobook.v1`).
+
 ### Color system
 
 `StatusColor` (`good` → `hazardous`) is the single shared type that drives border classes, value text, sparkline stroke, and AQI badge color. Hex equivalents used in SVG contexts:
