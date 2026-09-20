@@ -4,16 +4,17 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMedia } from './MediaProvider'
-import type { ReelTitle, ContinueItem, CollectionSummary } from './types'
+import type { ReelTitle, ContinueItem, CollectionSummary, Audiobook } from './types'
 import { recommendations, type UserView } from './selectors'
 import { HomeHero } from './HomeHero'
 import { PosterCard, CollectionCard, Row, SectionHeader } from './ReelCards'
 import { ContinueCard } from './ContinueCard'
 import { useFilteredLibrary, LibraryFilterBar, LibraryGridInner } from './library'
+import { ListenCard } from './audiobooks/ListenCard'
 
 export function HomeBody({
-  featured, resume, catalog, collections,
-}: { featured: ReelTitle[]; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[] }) {
+  featured, resume, catalog, collections, audiobooks,
+}: { featured: ReelTitle[]; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[] }) {
   const { isWatched, isFavorite, watchlist } = useMedia()
   const view: UserView = useMemo(() => ({
     watched: (t) => isWatched(t.id, t.watched),
@@ -25,6 +26,13 @@ export function HomeBody({
   const router = useRouter()
   const [clearedResume, setClearedResume] = useState<Set<string>>(() => new Set())
   const resumeShown = useMemo(() => resume.filter(r => !clearedResume.has(r.id)), [resume, clearedResume])
+
+  const listening = useMemo(
+    () => audiobooks
+      .filter(b => !b.finished && b.position > 30 && b.position < b.duration - 10)
+      .sort((a, b) => (b.lastPlayedAt ?? 0) - (a.lastPlayedAt ?? 0)),
+    [audiobooks],
+  )
 
   const recentlyAdded = useMemo(
     // Newest first (far left), by precise add time so same-day items still order correctly.
@@ -64,6 +72,13 @@ export function HomeBody({
                 ))}
               </AnimatePresence>
             </Row>
+          </section>
+        )}
+
+        {showRows && listening.length > 0 && (
+          <section>
+            <SectionHeader title="Continue listening" />
+            <Row>{listening.map(b => <ListenCard key={b.id} book={b} />)}</Row>
           </section>
         )}
 

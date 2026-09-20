@@ -3,14 +3,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
-import type { ReelTitle, CollectionSummary } from './types'
+import type { ReelTitle, CollectionSummary, Audiobook } from './types'
+import { Cover } from './audiobooks/parts'
 import { collArt } from './artwork'
 import { Poster, detailHref } from './ReelCards'
 import { SearchIcon, CloseIcon } from './icons'
 
 export function SearchModal({
-  catalog, collections, onClose,
-}: { catalog: ReelTitle[]; collections: CollectionSummary[]; onClose: () => void }) {
+  catalog, collections, audiobooks, onClose,
+}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; onClose: () => void }) {
   const router = useRouter()
   const [q, setQ] = useState('')
 
@@ -20,14 +21,18 @@ export function SearchModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const { titles, colls } = useMemo(() => {
+  const { titles, colls, books } = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    if (!needle) return { titles: [] as ReelTitle[], colls: [] as CollectionSummary[] }
+    if (!needle) return { titles: [] as ReelTitle[], colls: [] as CollectionSummary[], books: [] as Audiobook[] }
     return {
       titles: catalog.filter(t => t.title.toLowerCase().includes(needle)).slice(0, 8),
       colls: collections.filter(c => c.name.toLowerCase().includes(needle)).slice(0, 4),
+      // Books also match on who wrote or reads them.
+      books: audiobooks
+        .filter(b => [b.title, b.author, b.narrator].some(v => v?.toLowerCase().includes(needle)))
+        .slice(0, 5),
     }
-  }, [q, catalog, collections])
+  }, [q, catalog, collections, audiobooks])
 
   const go = (href: string) => { onClose(); router.push(href) }
 
@@ -52,7 +57,7 @@ export function SearchModal({
             autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search movies, shows, collections…"
+            placeholder="Search movies, shows, audiobooks, collections…"
             className="flex-1 bg-transparent py-4 text-[15px] text-ink placeholder:text-white/35 focus:outline-none"
           />
           <button type="button" onClick={onClose} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-white/45 hover:bg-white/10 hover:text-white">
@@ -61,7 +66,7 @@ export function SearchModal({
         </div>
 
         <div className="max-h-[55vh] overflow-y-auto p-2">
-          {q.trim() && titles.length === 0 && colls.length === 0 && (
+          {q.trim() && titles.length === 0 && colls.length === 0 && books.length === 0 && (
             <p className="px-3 py-6 text-center text-sm text-white/45">No matches for “{q}”.</p>
           )}
 
@@ -71,6 +76,19 @@ export function SearchModal({
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold text-ink">{c.name}</span>
                 <span className="block text-xs text-white/45">Collection · {c.itemIds.length} films</span>
+              </span>
+            </button>
+          ))}
+
+          {books.map(b => (
+            <button key={b.id} type="button" onClick={() => go(`/media/audiobooks/${b.id}`)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-white/5">
+              {/* Square cover centred in the poster-width slot so titles stay aligned. */}
+              <span className="grid h-12 w-9 shrink-0 place-items-center">
+                <Cover book={b} rounded="rounded-md" titleClass="" className="w-9" />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold text-ink">{b.title}</span>
+                <span className="block truncate text-xs text-white/45">{['Audiobook', b.author, b.narrator && `read by ${b.narrator}`].filter(Boolean).join(' · ')}</span>
               </span>
             </button>
           ))}

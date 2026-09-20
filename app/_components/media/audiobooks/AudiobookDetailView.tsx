@@ -3,13 +3,14 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import type { Audiobook, AudiobookDetail } from '../types'
 import { useMedia } from '../MediaProvider'
-import { CheckIcon, ChevronLeftIcon, HeartIcon, PauseIcon, PlaySolidIcon, RestartIcon } from '../icons'
+import { CheckIcon, ChevronLeftIcon, HeartIcon, PauseIcon, PencilIcon, PlaySolidIcon, RestartIcon } from '../icons'
 import { useAudiobookPlayer, useBookPosition } from './AudiobookPlayer'
 import { BookProgress, ChapterList, Cover } from './parts'
 import { chapterAt, length } from './format'
+import { EditAudiobookSheet } from './EditAudiobookSheet'
 
 /** Chapters shown before "Show all" — a window around where you are. */
 const CHAPTER_WINDOW = 9
@@ -24,6 +25,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
   const position = useBookPosition(book)
   const [showAll, setShowAll] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [editing, setEditing] = useState(false)
 
   const isLoaded = loaded?.id === book.id
   const started = !book.finished && position > 30
@@ -119,6 +121,9 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
               <button type="button" disabled={busy} aria-label={book.finished ? 'Mark as not finished' : 'Mark as finished'} title={book.finished ? 'Mark as not finished' : 'Mark as finished'} aria-pressed={book.finished} onClick={() => setFinished(!book.finished)} className={`${SQUARE} ${book.finished ? 'text-[var(--positive)]' : 'text-ink'}`}>
                 <CheckIcon className="h-[21px] w-[21px]" />
               </button>
+              <button type="button" aria-label="Edit details" title="Edit details" onClick={() => setEditing(true)} className={`${SQUARE} text-ink`}>
+                <PencilIcon className="h-[19px] w-[19px]" />
+              </button>
             </div>
           </div>
         </div>
@@ -183,6 +188,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
           </aside>
         </div>
       </div>
+      <AnimatePresence>{editing && <EditAudiobookSheet book={book} onClose={() => setEditing(false)} />}</AnimatePresence>
     </div>
   )
 }

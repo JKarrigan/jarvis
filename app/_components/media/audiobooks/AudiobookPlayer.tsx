@@ -48,6 +48,8 @@ interface PlayerValue {
   setVolume: (volume: number) => void
   setSleep: (mode: { kind: 'off' } | { kind: 'timer'; minutes: number } | { kind: 'chapter' }) => void
   setExpanded: (open: boolean) => void
+  /** Re-fetch the loaded book's details (after an edit) without touching playback. */
+  refreshBook: () => Promise<void>
   close: () => void
 }
 
@@ -254,6 +256,17 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     else setSleepState({ kind: 'off' })
   }, [currentChapter])
 
+  const refreshBook = useCallback(async () => {
+    const id = bookRef.current?.id
+    if (!id) return
+    try {
+      const res = await fetch(`/api/jellyfin/audiobooks/${id}/play`, { cache: 'no-store' })
+      if (!res.ok) return
+      const data = (await res.json()) as { book: AudiobookDetail }
+      if (bookRef.current?.id === id) setBook(data.book)
+    } catch { /* keep showing what we have */ }
+  }, [])
+
   const close = useCallback(() => {
     const audio = audioRef.current
     loadTokenRef.current++
@@ -418,11 +431,11 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   const value = useMemo<PlayerValue>(() => ({
     book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
     play, toggle, seek, skip, goToChapter, prevChapter, nextChapter,
-    setRate, setVolume, setSleep, setExpanded, close,
+    setRate, setVolume, setSleep, setExpanded, refreshBook, close,
   }), [
     book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
     play, toggle, seek, skip, goToChapter, prevChapter, nextChapter,
-    setRate, setVolume, setSleep, close,
+    setRate, setVolume, setSleep, refreshBook, close,
   ])
 
   return (

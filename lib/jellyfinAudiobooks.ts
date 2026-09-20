@@ -1,6 +1,6 @@
 import 'server-only'
 import { execFile } from 'node:child_process'
-import type { Audiobook, AudiobookChapter, AudiobookDetail, AudiobookPlayback } from '@/app/_components/media/types'
+import type { Audiobook, AudiobookChapter, AudiobookDetail, AudiobookEdit, AudiobookPlayback } from '@/app/_components/media/types'
 import { hueFromId } from '@/app/_components/media/artwork'
 import {
   BROWSER_PROFILE, baseUrl, fmtBytes, getSession, imageUrl, isJellyfinConfigured,
@@ -156,6 +156,21 @@ async function probedChapters(it: RawAudiobook, duration: number): Promise<Audio
   }
 }
 
+// ── Chapter names ──
+// Files often carry useless marker names ("Track 001"). Real names are entered in the
+// app and kept here, keyed by book — they survive a re-probe and never touch the file.
+
+const chapterNamesKey = (id: string) => `audiobook.chapterTitles.${id}`
+
+function withChapterNames(id: string, chapters: AudiobookChapter[]): AudiobookChapter[] {
+  let names: string[] = []
+  try { names = JSON.parse(getSetting(chapterNamesKey(id)) ?? '[]') as string[] } catch { /* ignore a corrupt row */ }
+  return chapters.map((c, i) => {
+    const name = names[i]?.trim()
+    return name && name !== c.title ? { ...c, title: name, fileTitle: c.title } : c
+  })
+}
+
 function toDetail(it: RawAudiobook): AudiobookDetail {
   const book = toAudiobook(it)
   const src = it.MediaSources?.[0]
@@ -254,6 +269,7 @@ export async function getAudiobook(id: string): Promise<AudiobookDetail | null> 
       const probed = await probedChapters(it, detail.duration)
       if (probed) detail.chapters = probed
     }
+    detail.chapters = withChapterNames(id, detail.chapters)
     return detail
   } catch {
     return null
@@ -296,6 +312,36 @@ export async function setAudiobookFinished(id: string, finished: boolean): Promi
     const res = finished
       ? await jfPost(`/Users/${userId}/PlayedItems/${id}`)
       : await jfDelete(`/Users/${userId}/PlayedItems/${id}`)
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** Save edited details. Chapter names stay in this app's DB; the rest is written to the
+    Jellyfin item the same way the dashboard's "Edit metadata" form does (fetch the full
+    item, change fields, post it back) — the file on the NAS is never modified. */
+export async function updateAudiobook(id: string, edit: AudiobookEdit): Promise<boolean> {
+  if (edit.chapterTitles) {
+    setSetting(chapterNamesKey(id), JSON.stringify(edit.chapterTitles.map(t => t.trim().slice(0, 200))))
+  }
+  const touchesJellyfin = edit.narrator !== undefined || edit.year !== undefined || edit.synopsis !== undefined
+  if (!touchesJellyfin || !isJellyfinConfigured()) return true
+  try {
+    const { userId } = await getSession()
+    const item = await jfGet<Record<string, unknown> & { Type?: string; People?: { Name: string; Type?: string; Role?: string }[] }>(
+      `/Users/${userId}/Items/${id}`, {}, { revalidate: 0 },
+    )
+    if (item.Type !== 'AudioBook') return false
+    if (edit.synopsis !== undefined) item.Overview = edit.synopsis.trim()
+    if (edit.year !== undefined) item.ProductionYear = edit.year
+    if (edit.narrator !== undefined) {
+      // Jellyfin has no "Narrator" person kind; Composer + Role is the audiobook convention.
+      const others = (item.People ?? []).filter(p => p.Type !== 'Composer' && p.Type !== 'Narrator')
+      const name = edit.narrator.trim()
+      item.People = name ? [...others, { Name: name, Type: 'Composer', Role: 'Narrator' }] : others
+    }
+    const res = await jfPost(`/Items/${id}`, item)
     return res.ok
   } catch {
     return false

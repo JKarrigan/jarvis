@@ -229,6 +229,8 @@ export interface ReelEpisodeDetail extends ReelDetail {
 export interface AudiobookChapter {
   index: number
   title: string
+  /** The name from the file's chapter marker, present only when `title` is a user override. */
+  fileTitle?: string
   start: number
   duration: number
 }
@@ -269,4 +271,14 @@ export interface AudiobookPlayback {
   playSessionId: string
   transcoding: boolean
   playMethodLabel: string
+}
+
+/** Editable audiobook details. Description/narrator/year are written to Jellyfin; chapter
+    names are kept by this app (Jellyfin has no chapters for audiobooks to rename). */
+export interface AudiobookEdit {
+  narrator?: string
+  year?: number | null
+  synopsis?: string
+  /** One name per chapter, in order; blank entries keep the file's name. [] resets all. */
+  chapterTitles?: string[]
 }
