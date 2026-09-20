@@ -186,13 +186,16 @@ def lines_from_words(segments):
     """
     words = [w for s in segments for w in s['words'] if w['w'].strip()]
     fragments, cur = [], []
-    for w in words:
+    for i, w in enumerate(words):
         cur.append(w)
-        if w['w'].strip()[-1:] in SENTENCE_END:
+        # A long silence ends a fragment whatever the punctuation says — Whisper will happily
+        # put a comma across a six-second page turn.
+        gap = words[i + 1]['s'] - w['e'] if i + 1 < len(words) else 0
+        if w['w'].strip()[-1:] in SENTENCE_END or gap >= PAUSE_SPLIT:
             fragments.append(cur); cur = []
     if cur: fragments.append(cur)
 
-    def text_of(frag): return ''.join(x['w'] for x in frag).strip().rstrip(SENTENCE_END)
+    def text_of(frag): return ''.join(x['w'] for x in frag).strip().rstrip(SENTENCE_END + '、,')
     kept = []
     for i, f in enumerate(fragments):
         nxt = fragments[i + 1] if i + 1 < len(fragments) else None
@@ -211,6 +214,8 @@ def lines_from_words(segments):
                 for k, w in enumerate(frag):
                     t = w['w'].strip()
                     for ch in '。': t = t.replace(ch, '')
+                    # no dangling comma where a fragment (and so possibly the line) ends
+                    if k == len(frag) - 1: t = t.rstrip('、,')
                     if not t: continue
                     if j > 0 and k == 0: t = '\u3000' + t
                     out_words.append({'s': w['s'], 'e': w['e'], 'w': t})
