@@ -305,10 +305,29 @@ export interface Ebook {
   rtl?: boolean
   /** Jellyfin AudioBook id of this book's narration (same Author/Title path in the Audiobooks library). */
   audioId?: string
+  /** True when line-by-line narration timings have been uploaded for this book. */
+  synced?: boolean
 }
 
 export interface EbookProgress {
   page: number
   pages: number
   rtl?: boolean
+}
+
+/** One spoken line of a book's narration, timed and placed on a page (scripts/sync-narration.py). */
+export interface NarrationLine {
+  start: number
+  end: number
+  text: string
+  /** 1-based PDF page the line is printed on; 0 when it couldn't be placed (captions only). */
+  page: number
+  words: { s: number; e: number; w: string }[]
+}
+
+export interface NarrationSync {
+  v: 1
+  duration: number
+  pages: number
+  lines: NarrationLine[]
 }

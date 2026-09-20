@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
-import type { Ebook } from '../types'
+import type { Ebook, NarrationSync } from '../types'
 import { Slider } from '../playerUi'
 import { Back5Icon, ChevronLeftIcon, ChevronRightIcon, PauseIcon, PlaySolidIcon } from '../icons'
 import { useAudiobookPlayer, useAudiobookTime } from '../audiobooks/AudiobookPlayer'
 import { clock } from '../audiobooks/format'
-import { openBook, renderPage, type OpenBook } from './pdf'
+import { openBook, pageChars, renderPage, type OpenBook, type PageChar } from './pdf'
+import { BigTextPanel, CaptionStrip, NarrationFollower, PageHighlights } from './ReadAlong'
 
 /** Slow → natural. Graded-reader narration is for shadowing, so there's nothing faster than 1×. */
 const NARRATION_SPEEDS = [1, 0.8, 0.6]
@@ -73,6 +74,31 @@ export function BookReader({ book }: { book: Ebook }) {
   const [error, setError] = useState(false)
   const [painting, setPainting] = useState(true)
   const [size, setSize] = useState({ w: 0, h: 0 })
+  const [sync, setSync] = useState<NarrationSync | null>(null)
+  const [autoTurn, setAutoTurn] = useState(true)
+  /** Where the current page's printed characters sit — lets the narration highlight them. */
+  const [chars, setChars] = useState<PageChar[]>([])
+  /** Page on the left, large-type transcript on the right (wide screens). */
+  const [bigText, setBigText] = useState(false)
+  const { book: playingBook } = useAudiobookPlayer()
+  const narrating = Boolean(book.audioId) && playingBook?.id === book.audioId
+
+  // Narration timings, when someone has generated them for this book.
+  useEffect(() => {
+    if (!book.audioId || !book.synced) return
+    let cancelled = false
+    fetch(`/api/jellyfin/books/${book.id}/sync`)
+      .then(r => (r.ok ? (r.json() as Promise<NarrationSync>) : null))
+      .then(data => {
+        if (cancelled || !data) return
+        setSync(data)
+        // Lines that couldn't be placed on pages can't be highlighted there, so start such
+        // books with the large-type panel instead.
+        setBigText(!data.lines.some(l => l.page > 0))
+      })
+      .catch(() => { })
+    return () => { cancelled = true }
+  }, [book.id, book.audioId, book.synced])
 
   // Open the document once.
   useEffect(() => {
@@ -110,11 +136,16 @@ export function BookReader({ book }: { book: Ebook }) {
     let cancel: (() => void) | undefined
     let stale = false
     setPainting(true)
+    setChars([])
     renderPage(open.doc, page, canvas, size.w, size.h, Math.min(2, window.devicePixelRatio || 1))
       .then(task => {
         if (stale) return task.cancel()
         cancel = task.cancel
-        return task.done.then(() => { if (!stale) setPainting(false) })
+        return task.done.then(() => {
+          if (stale) return
+          setPainting(false)
+          return pageChars(open.doc, page, size.w, size.h).then(c => { if (!stale) setChars(c) }, () => { })
+        })
       })
       .catch(() => { if (!stale) setError(true) })
     return () => { stale = true; cancel?.() }
@@ -140,6 +171,12 @@ export function BookReader({ book }: { book: Ebook }) {
   useEffect(() => () => save(true), [save])
 
   const go = useCallback((delta: number) => setPage(p => Math.min(Math.max(1, p + delta), Math.max(1, latest.current.pages))), [])
+  const autoTurnRef = useRef(autoTurn)
+  useEffect(() => { autoTurnRef.current = autoTurn }, [autoTurn])
+  const followNarration = useCallback((target: number) => {
+    if (autoTurnRef.current) setPage(p => (p === target ? p : Math.min(Math.max(1, target), Math.max(1, latest.current.pages))))
+  }, [])
+
   const leave = useCallback(() => {
     save(true)
     router.push('/media/books')
@@ -212,17 +249,21 @@ export function BookReader({ book }: { book: Ebook }) {
         </button>
       </div>
 
+      <div className="flex min-h-0 flex-1">
       <div
         ref={stageRef}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
-        className="relative min-h-0 flex-1 touch-pan-y select-none overflow-hidden"
+        className="relative min-h-0 min-w-0 flex-1 touch-pan-y select-none overflow-hidden"
       >
         <div className="absolute inset-0 grid place-items-center">
           {error ? (
             <p className="px-6 text-center text-[15px] text-white/70">This book couldn’t be opened. Check that Jellyfin is reachable, then try again.</p>
           ) : (
-            <canvas ref={canvasRef} className={`rounded-[3px] bg-white shadow-[0_30px_90px_rgba(0,0,0,0.6)] transition-opacity duration-200 ${ready && !painting ? 'opacity-100' : 'opacity-40'}`} />
+            <div className="relative leading-[0]">
+              <canvas ref={canvasRef} className={`rounded-[3px] bg-white shadow-[0_30px_90px_rgba(0,0,0,0.6)] transition-opacity duration-200 ${ready && !painting ? 'opacity-100' : 'opacity-40'}`} />
+              {sync && book.audioId && chars.length > 0 && <PageHighlights sync={sync} audioId={book.audioId} page={page} chars={chars} />}
+            </div>
           )}
         </div>
         <button type="button" aria-label={rtl ? 'Next page' : 'Previous page'} disabled={page + leftDelta < 1 || page + leftDelta > pages} onClick={() => go(leftDelta)} className={`${edge} left-0 justify-start pl-3`}>
@@ -232,9 +273,36 @@ export function BookReader({ book }: { book: Ebook }) {
           <ChevronRightIcon className="h-9 w-9" />
         </button>
       </div>
+      {sync && book.audioId && bigText && <BigTextPanel sync={sync} audioId={book.audioId} className="hidden w-[min(46vw,700px)] lg:flex" />}
+      </div>
+
+      {sync && book.audioId && <NarrationFollower sync={sync} audioId={book.audioId} onPage={followNarration} />}
+      {sync && book.audioId && <CaptionStrip sync={sync} audioId={book.audioId} className={bigText ? 'lg:hidden' : ''} />}
 
       <div className="flex shrink-0 items-center gap-3 px-3 pb-[max(14px,env(safe-area-inset-bottom))] pt-2.5 md:gap-4 md:px-5">
         {book.audioId && <Narration audioId={book.audioId} title={book.title} />}
+        {sync && narrating && (
+          <button
+            type="button"
+            aria-pressed={bigText}
+            onClick={() => setBigText(b => !b)}
+            title="Show the spoken text in large type beside the page"
+            className={`hidden h-11 shrink-0 rounded-xl border border-white/10 px-3.5 text-[12.5px] font-bold transition lg:block ${bigText ? 'bg-surface-2 text-accent-soft' : 'bg-white/5 text-white/60 hover:bg-white/10'}`}
+          >
+            Big text
+          </button>
+        )}
+        {sync?.lines.some(l => l.page > 0) && (
+          <button
+            type="button"
+            aria-pressed={autoTurn}
+            onClick={() => setAutoTurn(a => !a)}
+            title="Turn pages automatically as the narration reaches them"
+            className={`hidden h-11 shrink-0 rounded-xl border border-white/10 px-3.5 text-[12.5px] font-bold transition sm:block ${autoTurn ? 'bg-surface-2 text-accent-soft' : 'bg-white/5 text-white/60 hover:bg-white/10'}`}
+          >
+            Auto-turn
+          </button>
+        )}
         {/* The scrubber mirrors for right-to-left books so dragging matches the page order. */}
         <div className="min-w-0 flex-1" style={{ transform: rtl ? 'scaleX(-1)' : undefined }}>
           <Slider ariaLabel="Page" fraction={fraction} onChange={f => setPage(Math.round(f * Math.max(0, pages - 1)) + 1)} />

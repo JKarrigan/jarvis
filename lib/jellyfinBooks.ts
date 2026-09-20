@@ -1,5 +1,5 @@
 import 'server-only'
-import type { Ebook, EbookProgress } from '@/app/_components/media/types'
+import type { Ebook, EbookProgress, NarrationSync } from '@/app/_components/media/types'
 import { hueFromId } from '@/app/_components/media/artwork'
 import { baseUrl, getSession, imageUrl, isJellyfinConfigured, jfGet } from './jellyfinServer'
 import { getSetting, setSetting } from './db'
@@ -30,6 +30,7 @@ interface RawBook {
 interface StoredProgress extends EbookProgress { at: number }
 
 const progressKey = (id: string) => `book.progress.${id}`
+const syncKey = (id: string) => `book.sync.${id}`
 
 function readProgress(id: string): StoredProgress | null {
   try {
@@ -102,6 +103,7 @@ function toEbook(it: RawBook, narrations: Map<string, string>): Ebook {
     readAt: progress?.at,
     rtl: progress?.rtl,
     audioId: key ? narrations.get(key) : undefined,
+    synced: getSetting(syncKey(it.Id)) != null,
   }
 }
 
@@ -173,4 +175,18 @@ export async function saveEbookCover(id: string, jpeg: ArrayBuffer): Promise<boo
   } catch {
     return false
   }
+}
+
+/** Narration timings, produced offline by scripts/sync-narration.py and kept in this app's DB. */
+export function getNarrationSync(id: string): NarrationSync | null {
+  try {
+    const raw = getSetting(syncKey(id))
+    return raw ? (JSON.parse(raw) as NarrationSync) : null
+  } catch {
+    return null
+  }
+}
+
+export function saveNarrationSync(id: string, sync: NarrationSync): void {
+  setSetting(syncKey(id), JSON.stringify(sync))
 }
