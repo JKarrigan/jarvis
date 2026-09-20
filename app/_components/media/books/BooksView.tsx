@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import type { Ebook } from '../types'
 import { poster } from '../artwork'
 import { Poster, SectionHeader, Row } from '../ReelCards'
-import { CheckIcon } from '../icons'
+import { CheckIcon, HeadphonesIcon } from '../icons'
 import { BooksSwitch } from './BooksSwitch'
 import { openBook, renderPage } from './pdf'
 
@@ -37,6 +37,11 @@ export function BookCard({ book, className = '' }: { book: Ebook; className?: st
         {book.finished && (
           <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-accent text-ink-on-accent">
             <CheckIcon className="h-3.5 w-3.5" strokeWidth={2.6} />
+          </span>
+        )}
+        {book.audioId && (
+          <span title="Has narration" className="absolute bottom-2.5 right-2 grid h-7 w-7 place-items-center rounded-full bg-black/70 text-accent-soft backdrop-blur-md">
+            <HeadphonesIcon className="h-4 w-4" />
           </span>
         )}
         {reading(book) && book.pages && (
@@ -106,8 +111,13 @@ export function BooksView({ books }: { books: Ebook[] }) {
   useCoverBackfill(books)
   const levels = useMemo(() => [...new Set(books.map(b => b.level).filter((l): l is number => l != null))].sort((a, b) => a - b), [books])
   const [level, setLevel] = useState<number | 'all'>('all')
+  const [audioOnly, setAudioOnly] = useState(false)
+  const anyAudio = books.some(b => b.audioId)
   const continuing = useMemo(() => books.filter(reading).sort((a, b) => (b.readAt ?? 0) - (a.readAt ?? 0)), [books])
-  const shown = useMemo(() => (level === 'all' ? books : books.filter(b => b.level === level)), [books, level])
+  const shown = useMemo(
+    () => books.filter(b => (level === 'all' || b.level === level) && (!audioOnly || b.audioId)),
+    [books, level, audioOnly],
+  )
 
   const chip = (value: number | 'all', label: string) => (
     <button
@@ -128,12 +138,24 @@ export function BooksView({ books }: { books: Ebook[] }) {
           <h1 className="text-[34px] font-[800] tracking-[-0.02em] text-ink">Books</h1>
           <BooksSwitch active="read" />
         </div>
-        {levels.length > 1 && (
-          <div className="flex gap-0.5 rounded-[14px] border border-border bg-surface p-1">
-            {chip('all', 'All levels')}
-            {levels.map(l => chip(l, `Level ${l}`))}
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {anyAudio && (
+            <button
+              type="button"
+              aria-pressed={audioOnly}
+              onClick={() => setAudioOnly(a => !a)}
+              className={`flex h-12 items-center gap-2 whitespace-nowrap rounded-[14px] border border-border px-4 text-[13.5px] font-bold transition-colors ${audioOnly ? 'bg-surface-2 text-accent-soft' : 'bg-surface text-white/65 hover:text-white'}`}
+            >
+              <HeadphonesIcon className="h-4 w-4" />With audio
+            </button>
+          )}
+          {levels.length > 1 && (
+            <div className="flex gap-0.5 rounded-[14px] border border-border bg-surface p-1">
+              {chip('all', 'All levels')}
+              {levels.map(l => chip(l, `Level ${l}`))}
+            </div>
+          )}
+        </div>
       </div>
 
       {books.length === 0 ? (
@@ -146,7 +168,7 @@ export function BooksView({ books }: { books: Ebook[] }) {
         </div>
       ) : (
         <>
-          {continuing.length > 0 && level === 'all' && (
+          {continuing.length > 0 && level === 'all' && !audioOnly && (
             <section className="mb-9">
               <SectionHeader title="Continue reading" />
               <Row>{continuing.map(b => <BookCard key={b.id} book={b} className="w-[150px] shrink-0 md:w-[178px]" />)}</Row>
@@ -154,7 +176,7 @@ export function BooksView({ books }: { books: Ebook[] }) {
           )}
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={level}
+              key={`${level}-${audioOnly}`}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, transition: { duration: 0.12 } }}

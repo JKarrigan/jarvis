@@ -7,6 +7,7 @@ import {
   jfDelete, jfGet, jfPost, qs, withApiKey,
 } from './jellyfinServer'
 import { getSetting, setSetting } from './db'
+import { folderKey, getBookFolderKeys } from './jellyfinBooks'
 
 // ---------------------------------------------------------------------------
 // Audiobooks. A Jellyfin "Books" library surfaces each M4B as one AudioBook item
@@ -21,6 +22,7 @@ const FFPROBE = process.env.FFPROBE_PATH ?? 'ffprobe'
 interface RawAudiobook {
   Id: string
   Name: string
+  Path?: string
   Album?: string
   AlbumArtist?: string
   Artists?: string[]
@@ -41,7 +43,7 @@ interface RawAudiobook {
   }[]
 }
 
-const LIST_FIELDS = 'DateCreated,ProductionYear,RunTimeTicks,People'
+const LIST_FIELDS = 'DateCreated,ProductionYear,RunTimeTicks,People,Path'
 
 function ms(iso?: string): number | undefined {
   if (!iso) return undefined
@@ -238,6 +240,7 @@ export async function getAudiobooks(): Promise<Audiobook[]> {
   if (!isJellyfinConfigured()) return MOCK_BOOKS.map((_, i) => mockDetail(i))
   try {
     const { userId } = await getSession()
+    const bookFolders = getBookFolderKeys()
     // Uncached: resume positions move every few seconds while a book is playing.
     const data = await jfGet<{ Items: RawAudiobook[] }>(`/Users/${userId}/Items`, {
       Recursive: true,
@@ -249,7 +252,10 @@ export async function getAudiobooks(): Promise<Audiobook[]> {
       ImageTypeLimit: 1,
       Limit: 1000,
     }, { revalidate: 0 })
-    return data.Items.map(toAudiobook)
+    // A short narration that accompanies a readable book (same Author/Title path) belongs
+    // to that book's reader, not on the Listen shelf next to 20-hour audiobooks.
+    const readable = await bookFolders
+    return data.Items.filter(it => { const k = folderKey(it.Path); return !k || !readable.has(k) }).map(toAudiobook)
   } catch {
     return []
   }

@@ -59,6 +59,8 @@ Audiobooks are a separate model from movies/TV (`Audiobook*` types, not `ReelTit
 
 The Books rail entry has two halves: **Listen** (`/media/audiobooks`, above) and **Read** (`/media/books`). Readable books are Jellyfin `Book` items (PDFs in a second Books library, laid out `Author/Title/Title.pdf`) — `lib/jellyfinBooks.ts`. Jellyfin only indexes them, so: the author falls back to the grandparent folder name, a `Level N` tag becomes the graded-reader level filter, covers are rendered from page 1 **in the browser** and posted to `/api/jellyfin/books/[id]/cover`, which stores them as the item's Primary image, and the reading position lives in the SQLite `settings` table (`book.progress.<id>`), not Jellyfin. The reader (`app/_components/media/books/BookReader.tsx`) uses `pdfjs-dist` (legacy build); its worker, CJK cmaps, fonts and wasm are served from `node_modules` by `app/api/pdfjs/[...path]` and the PDF itself is range-proxied through `/api/jellyfin/books/[id]/file`.
 
+**Read-along narration:** Jellyfin resolves a `Title/` folder to the Book and ignores an MP3 placed beside the PDF, so a book's narration lives in the *Audiobooks* library at the same `Author/Title/Title.mp3` path. `folderKey()` in `lib/jellyfinBooks.ts` pairs them (`Ebook.audioId`); the reader plays it through the persistent audiobook player (play / back 5 s / 1×·0.8×·0.6×, speed remembered per book), and `getAudiobooks()` leaves paired narrations off the Listen shelf, Home and search.
+
 ### Color system
 
 `StatusColor` (`good` → `hazardous`) is the single shared type that drives border classes, value text, sparkline stroke, and AQI badge color. Hex equivalents used in SVG contexts:

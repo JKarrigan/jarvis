@@ -106,6 +106,9 @@ export const PlaySolidIcon = (p: IconProps) => (
 export const Back15Icon = (p: IconProps) => (
   <svg {...base24(p)}><path d="M12 5a8 8 0 1 1-7.4 5" /><path d="M12 1.5 8.5 5 12 8.5" /><text x="12" y="16" textAnchor="middle" fontSize="7.5" fontWeight="800" fill="currentColor" stroke="none">15</text></svg>
 )
+export const Back5Icon = (p: IconProps) => (
+  <svg {...base24(p)}><path d="M12 5a8 8 0 1 1-7.4 5" /><path d="M12 1.5 8.5 5 12 8.5" /><text x="12" y="16.2" textAnchor="middle" fontSize="8.5" fontWeight="800" fill="currentColor" stroke="none">5</text></svg>
+)
 export const Forward30Icon = (p: IconProps) => (
   <svg {...base24(p)}><path d="M12 5a8 8 0 1 0 7.4 5" /><path d="M12 1.5 15.5 5 12 8.5" /><text x="12" y="16" textAnchor="middle" fontSize="7.5" fontWeight="800" fill="currentColor" stroke="none">30</text></svg>
 )

@@ -15,7 +15,7 @@ import { chapterAt } from './format'
 
 const STORAGE_KEY = 'reel.audiobook.v1'
 const REPORT_INTERVAL_MS = 10_000
-export const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75, 2]
+export const SPEEDS = [0.6, 0.8, 1, 1.2, 1.5, 1.75, 2]
 export const SLEEP_MINUTES = [15, 30, 60]
 
 export type SleepMode =
@@ -74,14 +74,23 @@ export function useBookPosition(book: { id: string; position: number; finished: 
   return loaded?.id === book.id ? time : book.position
 }
 
-function readPrefs(): { bookId?: string; rate?: number; volume?: number } {
+interface Prefs {
+  bookId?: string
+  /** Speed is remembered per book: a slowed-down language narration shouldn't slow the novel. */
+  rates?: Record<string, number>
+  volume?: number
+}
+
+function readPrefs(): Prefs {
   try {
     return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
   } catch {
     return {}
   }
 }
-function writePrefs(patch: { bookId?: string | null; rate?: number; volume?: number }) {
+const rateFor = (id?: string) => (id ? readPrefs().rates?.[id] : undefined) ?? 1
+
+function writePrefs(patch: Omit<Prefs, 'bookId'> & { bookId?: string | null }) {
   try {
     const next = { ...readPrefs(), ...patch }
     if (patch.bookId === null) delete next.bookId
@@ -159,6 +168,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
       const resume = data.book.finished || data.book.position > data.book.duration - 10 ? 0 : data.book.position
       const startAt = chapter ? chapter.start : opts.fromStart ? 0 : resume
       setBook(data.book)
+      setRateState(rateFor(id))
       setTime(startAt)
       writePrefs({ bookId: id })
       sourceRef.current = data.source
@@ -239,7 +249,8 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
 
   const setRate = useCallback((r: number) => {
     setRateState(r)
-    writePrefs({ rate: r })
+    const id = bookRef.current?.id
+    if (id) writePrefs({ rates: { ...readPrefs().rates, [id]: r } })
     if (audioRef.current) audioRef.current.playbackRate = r
   }, [])
 
@@ -289,7 +300,6 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const prefs = readPrefs()
-    if (typeof prefs.rate === 'number') setRateState(prefs.rate)
     if (typeof prefs.volume === 'number') setVolumeState(prefs.volume)
     if (prefs.bookId) void load(prefs.bookId, { autoplay: false })
   }, [load])
@@ -302,7 +312,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     const onLoadedMetadata = () => {
       const pending = pendingRef.current
       pendingRef.current = null
-      audio.playbackRate = readPrefs().rate ?? 1
+      audio.playbackRate = rateFor(bookRef.current?.id)
       audio.volume = readPrefs().volume ?? 1
       if (pending) {
         if (pending.time > 0) audio.currentTime = pending.time

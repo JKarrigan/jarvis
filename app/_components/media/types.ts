@@ -303,6 +303,8 @@ export interface Ebook {
   readAt?: number
   /** Right-to-left page order (vertical Japanese text). */
   rtl?: boolean
+  /** Jellyfin AudioBook id of this book's narration (same Author/Title path in the Audiobooks library). */
+  audioId?: string
 }
 
 export interface EbookProgress {

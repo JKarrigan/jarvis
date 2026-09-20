@@ -11,6 +11,10 @@ import { getSetting, setSetting } from './db'
 // Author/Title/Title.pdf folder layout, covers are rendered from page 1 by the client
 // and saved back onto the Jellyfin item, and the reading position lives in this
 // app's settings table.
+//
+// Narration: Jellyfin resolves a `Title/` folder to the Book and ignores an MP3 sitting
+// next to the PDF, so a book's read-along audio lives in the *Audiobooks* library under
+// the same `Author/Title/` path and the two are paired here by that path.
 // ---------------------------------------------------------------------------
 
 interface RawBook {
@@ -36,8 +40,47 @@ function readProgress(id: string): StoredProgress | null {
   }
 }
 
-function toEbook(it: RawBook): Ebook {
+/** `…/Author/Title/file.ext` → `author/title` (NFC, case-folded): the key a book and its narration share. */
+export function folderKey(path?: string): string | undefined {
+  const parts = path?.split('/') ?? []
+  if (parts.length < 3) return undefined
+  return `${parts[parts.length - 3]}/${parts[parts.length - 2]}`.normalize('NFC').toLowerCase()
+}
+
+/** Folder keys of every readable book — lets the Listen shelf leave their narrations out. */
+export async function getBookFolderKeys(): Promise<Set<string>> {
+  if (!isJellyfinConfigured()) return new Set()
+  try {
+    const { userId } = await getSession()
+    const data = await jfGet<{ Items: RawBook[] }>(`/Users/${userId}/Items`, {
+      Recursive: true, IncludeItemTypes: 'Book', Fields: 'Path', Limit: 2000,
+    }, { revalidate: 0 })
+    return new Set(data.Items.map(it => folderKey(it.Path)).filter((k): k is string => Boolean(k)))
+  } catch {
+    return new Set()
+  }
+}
+
+/** folder key → AudioBook id, for pairing narrations to books. */
+async function getNarrations(userId: string): Promise<Map<string, string>> {
+  try {
+    const data = await jfGet<{ Items: RawBook[] }>(`/Users/${userId}/Items`, {
+      Recursive: true, IncludeItemTypes: 'AudioBook', Fields: 'Path', Limit: 2000,
+    }, { revalidate: 0 })
+    const map = new Map<string, string>()
+    for (const it of data.Items) {
+      const key = folderKey(it.Path)
+      if (key && !map.has(key)) map.set(key, it.Id)
+    }
+    return map
+  } catch {
+    return new Map()
+  }
+}
+
+function toEbook(it: RawBook, narrations: Map<string, string>): Ebook {
   const progress = readProgress(it.Id)
+  const key = folderKey(it.Path)
   // …/Author/Title/Title.pdf → the author is the grandparent folder.
   const folders = it.Path?.split('/') ?? []
   const folderAuthor = folders.length >= 3 ? folders[folders.length - 3] : undefined
@@ -58,6 +101,7 @@ function toEbook(it: RawBook): Ebook {
     finished: Boolean(progress && progress.pages > 0 && progress.page >= progress.pages),
     readAt: progress?.at,
     rtl: progress?.rtl,
+    audioId: key ? narrations.get(key) : undefined,
   }
 }
 
@@ -67,6 +111,7 @@ export async function getEbooks(): Promise<Ebook[]> {
   if (!isJellyfinConfigured()) return []
   try {
     const { userId } = await getSession()
+    const narrations = getNarrations(userId)
     const data = await jfGet<{ Items: RawBook[] }>(`/Users/${userId}/Items`, {
       Recursive: true,
       IncludeItemTypes: 'Book',
@@ -77,7 +122,8 @@ export async function getEbooks(): Promise<Ebook[]> {
       Limit: 2000,
     }, { revalidate: 0 })
     // The Books library also indexes EPUB/CBZ; this reader only opens PDFs.
-    return data.Items.filter(it => !it.Path || /\.pdf$/i.test(it.Path)).map(toEbook)
+    const map = await narrations
+    return data.Items.filter(it => !it.Path || /\.pdf$/i.test(it.Path)).map(it => toEbook(it, map))
   } catch {
     return []
   }
@@ -88,7 +134,7 @@ export async function getEbook(id: string): Promise<Ebook | null> {
   try {
     const { userId } = await getSession()
     const it = await jfGet<RawBook & { Type?: string }>(`/Users/${userId}/Items/${id}`, { Fields: FIELDS }, { revalidate: 0 })
-    return it.Type === 'Book' ? toEbook(it) : null
+    return it.Type === 'Book' ? toEbook(it, await getNarrations(userId)) : null
   } catch {
     return null
   }

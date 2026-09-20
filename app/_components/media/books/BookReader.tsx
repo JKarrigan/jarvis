@@ -5,8 +5,56 @@ import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import type { Ebook } from '../types'
 import { Slider } from '../playerUi'
-import { ChevronLeftIcon, ChevronRightIcon } from '../icons'
+import { Back5Icon, ChevronLeftIcon, ChevronRightIcon, PauseIcon, PlaySolidIcon } from '../icons'
+import { useAudiobookPlayer, useAudiobookTime } from '../audiobooks/AudiobookPlayer'
+import { clock } from '../audiobooks/format'
 import { openBook, renderPage, type OpenBook } from './pdf'
+
+/** Slow → natural. Graded-reader narration is for shadowing, so there's nothing faster than 1×. */
+const NARRATION_SPEEDS = [1, 0.8, 0.6]
+
+/**
+ * Read-along narration: drives the app's persistent audiobook player, so the audio keeps
+ * its place, survives leaving the reader, and shows up on the lock screen. Pages are turned
+ * by hand — the recording carries no page timings.
+ */
+function Narration({ audioId, title }: { audioId: string; title: string }) {
+  const { book, playing, status, rate, play, toggle, skip, setRate } = useAudiobookPlayer()
+  const time = useAudiobookTime()
+  const loaded = book?.id === audioId
+  const active = loaded && playing
+  const busy = loaded && status === 'loading'
+  const round = 'grid h-11 w-11 shrink-0 place-items-center rounded-full transition disabled:opacity-40'
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        aria-label={active ? `Pause narration of ${title}` : `Play narration of ${title}`}
+        onClick={() => (loaded ? toggle() : play(audioId))}
+        className={`${round} bg-accent text-ink-on-accent shadow-[0_8px_22px_var(--glow)] hover:brightness-[1.06]`}
+      >
+        {busy
+          ? <span className="h-[18px] w-[18px] animate-spin rounded-full border-2 border-current border-t-transparent" />
+          : active ? <PauseIcon className="h-[18px] w-[18px]" /> : <PlaySolidIcon className="h-[18px] w-[18px]" />}
+      </button>
+      <button type="button" aria-label="Back 5 seconds" disabled={!loaded} onClick={() => skip(-5)} className={`${round} text-white/80 hover:bg-white/10`}>
+        <Back5Icon className="h-[25px] w-[25px]" />
+      </button>
+      <button
+        type="button"
+        aria-label={`Narration speed ${rate}×`}
+        disabled={!loaded}
+        onClick={() => setRate(NARRATION_SPEEDS[(NARRATION_SPEEDS.indexOf(rate) + 1) % NARRATION_SPEEDS.length])}
+        className="h-11 min-w-[52px] shrink-0 rounded-xl px-2 text-[13.5px] font-extrabold text-accent-soft transition hover:bg-white/10 disabled:opacity-40"
+      >
+        {loaded ? rate : 1}×
+      </button>
+      {loaded && book && (
+        <span className="hidden pl-1 text-[12.5px] font-semibold tabular-nums text-white/60 sm:inline">{clock(time)} / {clock(book.duration)}</span>
+      )}
+    </div>
+  )
+}
 
 /**
  * Full-screen page-at-a-time PDF reader. Tap or click the edges (or use the arrow
@@ -185,12 +233,13 @@ export function BookReader({ book }: { book: Ebook }) {
         </button>
       </div>
 
-      <div className="flex shrink-0 items-center gap-4 px-5 pb-[max(14px,env(safe-area-inset-bottom))] pt-2.5">
+      <div className="flex shrink-0 items-center gap-3 px-3 pb-[max(14px,env(safe-area-inset-bottom))] pt-2.5 md:gap-4 md:px-5">
+        {book.audioId && <Narration audioId={book.audioId} title={book.title} />}
         {/* The scrubber mirrors for right-to-left books so dragging matches the page order. */}
         <div className="min-w-0 flex-1" style={{ transform: rtl ? 'scaleX(-1)' : undefined }}>
           <Slider ariaLabel="Page" fraction={fraction} onChange={f => setPage(Math.round(f * Math.max(0, pages - 1)) + 1)} />
         </div>
-        <div className="w-[92px] shrink-0 text-right text-[13px] font-bold tabular-nums text-white/80">
+        <div className="w-[58px] shrink-0 text-right md:w-[92px] text-[13px] font-bold tabular-nums text-white/80">
           {pages ? `${page} / ${pages}` : '…'}
         </div>
       </div>
