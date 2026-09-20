@@ -1,4 +1,4 @@
-import type { NarrationLine, NarrationSync } from '@/app/_components/media/types'
+import type { NarrationLine, NarrationPageChar, NarrationSync } from '@/app/_components/media/types'
 import { getNarrationSync, saveNarrationSync } from '@/lib/jellyfinBooks'
 
 const okId = (id: string) => /^[0-9a-f]{32}$/i.test(id)
@@ -32,6 +32,17 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const words = l.words.filter(w => w && num(w.s) && num(w.e) && typeof w.w === 'string').map(w => ({ s: w.s, e: w.e, w: w.w.slice(0, 80) }))
     lines.push({ start: l.start, end: l.end, text: l.text.slice(0, 600), page: l.page, words })
   }
-  saveNarrationSync(id, { v: 1, duration: body.duration, pages: body.pages, lines })
+  const unit = (v: unknown): v is number => typeof v === 'number' && v >= 0 && v <= 1
+  const pageChars: Record<string, NarrationPageChar[]> = {}
+  if (body.pageChars && typeof body.pageChars === 'object') {
+    for (const [page, chars] of Object.entries(body.pageChars).slice(0, 2000)) {
+      if (!/^\d{1,5}$/.test(page) || !Array.isArray(chars)) continue
+      pageChars[page] = chars
+        .filter(c => c && typeof c.ch === 'string' && unit(c.x) && unit(c.y) && unit(c.w) && unit(c.h))
+        .slice(0, 4000)
+        .map(c => ({ ch: c.ch.slice(0, 2), x: c.x, y: c.y, w: c.w, h: c.h }))
+    }
+  }
+  saveNarrationSync(id, { v: 1, duration: body.duration, pages: body.pages, lines, ...(Object.keys(pageChars).length ? { pageChars } : {}) })
   return Response.json({ ok: true, lines: lines.length })
 }

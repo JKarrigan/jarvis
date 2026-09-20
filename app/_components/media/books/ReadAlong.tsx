@@ -207,13 +207,17 @@ function alignPage(lines: { line: NarrationLine; i: number }[], chars: PageChar[
   return result
 }
 
-/** Merge a word's characters into one box per printed row. */
+/** Merge a word's characters into one box per printed row — or per column, for vertical text. */
 function boxes(indices: number[], chars: PageChar[]): { x: number; y: number; w: number; h: number }[] {
   const out: { x: number; y: number; w: number; h: number }[] = []
   for (const c of [...new Set(indices)].sort((a, b) => a - b).map(p => chars[p])) {
-    const row = out[out.length - 1]
-    if (row && Math.abs(row.y - c.y) < c.h / 2 && c.x <= row.x + row.w + c.w) row.w = Math.max(row.w, c.x + c.w - row.x)
-    else out.push({ x: c.x, y: c.y, w: c.w, h: c.h })
+    const run = out[out.length - 1]
+    if (run && Math.abs(run.y - c.y) < c.h / 2 && c.x >= run.x && c.x <= run.x + run.w + c.w) {
+      run.w = Math.max(run.w, c.x + c.w - run.x)
+    } else if (run && Math.abs(run.x - c.x) < c.w / 2 && c.y >= run.y && c.y <= run.y + run.h + c.h) {
+      run.h = Math.max(run.h, c.y + c.h - run.y)
+      run.w = Math.max(run.w, c.w)
+    } else out.push({ x: c.x, y: c.y, w: c.w, h: c.h })
   }
   return out
 }
@@ -241,7 +245,8 @@ export function PageHighlights({ sync, audioId, page, chars }: { sync: Narration
           <span
             key={`${k}-${n}`}
             className="absolute rounded-[4px] bg-accent transition-opacity duration-200"
-            style={{ left: b.x - 1, top: b.y - b.h * 0.08, width: b.w + 2, height: b.h * 1.2, opacity: strength }}
+            // A little bleed past the glyphs, like a real highlighter; capped so tall vertical runs don't balloon.
+            style={{ left: b.x - 2, top: b.y - Math.min(4, b.h * 0.08), width: b.w + 4, height: b.h + Math.min(8, b.h * 0.2), opacity: strength }}
           />
         ))
       })}

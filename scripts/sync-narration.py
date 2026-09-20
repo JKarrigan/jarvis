@@ -37,42 +37,143 @@ def ocr_pages(pdf, lang):
         print(f'(ocr unavailable: {e.__class__.__name__})', file=sys.stderr)
         return None
 
+class _Hocr(__import__('html.parser').parser.HTMLParser):
+    """Lines → words (bbox + text) out of Tesseract's hOCR."""
+    def __init__(self):
+        super().__init__(); self.lines = []; self._word = None
+    def handle_starttag(self, tag, attrs):
+        d = dict(attrs); cls = d.get('class', ''); m = re.search(r'bbox (\d+) (\d+) (\d+) (\d+)', d.get('title', ''))
+        if not m: return
+        box = tuple(map(int, m.groups()))
+        if cls == 'ocr_line' or cls == 'ocr_header' or cls == 'ocr_caption': self.lines.append({'box': box, 'words': []})
+        elif cls == 'ocrx_word' and self.lines:
+            self._word = {'box': box, 'text': ''}; self.lines[-1]['words'].append(self._word)
+    def handle_data(self, data):
+        if self._word is not None: self._word['text'] += data.strip()
+
+def _hocr(png, model, psm, base):
+    r = subprocess.run(['tesseract', png, '-', *base, '-l', model, '--psm', psm, '-c', 'tessedit_create_hocr=1'], capture_output=True, text=True)
+    parser = _Hocr(); parser.feed(r.stdout)
+    return parser.lines
+
+def _png_size(png):
+    with open(png, 'rb') as fh:
+        head = fh.read(24)
+    return int.from_bytes(head[16:20], 'big'), int.from_bytes(head[20:24], 'big')
+
+def _main_chars(lines, vertical, size):
+    """Body-text characters with page-relative boxes (0–1). Tesseract's own per-character
+    boxes are unusable for vertical text, so each *word* box is split evenly along the reading
+    direction instead (a vertical "word" is a character or two).
+
+    Words are kept by thickness (across the reading direction) relative to the body text:
+    furigana is about half as thick, and the junk Tesseract "reads" out of illustrations is
+    far thicker. The body thickness is a median weighted by how much Japanese each word
+    holds, so neither kind of noise can drag it."""
+    W, H = size
+    thick = lambda w: (w['box'][2] - w['box'][0]) if vertical else (w['box'][3] - w['box'][1])
+    words = [w for l in lines for w in l['words'] if japanese_chars(w['text']) > 0 and thick(w) > 0]
+    if not words: return []
+    weighted = sorted((thick(w), japanese_chars(w['text'])) for w in words)
+    half, run, body = sum(n for _, n in weighted) / 2, 0, weighted[-1][0]
+    for t, n in weighted:
+        run += n
+        if run >= half: body = t; break
+    out = []
+    for l in lines:
+        for w in l['words']:
+            chars = [c for c in w['text'] if not c.isspace()]
+            if not chars or not (body * 0.7 <= thick(w) <= body * 1.5): continue
+            x1, y1, x2, y2 = w['box']
+            for i, ch in enumerate(chars):
+                if vertical: cx1, cx2, cy1, cy2 = x1, x2, y1 + (y2 - y1) * i / len(chars), y1 + (y2 - y1) * (i + 1) / len(chars)
+                else: cx1, cx2, cy1, cy2 = x1 + (x2 - x1) * i / len(chars), x1 + (x2 - x1) * (i + 1) / len(chars), y1, y2
+                out.append({'ch': ch, 'x': round(cx1 / W, 4), 'y': round(cy1 / H, 4), 'w': round((cx2 - cx1) / W, 4), 'h': round((cy2 - cy1) / H, 4)})
+    return out
+
 def tesseract_pages(pdf, lang, tessdata):
-    """Page text via Tesseract, which — unlike macOS Vision — has a model for *vertical*
-    Japanese (jpn_vert). Each page is rasterised with sips (macOS) and read both ways; the
-    reading with more Japanese in it wins. Illustrations add some junk, which the
-    reading-based page matching shrugs off."""
+    """Page text *and* character positions via Tesseract, which — unlike macOS Vision — has a
+    model for vertical Japanese (jpn_vert). Each page is rasterised with sips (macOS) and
+    read both ways; the reading with more Japanese in it wins. Illustrations add some junk,
+    which the reading-based page matching shrugs off. Returns (texts, boxes) or None."""
     if not shutil.which('tesseract') or not shutil.which('sips'): return None
     from pypdf import PdfReader, PdfWriter
     base = ['--tessdata-dir', tessdata] if tessdata else []
-    models = [(f'{lang}_vert', '5'), (lang, '6')] if lang == 'jpn' else [(lang, '6')]
-    out = []
+    models = [(f'{lang}_vert', '5', True), (lang, '6', False)] if lang == 'jpn' else [(lang, '6', False)]
+    texts, boxes = [], []
     with tempfile.TemporaryDirectory() as tmp:
-        reader = PdfReader(pdf)
-        for i, page in enumerate(reader.pages):
+        for i, page in enumerate(PdfReader(pdf).pages):
             one, png = os.path.join(tmp, f'{i}.pdf'), os.path.join(tmp, f'{i}.png')
             w = PdfWriter(); w.add_page(page); w.write(one)
             subprocess.run(['sips', '-s', 'format', 'png', '-Z', '2400', one, '--out', png], capture_output=True)
-            best = ''
-            for model, psm in models:
-                r = subprocess.run(['tesseract', png, '-', *base, '-l', model, '--psm', psm], capture_output=True, text=True)
-                text = ''.join(r.stdout.split())
-                if japanese_chars(text) > japanese_chars(best): best = text
-            out.append(best)
-    return out
+            best_text, best_boxes = '', []
+            for model, psm, vertical in models:
+                lines = _hocr(png, model, psm, base)
+                text = ''.join(w['text'] for l in lines for w in l['words'])
+                if japanese_chars(text) > japanese_chars(best_text):
+                    best_text, best_boxes = text, _main_chars(lines, vertical, _png_size(png))
+            texts.append(best_text); boxes.append(best_boxes)
+    return texts, boxes
 
-def page_vocab(pages, limit=180):
-    """Distinct kanji/katakana words from the book — primes Whisper to spell like the book."""
-    seen, words = set(), []
+def page_vocab(pages, names=(), limit=200):
+    """Hint words for Whisper so it spells like the book: the given names first (title,
+    author, anything it keeps getting wrong), then the book's kanji/katakana words by how
+    often they occur. Frequency matters twice over — recurring names (仁和寺, 石清水八幡宮)
+    are exactly what needs fixing, and OCR junk rarely repeats."""
+    counts, first = {}, {}
     for text in pages:
-        for w in re.findall(r'[一-鿿゠-ヿ々ー]+[ぁ-ゟ]{0,3}', text):
-            if w not in seen and len(w) > 1:
-                seen.add(w); words.append(w)
-    prompt = ''
-    for w in words:
+        for w in re.findall(r'[\u4e00-\u9fff\u30a0-\u30ff々ー]{2,}', text):
+            counts[w] = counts.get(w, 0) + 1
+            first.setdefault(w, len(first))
+    ranked = sorted((w for w in counts if counts[w] >= 2 or len(pages) < 6), key=lambda w: (-counts[w], first[w]))
+    prompt, seen = '', set()
+    for w in [*names, *ranked]:
+        w = w.strip()
+        if not w or w in seen: continue
         if len(prompt) + len(w) + 1 > limit: break
-        prompt += w + '。'
+        seen.add(w); prompt += w + '。'
     return prompt
+
+def homophone_fixes(segments, names, pages, kks):
+    """Spellings to correct automatically: a kanji/katakana word in the transcript that *reads*
+    the same as one of the book's names or recurring words but is written differently gets
+    the book's spelling (健康 → 兼好, both けんこう). Short readings are left alone — too many
+    unrelated words share them."""
+    counts = {}
+    for text in pages:
+        for w in re.findall(r'[\u4e00-\u9fff\u30a0-\u30ff々ー]{2,}', text): counts[w] = counts.get(w, 0) + 1
+    book = {}
+    for w in [*[n.strip() for n in names], *sorted((w for w in counts if counts[w] >= 2), key=lambda w: -counts[w])]:
+        reading = kana(w, kks)
+        if len(w) >= 2 and len(reading) >= 4: book.setdefault(reading, w)
+    spoken = ''.join(w['w'] for seg in segments for w in seg['words'])
+    fixes = {}
+    for run in set(re.findall(r'[\u4e00-\u9fff\u30a0-\u30ff々ー]{2,}', spoken)):
+        right = book.get(kana(run, kks))
+        if right and right != run and run not in counts: fixes[run] = right
+    return fixes
+
+def apply_fixes(segments, fixes):
+    """Replace known-wrong spellings (a homophone Whisper insists on), even when the wrong
+    text is spread over several timed words: the first word takes the corrected text and
+    the span's full duration, the rest are emptied."""
+    for seg in segments:
+        words = seg['words']
+        for wrong, right in fixes.items():
+            while True:
+                joined = ''.join(w['w'] for w in words)
+                at = joined.find(wrong)
+                if at < 0 or not wrong: break
+                pos, hit = 0, []
+                for k, w in enumerate(words):
+                    if pos < at + len(wrong) and pos + len(w['w']) > at: hit.append(k)
+                    pos += len(w['w'])
+                start = sum(len(words[k]['w']) for k in range(hit[0]))
+                span = ''.join(words[k]['w'] for k in hit)
+                fixed = span[:at - start] + right + span[at - start + len(wrong):]
+                words[hit[0]] = {'s': words[hit[0]]['s'], 'e': words[hit[-1]]['e'], 'w': fixed}
+                for k in hit[1:]: words[k] = {**words[k], 'w': ''}
+                if wrong in right: break
 
 def lines_from_words(segments):
     """Whisper's words → display lines.
@@ -154,6 +255,8 @@ def main():
     ap.add_argument('--lang', default='ja')
     ap.add_argument('--model', default='large-v3-turbo')
     ap.add_argument('--models-dir', default=os.environ.get('WHISPER_MODELS'))
+    ap.add_argument('--names', default='', help='comma-separated names to hint first: title, author, places')
+    ap.add_argument('--fix', default='', help='comma-separated wrong=right spellings to correct in the transcript')
     ap.add_argument('--tessdata', default=os.environ.get('TESSDATA_DIR'), help='folder holding jpn.traineddata / jpn_vert.traineddata')
     ap.add_argument('--upload', help='app base URL to send the timings to, e.g. http://192.168.1.39:3000')
     ap.add_argument('--book', help='Jellyfin id of the Book item (required with --upload)')
@@ -164,13 +267,18 @@ def main():
     pages = [' '.join((p.extract_text() or '').split()) for p in PdfReader(a.pdf).pages]
     # A book whose words are drawn as shapes has page numbers and little else in its text layer.
     thin = sum(1 for t in pages if japanese_chars(t) < 8)
+    page_boxes = None   # character positions from OCR, for pages that have no text layer to locate words in
     if thin > len(pages) / 2:
         tess_lang = {'ja': 'jpn'}.get(a.lang, a.lang)
-        for name, ocr in (('macOS Vision', ocr_pages(a.pdf, a.lang)), ('Tesseract', tesseract_pages(a.pdf, tess_lang, a.tessdata))):
+        tess = tesseract_pages(a.pdf, tess_lang, a.tessdata)
+        for name, ocr in (('macOS Vision', ocr_pages(a.pdf, a.lang)), ('Tesseract', tess[0] if tess else None)):
             if ocr and len(ocr) == len(pages):
                 pages = [o if japanese_chars(o) > japanese_chars(t) else t for o, t in zip(ocr, pages)]
                 print(f'text layer is thin ({thin}/{len(pages)} pages) — added {name} OCR', file=sys.stderr)
-    prompt = None if a.no_hints else page_vocab(pages)
+        if tess and len(tess[1]) == len(pages): page_boxes = tess[1]
+    names = [n for n in a.names.split(',') if n.strip()]
+    prompt = None if a.no_hints else page_vocab(pages, names)
+    fixes = dict(f.split('=', 1) for f in a.fix.split(',') if '=' in f)
     # The transcription is the slow part; keep it next to the output so line-cutting and page
     # matching can be re-run (or tuned) without transcribing again.
     cache = a.out + '.words.json'
@@ -183,7 +291,11 @@ def main():
     else:
         segments, duration = transcribe(a, prompt)
         json.dump({'hints': prompt, 'duration': duration, 'segments': segments}, open(cache, 'w', encoding='utf-8'), ensure_ascii=False)
-    finish(a, pages, segments, duration)
+    import pykakasi
+    auto = homophone_fixes(segments, names, pages, pykakasi.kakasi())
+    if auto: print('spelling corrected to match the book:', '、'.join(f'{k}→{v}' for k, v in auto.items()), file=sys.stderr)
+    apply_fixes(segments, {**auto, **fixes})
+    finish(a, pages, segments, duration, page_boxes)
 
 def transcribe(a, prompt):
     from faster_whisper import WhisperModel
@@ -193,7 +305,7 @@ def transcribe(a, prompt):
     segments = [{'words': [{'s': round(w.start, 2), 'e': round(w.end, 2), 'w': w.word} for w in (s.words or [])]} for s in segs]
     return segments, round(info.duration, 2)
 
-def finish(a, pages, segments, duration):
+def finish(a, pages, segments, duration, page_boxes=None):
     import pykakasi
     kks = pykakasi.kakasi()
     lines = lines_from_words(segments)
@@ -214,6 +326,9 @@ def finish(a, pages, segments, duration):
         for l in lines: l['page'] = 0
         print(f'page matching confidence {confidence:.2f} < 0.70 — captions only, no auto page turns', file=sys.stderr)
     result = {'v': 1, 'duration': duration, 'pages': len(pages), 'lines': lines}
+    if page_boxes and placed:
+        used = {l['page'] for l in lines}
+        result['pageChars'] = {str(i + 1): b for i, b in enumerate(page_boxes) if (i + 1) in used and b}
     json.dump(result, open(a.out, 'w', encoding='utf-8'), ensure_ascii=False)
     for l in lines:
         print(f"{l['start']:7.1f}  p{l['page']:<3} {l['match']:.2f}  {l['text']}")

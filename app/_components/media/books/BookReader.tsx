@@ -144,12 +144,23 @@ export function BookReader({ book }: { book: Ebook }) {
         return task.done.then(() => {
           if (stale) return
           setPainting(false)
-          return pageChars(open.doc, page, size.w, size.h).then(c => { if (!stale) setChars(c) }, () => { })
+          // Where the printed characters sit, for the highlighter: the PDF's own text layer
+          // when it has one, else the OCR'd positions that came with the timings (stored as
+          // fractions of the page, scaled here to the canvas as just fitted).
+          return pageChars(open.doc, page, size.w, size.h).then(c => {
+            if (stale) return
+            // "No text layer" in practice means a page number and nothing else, so judge by
+            // how much Japanese the layer holds rather than whether it is empty.
+            const typed = c.filter(x => /[\u3041-\u30ff\u4e00-\u9fff]/.test(x.ch)).length
+            const ocr = typed < 8 ? sync?.pageChars?.[String(page)] : undefined
+            const w = canvas.clientWidth, h = canvas.clientHeight
+            setChars(ocr ? ocr.map(o => ({ ch: o.ch, x: o.x * w, y: o.y * h, w: o.w * w, h: o.h * h })) : c)
+          }, () => { })
         })
       })
       .catch(() => { if (!stale) setError(true) })
     return () => { stale = true; cancel?.() }
-  }, [ready, page, size])
+  }, [ready, page, size, sync])
 
   // Remember the page (debounced; flushed on leave).
   const latest = useRef({ page, pages, rtl })

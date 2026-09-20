@@ -325,9 +325,15 @@ export interface NarrationLine {
   words: { s: number; e: number; w: string }[]
 }
 
+/** A printed character's box as fractions (0–1) of the page's width and height. */
+export interface NarrationPageChar { ch: string; x: number; y: number; w: number; h: number }
+
 export interface NarrationSync {
   v: 1
   duration: number
   pages: number
   lines: NarrationLine[]
+  /** OCR'd body-text positions by 1-based page, for books whose text is drawn rather than
+      typed — lets the reader highlight printed words where the PDF has no text layer. */
+  pageChars?: Record<string, NarrationPageChar[]>
 }
