@@ -7,7 +7,7 @@ import { SearchModal } from './SearchModal'
 import { PageTransition } from './PageTransition'
 import { AudiobookPlayerProvider, useAudiobookPlayer } from './audiobooks/AudiobookPlayer'
 import { AudiobookPlayerChrome } from './audiobooks/PlayerChrome'
-import type { ReelTitle, CollectionSummary, Audiobook } from './types'
+import type { ReelTitle, CollectionSummary, Audiobook, Ebook } from './types'
 
 /**
  * Media chrome: the left icon rail (desktop) / bottom tab bar (mobile), the
@@ -17,8 +17,8 @@ import type { ReelTitle, CollectionSummary, Audiobook } from './types'
  * navigation.
  */
 export function MediaShell({
-  catalog, collections, audiobooks, children,
-}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; children: React.ReactNode }) {
+  catalog, collections, audiobooks, ebooks, children,
+}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; ebooks: Ebook[]; children: React.ReactNode }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
   useEffect(() => {
@@ -38,7 +38,7 @@ export function MediaShell({
       <ShellMain>{children}</ShellMain>
       <AudiobookPlayerChrome />
       <AnimatePresence>
-        {searchOpen && <SearchModal catalog={catalog} collections={collections} audiobooks={audiobooks} onClose={() => setSearchOpen(false)} />}
+        {searchOpen && <SearchModal catalog={catalog} collections={collections} audiobooks={audiobooks} ebooks={ebooks} onClose={() => setSearchOpen(false)} />}
       </AnimatePresence>
     </AudiobookPlayerProvider>
   )

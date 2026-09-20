@@ -282,3 +282,31 @@ export interface AudiobookEdit {
   /** One name per chapter, in order; blank entries keep the file's name. [] resets all. */
   chapterTitles?: string[]
 }
+
+/** A readable book (a Jellyfin Book item — a PDF). Reading position is kept by this app. */
+export interface Ebook {
+  id: string
+  title: string
+  author?: string
+  /** Graded-reader level parsed from a Jellyfin tag like "Level 2". */
+  level?: number
+  tags: string[]
+  addedAt?: number
+  /** 0–360, drives the gradient cover fallback. */
+  hue: number
+  coverUrl?: string
+  /** Last page read (1-based) and the page count, once the book has been opened. */
+  page?: number
+  pages?: number
+  finished: boolean
+  /** Epoch ms of the last page turn — orders "Continue reading". */
+  readAt?: number
+  /** Right-to-left page order (vertical Japanese text). */
+  rtl?: boolean
+}
+
+export interface EbookProgress {
+  page: number
+  pages: number
+  rtl?: boolean
+}

@@ -14,20 +14,23 @@ interface RailItem {
   label: string
   Icon: (p: { className?: string }) => React.ReactElement
   exact?: boolean
+  /** Extra path prefixes that also light this item up. */
+  also?: string[]
 }
 
 const PRIMARY: RailItem[] = [
   { href: '/media', label: 'Home', Icon: HomeIcon, exact: true },
   { href: '/media/movies', label: 'Movies', Icon: FilmIcon },
   { href: '/media/tv', label: 'TV Shows', Icon: TvIcon },
-  { href: '/media/audiobooks', label: 'Audiobooks', Icon: HeadphonesIcon },
+  { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon, also: ['/media/books'] },
   { href: '/media/favorites', label: 'Favorites', Icon: HeartIcon },
   { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
   { href: '/media/picker', label: 'Movie Picker', Icon: DieIcon },
 ]
 
-function isActive(pathname: string, item: { href: string; exact?: boolean }) {
-  return item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(item.href + '/')
+function isActive(pathname: string, item: { href: string; exact?: boolean; also?: string[] }) {
+  if (item.exact) return pathname === item.href
+  return [item.href, ...(item.also ?? [])].some(h => pathname === h || pathname.startsWith(h + '/'))
 }
 
 export function MediaRail({ onSearch }: { onSearch?: () => void }) {
@@ -111,7 +114,7 @@ export function MediaRail({ onSearch }: { onSearch?: () => void }) {
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 h-[68px] flex items-stretch justify-around px-2 pb-[env(safe-area-inset-bottom)] bg-black/55 backdrop-blur-xl backdrop-saturate-150 border-t border-white/10">
         {[
           { href: '/media', label: 'Home', Icon: HomeIcon, exact: true },
-          { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon },
+          { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon, also: ['/media/books'] },
           { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
           { href: '/media/picker', label: 'Picker', Icon: DieIcon },
           pickCount > 0

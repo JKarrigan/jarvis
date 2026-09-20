@@ -55,6 +55,10 @@ When none of the `JELLYFIN_*` vars are set, `lib/jellyfinServer.ts` serves mock 
 
 Audiobooks are a separate model from movies/TV (`Audiobook*` types, not `ReelTitle`) — `lib/jellyfinAudiobooks.ts` reads Jellyfin `AudioBook` items (a **Books** library, one M4B per book). Jellyfin 10.11 does not return chapter markers for audiobooks, so they are read with `ffprobe` over the Direct Play stream and cached in the SQLite `settings` table (`audiobook.chapters.<id>.<size>`); Jellyfin's own `Chapters` win if a future release provides them. Playback is *not* `JellyfinPlayer`: `app/_components/media/audiobooks/AudiobookPlayer.tsx` is a provider mounted in `MediaShell` (outside `PageTransition`) that owns a single `<audio>` element so a book keeps playing across navigation; `PlayerChrome.tsx` renders the docked mini player and the full now-playing sheet. Resume position lives in Jellyfin (progress reported through `/api/jellyfin/report`); only the loaded book id, speed and volume are in `localStorage` (`reel.audiobook.v1`).
 
+### Books (reading)
+
+The Books rail entry has two halves: **Listen** (`/media/audiobooks`, above) and **Read** (`/media/books`). Readable books are Jellyfin `Book` items (PDFs in a second Books library, laid out `Author/Title/Title.pdf`) — `lib/jellyfinBooks.ts`. Jellyfin only indexes them, so: the author falls back to the grandparent folder name, a `Level N` tag becomes the graded-reader level filter, covers are rendered from page 1 **in the browser** and posted to `/api/jellyfin/books/[id]/cover`, which stores them as the item's Primary image, and the reading position lives in the SQLite `settings` table (`book.progress.<id>`), not Jellyfin. The reader (`app/_components/media/books/BookReader.tsx`) uses `pdfjs-dist` (legacy build); its worker, CJK cmaps, fonts and wasm are served from `node_modules` by `app/api/pdfjs/[...path]` and the PDF itself is range-proxied through `/api/jellyfin/books/[id]/file`.
+
 ### Color system
 
 `StatusColor` (`good` → `hazardous`) is the single shared type that drives border classes, value text, sparkline stroke, and AQI badge color. Hex equivalents used in SVG contexts:

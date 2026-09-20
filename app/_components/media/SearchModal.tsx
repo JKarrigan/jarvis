@@ -3,15 +3,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
-import type { ReelTitle, CollectionSummary, Audiobook } from './types'
+import type { ReelTitle, CollectionSummary, Audiobook, Ebook } from './types'
+import { BookCover } from './books/BooksView'
 import { Cover } from './audiobooks/parts'
 import { collArt } from './artwork'
 import { Poster, detailHref } from './ReelCards'
 import { SearchIcon, CloseIcon } from './icons'
 
 export function SearchModal({
-  catalog, collections, audiobooks, onClose,
-}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; onClose: () => void }) {
+  catalog, collections, audiobooks, ebooks, onClose,
+}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; ebooks: Ebook[]; onClose: () => void }) {
   const router = useRouter()
   const [q, setQ] = useState('')
 
@@ -21,9 +22,9 @@ export function SearchModal({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
-  const { titles, colls, books } = useMemo(() => {
+  const { titles, colls, books, reads } = useMemo(() => {
     const needle = q.trim().toLowerCase()
-    if (!needle) return { titles: [] as ReelTitle[], colls: [] as CollectionSummary[], books: [] as Audiobook[] }
+    if (!needle) return { titles: [] as ReelTitle[], colls: [] as CollectionSummary[], books: [] as Audiobook[], reads: [] as Ebook[] }
     return {
       titles: catalog.filter(t => t.title.toLowerCase().includes(needle)).slice(0, 8),
       colls: collections.filter(c => c.name.toLowerCase().includes(needle)).slice(0, 4),
@@ -31,8 +32,11 @@ export function SearchModal({
       books: audiobooks
         .filter(b => [b.title, b.author, b.narrator].some(v => v?.toLowerCase().includes(needle)))
         .slice(0, 5),
+      reads: ebooks
+        .filter(b => [b.title, b.author].some(v => v?.toLowerCase().includes(needle)))
+        .slice(0, 5),
     }
-  }, [q, catalog, collections, audiobooks])
+  }, [q, catalog, collections, audiobooks, ebooks])
 
   const go = (href: string) => { onClose(); router.push(href) }
 
@@ -57,7 +61,7 @@ export function SearchModal({
             autoFocus
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search movies, shows, audiobooks, collections…"
+            placeholder="Search movies, shows, books, collections…"
             className="flex-1 bg-transparent py-4 text-[15px] text-ink placeholder:text-white/35 focus:outline-none"
           />
           <button type="button" onClick={onClose} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-white/45 hover:bg-white/10 hover:text-white">
@@ -66,7 +70,7 @@ export function SearchModal({
         </div>
 
         <div className="max-h-[55vh] overflow-y-auto p-2">
-          {q.trim() && titles.length === 0 && colls.length === 0 && books.length === 0 && (
+          {q.trim() && titles.length === 0 && colls.length === 0 && books.length === 0 && reads.length === 0 && (
             <p className="px-3 py-6 text-center text-sm text-white/45">No matches for “{q}”.</p>
           )}
 
@@ -89,6 +93,16 @@ export function SearchModal({
               <span className="min-w-0">
                 <span className="block truncate text-sm font-semibold text-ink">{b.title}</span>
                 <span className="block truncate text-xs text-white/45">{['Audiobook', b.author, b.narrator && `read by ${b.narrator}`].filter(Boolean).join(' · ')}</span>
+              </span>
+            </button>
+          ))}
+
+          {reads.map(b => (
+            <button key={b.id} type="button" onClick={() => go(`/media/books/${b.id}`)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-white/5">
+              <BookCover book={b} titleClass="" className="h-12 w-9 overflow-hidden rounded-md bg-white" />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-semibold text-ink">{b.title}</span>
+                <span className="block truncate text-xs text-white/45">{['Book', b.author, b.level != null && `Level ${b.level}`].filter(Boolean).join(' · ')}</span>
               </span>
             </button>
           ))}

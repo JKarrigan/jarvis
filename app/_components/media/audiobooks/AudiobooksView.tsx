@@ -10,6 +10,7 @@ import { CheckIcon, ListIcon, PlaySolidIcon } from '../icons'
 import { useAudiobookPlayer, useBookPosition } from './AudiobookPlayer'
 import { Cover } from './parts'
 import { length, timeLeft } from './format'
+import { BooksSwitch } from '../books/BooksSwitch'
 
 type Group = 'all' | 'author' | 'narrator'
 type Sort = 'added' | 'title' | 'author' | 'length'
@@ -173,7 +174,10 @@ export function AudiobooksView({ books }: { books: Audiobook[] }) {
   return (
     <div className="pb-8 pt-16 md:pt-8">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4 pl-[var(--rail)] pr-[var(--gx)]">
-        <h1 className="text-[34px] font-[800] tracking-[-0.02em] text-ink">Audiobooks</h1>
+        <div className="flex flex-wrap items-center gap-4">
+          <h1 className="text-[34px] font-[800] tracking-[-0.02em] text-ink">Books</h1>
+          <BooksSwitch active="listen" />
+        </div>
         {books.length > 0 && (
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex gap-0.5 rounded-[14px] border border-border bg-surface p-1">

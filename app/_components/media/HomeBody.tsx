@@ -4,17 +4,18 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useMedia } from './MediaProvider'
-import type { ReelTitle, ContinueItem, CollectionSummary, Audiobook } from './types'
+import type { ReelTitle, ContinueItem, CollectionSummary, Audiobook, Ebook } from './types'
 import { recommendations, type UserView } from './selectors'
 import { HomeHero } from './HomeHero'
 import { PosterCard, CollectionCard, Row, SectionHeader } from './ReelCards'
 import { ContinueCard } from './ContinueCard'
 import { useFilteredLibrary, LibraryFilterBar, LibraryGridInner } from './library'
 import { ListenCard } from './audiobooks/ListenCard'
+import { BookCard } from './books/BooksView'
 
 export function HomeBody({
-  featured, resume, catalog, collections, audiobooks,
-}: { featured: ReelTitle[]; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[] }) {
+  featured, resume, catalog, collections, audiobooks, ebooks,
+}: { featured: ReelTitle[]; resume: ContinueItem[]; catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; ebooks: Ebook[] }) {
   const { isWatched, isFavorite, watchlist } = useMedia()
   const view: UserView = useMemo(() => ({
     watched: (t) => isWatched(t.id, t.watched),
@@ -32,6 +33,11 @@ export function HomeBody({
       .filter(b => !b.finished && b.position > 30 && b.position < b.duration - 10)
       .sort((a, b) => (b.lastPlayedAt ?? 0) - (a.lastPlayedAt ?? 0)),
     [audiobooks],
+  )
+
+  const readingNow = useMemo(
+    () => ebooks.filter(b => !b.finished && (b.page ?? 1) > 1).sort((a, b) => (b.readAt ?? 0) - (a.readAt ?? 0)),
+    [ebooks],
   )
 
   const recentlyAdded = useMemo(
@@ -79,6 +85,13 @@ export function HomeBody({
           <section>
             <SectionHeader title="Continue listening" />
             <Row>{listening.map(b => <ListenCard key={b.id} book={b} />)}</Row>
+          </section>
+        )}
+
+        {showRows && readingNow.length > 0 && (
+          <section>
+            <SectionHeader title="Continue reading" />
+            <Row>{readingNow.map(b => <BookCard key={b.id} book={b} className="w-[150px] shrink-0 md:w-[178px]" />)}</Row>
           </section>
         )}
 
