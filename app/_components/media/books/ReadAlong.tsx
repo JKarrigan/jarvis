@@ -77,50 +77,68 @@ export function CaptionStrip({ sync, audioId, className = '' }: { sync: Narratio
 }
 
 /**
- * Large-type transcript beside the page: the lines printed on the current page (or, when
- * lines couldn't be placed on pages, a window around the one being spoken). Tap a line to
- * jump the narration there.
+ * Large-type transcript beside the page: the lines printed on the page being *viewed* — so it
+ * always matches the page on the left, wherever the narration happens to be — or, when lines
+ * couldn't be placed on pages, a window around the one being spoken. Tap a line to jump the
+ * narration there.
  */
-export function BigTextPanel({ sync, audioId, className = '' }: { sync: NarrationSync; audioId: string; className?: string }) {
+export function BigTextPanel({ sync, audioId, page, className = '' }: { sync: NarrationSync; audioId: string; page: number; className?: string }) {
   const { narrating, time, index, seek } = useNarration(sync, audioId)
-  const currentRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+
+  const anchor = Math.max(0, index)
+  const placed = useMemo(() => sync.lines.some(l => l.page > 0), [sync])
+  // One group per printed page; books whose lines have no page use a rolling window instead.
+  const group = placed ? `page-${page}` : 'rolling'
+
+  // Keep the spoken line centred. The panel is scrolled directly rather than through a ref
+  // on the line: a page of a longer book is several screens of large type, and the lines are
+  // re-created whenever the page changes. A new page starts from its top without animation.
+  const lastGroup = useRef(group)
   useEffect(() => {
-    currentRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  }, [index])
+    const panel = panelRef.current
+    if (!panel) return
+    const jumped = lastGroup.current !== group
+    lastGroup.current = group
+    const current = panel.querySelector<HTMLElement>('[aria-current="true"]')
+    const top = current ? current.offsetTop - (panel.clientHeight - current.offsetHeight) / 2 : 0
+    panel.scrollTo({ top: Math.max(0, top), behavior: jumped ? 'auto' : 'smooth' })
+  }, [index, group, narrating])
 
   if (!narrating) return null
-  const anchor = Math.max(0, index)
-  const pageOfLine = sync.lines[anchor]?.page ?? 0
   const shown = sync.lines
     .map((line, i) => ({ line, i }))
-    .filter(({ line, i }) => (pageOfLine > 0 ? line.page === pageOfLine : i >= anchor - 2 && i <= anchor + 4))
+    .filter(({ line, i }) => (placed ? line.page === page : i >= anchor - 2 && i <= anchor + 4))
 
   return (
-    <aside lang="ja" className={`scrollbar-hide min-h-0 shrink-0 flex-col justify-center gap-[clamp(14px,2.4vh,30px)] overflow-y-auto py-6 pl-2 pr-[clamp(20px,3vw,56px)] ${className}`}>
-      <AnimatePresence mode="popLayout" initial={false}>
+    <aside ref={panelRef} lang="ja" className={`scrollbar-hide relative min-h-0 shrink-0 flex-col overflow-y-auto pl-2 pr-[clamp(20px,3vw,56px)] ${className}`}>
+      {/* my-auto centres the lines when they fit and falls back to the top when they don't —
+          justify-center would push the overflow above the top edge, where it can't be scrolled to. */}
+      <motion.div
+        key={group}
+        initial={{ opacity: 0, x: 24 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.3, ease: [0.2, 0.7, 0.2, 1] }}
+        className="my-auto flex flex-col gap-[clamp(14px,2.4vh,30px)] py-[18vh]"
+      >
+        {shown.length === 0 && <p className="px-4 text-[17px] font-semibold text-white/35" lang="en">No narration on this page.</p>}
         {shown.map(({ line, i }) => {
           const isCurrent = i === index
           return (
-            <motion.button
+            <button
               key={i}
-              ref={isCurrent ? currentRef : undefined}
               type="button"
-              layout
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -16, transition: { duration: 0.15 } }}
-              transition={{ duration: 0.3, ease: [0.2, 0.7, 0.2, 1] }}
               onClick={() => seek(line.start)}
               aria-current={isCurrent ? 'true' : undefined}
-              className={`rounded-2xl px-4 py-2 text-left text-[clamp(26px,2.7vw,46px)] font-bold leading-[1.55] tracking-[0.02em] transition-colors hover:bg-white/5 ${isCurrent ? '' : i < index ? 'text-white/50' : 'text-white/25'}`}
+              className={`rounded-2xl px-4 py-2 text-left text-[clamp(26px,2.7vw,46px)] font-bold leading-[1.55] tracking-[0.02em] transition-colors duration-300 hover:bg-white/5 ${isCurrent ? '' : i < index ? 'text-white/50' : 'text-white/25'}`}
             >
               {isCurrent
                 ? line.words.map((w, k) => <span key={k} className={`transition-colors duration-150 ${wordClass(time, w)}`}>{w.w}</span>)
                 : line.text}
-            </motion.button>
+            </button>
           )
         })}
-      </AnimatePresence>
+      </motion.div>
     </aside>
   )
 }

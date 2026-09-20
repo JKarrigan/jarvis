@@ -80,7 +80,7 @@ export function BookReader({ book }: { book: Ebook }) {
   const [chars, setChars] = useState<PageChar[]>([])
   /** Page on the left, large-type transcript on the right (wide screens). */
   const [bigText, setBigText] = useState(false)
-  const { book: playingBook } = useAudiobookPlayer()
+  const { book: playingBook, seek } = useAudiobookPlayer()
   const narrating = Boolean(book.audioId) && playingBook?.id === book.audioId
 
   // Narration timings, when someone has generated them for this book.
@@ -170,11 +170,22 @@ export function BookReader({ book }: { book: Ebook }) {
   }, [ready, page, rtl, save])
   useEffect(() => () => save(true), [save])
 
-  const go = useCallback((delta: number) => setPage(p => Math.min(Math.max(1, p + delta), Math.max(1, latest.current.pages))), [])
-  const autoTurnRef = useRef(autoTurn)
-  useEffect(() => { autoTurnRef.current = autoTurn }, [autoTurn])
+  // A page turned by hand (keys, edges, swipe, scrubber). With Auto-turn on, page and narration
+  // are locked together, so the narration jumps to the new page's first line — otherwise the
+  // next spoken line would just pull the reader straight back.
+  const syncRef = useRef<{ sync: NarrationSync | null; narrating: boolean; autoTurn: boolean }>({ sync: null, narrating: false, autoTurn: true })
+  useEffect(() => { syncRef.current = { sync, narrating, autoTurn } }, [sync, narrating, autoTurn])
+  const turnTo = useCallback((target: number) => {
+    const next = Math.min(Math.max(1, target), Math.max(1, latest.current.pages))
+    if (next === latest.current.page) return
+    setPage(next)
+    const { sync: s, narrating: on, autoTurn: locked } = syncRef.current
+    const first = on && locked ? s?.lines.find(l => l.page === next) : undefined
+    if (first) seek(first.start)
+  }, [seek])
+  const go = useCallback((delta: number) => turnTo(latest.current.page + delta), [turnTo])
   const followNarration = useCallback((target: number) => {
-    if (autoTurnRef.current) setPage(p => (p === target ? p : Math.min(Math.max(1, target), Math.max(1, latest.current.pages))))
+    if (syncRef.current.autoTurn) setPage(p => (p === target ? p : Math.min(Math.max(1, target), Math.max(1, latest.current.pages))))
   }, [])
 
   const leave = useCallback(() => {
@@ -273,7 +284,7 @@ export function BookReader({ book }: { book: Ebook }) {
           <ChevronRightIcon className="h-9 w-9" />
         </button>
       </div>
-      {sync && book.audioId && bigText && <BigTextPanel sync={sync} audioId={book.audioId} className="hidden w-[min(46vw,700px)] lg:flex" />}
+      {sync && book.audioId && bigText && <BigTextPanel sync={sync} audioId={book.audioId} page={page} className="hidden w-[min(46vw,700px)] lg:flex" />}
       </div>
 
       {sync && book.audioId && <NarrationFollower sync={sync} audioId={book.audioId} onPage={followNarration} />}
@@ -305,7 +316,7 @@ export function BookReader({ book }: { book: Ebook }) {
         )}
         {/* The scrubber mirrors for right-to-left books so dragging matches the page order. */}
         <div className="min-w-0 flex-1" style={{ transform: rtl ? 'scaleX(-1)' : undefined }}>
-          <Slider ariaLabel="Page" fraction={fraction} onChange={f => setPage(Math.round(f * Math.max(0, pages - 1)) + 1)} />
+          <Slider ariaLabel="Page" fraction={fraction} onChange={f => turnTo(Math.round(f * Math.max(0, pages - 1)) + 1)} />
         </div>
         <div className="w-[58px] shrink-0 text-right md:w-[92px] text-[13px] font-bold tabular-nums text-white/80">
           {pages ? `${page} / ${pages}` : '…'}
