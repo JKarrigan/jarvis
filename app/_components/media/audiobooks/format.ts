@@ -18,8 +18,9 @@ export function length(sec: number): string {
   return m === 0 ? `${h}h` : `${h}h ${m}m`
 }
 
-/** Time remaining: `6h 42m left`, `11 min left`. */
-export function timeLeft(sec: number): string {
+/** Time remaining at `rate` (listening time, not audio time): `6h 42m left`, `11 min left`. */
+export function timeLeft(audioSec: number, rate = 1): string {
+  const sec = audioSec / rate
   const mins = Math.max(0, Math.round(sec / 60))
   if (mins < 60) return `${Math.max(1, mins)} min left`
   return `${length(sec)} left`

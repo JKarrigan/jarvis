@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import type { Audiobook, AudiobookDetail } from '../types'
 import { useMedia } from '../MediaProvider'
 import { CheckIcon, ChevronLeftIcon, HeartIcon, PauseIcon, PencilIcon, PlaySolidIcon, RestartIcon } from '../icons'
-import { useAudiobookPlayer, useBookPosition } from './AudiobookPlayer'
+import { useAudiobookPlayer, useBookPosition, useBookRate } from './AudiobookPlayer'
 import { BookProgress, ChapterList, Cover } from './parts'
 import { chapterAt, length } from './format'
 import { EditAudiobookSheet } from './EditAudiobookSheet'
@@ -23,6 +23,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
   const { isFavorite, toggleFavorite } = useMedia()
   const { book: loaded, playing, play, toggle, close } = useAudiobookPlayer()
   const position = useBookPosition(book)
+  const rate = useBookRate(book.id)
   const [showAll, setShowAll] = useState(false)
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -98,7 +99,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
             </div>
             {started && (
               <div className="mt-2">
-                <BookProgress chapters={book.chapters} position={position} duration={book.duration} barClass="h-2" />
+                <BookProgress chapters={book.chapters} position={position} duration={book.duration} rate={rate} barClass="h-2" />
               </div>
             )}
             <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -139,6 +140,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
                 <ChapterList
                   chapters={visible}
                   position={position}
+                  rate={rate}
                   started={started}
                   onSelect={i => play(book.id, { chapterIndex: i })}
                 />

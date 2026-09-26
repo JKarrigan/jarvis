@@ -128,6 +128,7 @@ function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClos
           <ChapterList
             chapters={book.chapters}
             position={time}
+            rate={rate}
             started
             followCurrent
             onSelect={i => { goToChapter(i); onClose() }}
@@ -241,7 +242,7 @@ function MiniPlayer({ onSheet }: { onSheet: (k: SheetKind) => void }) {
 
 function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; sheetOpen: boolean }) {
   const {
-    book, status, error, volume, sleep, playMethodLabel,
+    book, status, error, rate, volume, sleep, playMethodLabel,
     toggle, skip, prevChapter, nextChapter, goToChapter, setVolume, setExpanded, close,
   } = useAudiobookPlayer()
   const time = useAudiobookTime()
@@ -397,7 +398,7 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
             <section className="hidden h-full min-h-0 flex-col gap-3.5 xl:flex">
               <h2 className="shrink-0 text-[20px] font-bold tracking-[-0.01em] text-ink">Chapters</h2>
               <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-white/10 bg-black/35 p-2 backdrop-blur-2xl">
-                <ChapterList chapters={book.chapters} position={time} started followCurrent rowClass="h-[52px] px-3" onSelect={goToChapter} />
+                <ChapterList chapters={book.chapters} position={time} rate={rate} started followCurrent rowClass="h-[52px] px-3" onSelect={goToChapter} />
               </div>
             </section>
           )}
@@ -407,7 +408,7 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
         <footer className={`flex shrink-0 flex-col gap-2.5 pb-[max(22px,env(safe-area-inset-bottom))] md:pb-[max(30px,env(safe-area-inset-bottom))] ${gutter}`}>
           <div className="flex items-baseline justify-between text-[12.5px] text-white/55 md:text-[13.5px]">
             <span>Whole book</span>
-            <span className="font-bold text-accent-soft">{timeLeft(book.duration - time)}</span>
+            <span className="font-bold text-accent-soft">{timeLeft(book.duration - time, rate)}</span>
           </div>
           <ChapterSegments chapters={book.chapters} position={time} className="h-2 md:h-2.5" onSeek={multi ? goToChapter : undefined} />
         </footer>

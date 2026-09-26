@@ -38,6 +38,8 @@ interface PlayerValue {
   error: string | null
   playing: boolean
   rate: number
+  /** Saved per-book speeds (filled after mount, so SSR and first render agree). */
+  rates: Record<string, number>
   volume: number
   sleep: SleepMode
   expanded: boolean
@@ -71,6 +73,12 @@ export function useAudiobookPlayer(): PlayerValue {
 
 export function useAudiobookTime(): number {
   return useContext(TimeContext)
+}
+
+/** Speed a book plays at: the live rate when it's the loaded book, else its saved one. */
+export function useBookRate(id: string): number {
+  const { book, rate, rates } = useAudiobookPlayer()
+  return book?.id === id ? rate : clampRate(rates[id] ?? 1)
 }
 
 /** Live position for a book: the player's clock when it's the loaded book, else the server's. */
@@ -112,6 +120,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [rate, setRateState] = useState(1)
+  const [rates, setRates] = useState<Record<string, number>>({})
   const [volume, setVolumeState] = useState(1)
   const [sleep, setSleepState] = useState<SleepMode>({ kind: 'off' })
   const [expanded, setExpanded] = useState(false)
@@ -257,7 +266,10 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     const r = clampRate(next)
     setRateState(r)
     const id = bookRef.current?.id
-    if (id) writePrefs({ rates: { ...readPrefs().rates, [id]: r } })
+    if (id) {
+      writePrefs({ rates: { ...readPrefs().rates, [id]: r } })
+      setRates(prev => ({ ...prev, [id]: r }))
+    }
     if (audioRef.current) audioRef.current.playbackRate = r
   }, [])
 
@@ -308,6 +320,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   useEffect(() => {
     const prefs = readPrefs()
     if (typeof prefs.volume === 'number') setVolumeState(prefs.volume)
+    if (prefs.rates) setRates(prefs.rates)
     if (prefs.bookId) void load(prefs.bookId, { autoplay: false })
   }, [load])
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -446,11 +459,11 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   }, [book, skip, prevChapter, nextChapter])
 
   const value = useMemo<PlayerValue>(() => ({
-    book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
+    book, status, error, playing, rate, rates, volume, sleep, expanded, playMethodLabel,
     play, toggle, seek, skip, goToChapter, prevChapter, nextChapter,
     setRate, setVolume, setSleep, setExpanded, refreshBook, close,
   }), [
-    book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
+    book, status, error, playing, rate, rates, volume, sleep, expanded, playMethodLabel,
     play, toggle, seek, skip, goToChapter, prevChapter, nextChapter,
     setRate, setVolume, setSleep, refreshBook, close,
   ])

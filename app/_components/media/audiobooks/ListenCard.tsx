@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import type { Audiobook } from '../types'
 import { PauseIcon, PlaySolidIcon } from '../icons'
-import { useAudiobookPlayer, useBookPosition } from './AudiobookPlayer'
+import { useAudiobookPlayer, useBookPosition, useBookRate } from './AudiobookPlayer'
 import { Cover } from './parts'
 import { timeLeft } from './format'
 
@@ -12,6 +12,7 @@ import { timeLeft } from './format'
 export function ListenCard({ book }: { book: Audiobook }) {
   const { book: loaded, playing, play, toggle } = useAudiobookPlayer()
   const position = useBookPosition(book)
+  const rate = useBookRate(book.id)
   const isLoaded = loaded?.id === book.id
   const active = isLoaded && playing
   return (
@@ -27,7 +28,7 @@ export function ListenCard({ book }: { book: Audiobook }) {
         <div className="h-1 overflow-hidden rounded-full bg-white/15">
           <div className="h-full bg-accent" style={{ width: `${Math.min(100, (position / (book.duration || 1)) * 100)}%` }} />
         </div>
-        <div className="text-[12.5px] font-semibold text-accent-soft">{timeLeft(book.duration - position)}</div>
+        <div className="text-[12.5px] font-semibold text-accent-soft">{timeLeft(book.duration - position, rate)}</div>
       </div>
       <button
         type="button"
