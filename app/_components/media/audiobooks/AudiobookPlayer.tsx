@@ -15,7 +15,13 @@ import { chapterAt } from './format'
 
 const STORAGE_KEY = 'reel.audiobook.v1'
 const REPORT_INTERVAL_MS = 10_000
-export const SPEEDS = [0.6, 0.8, 1, 1.2, 1.5, 1.75, 2]
+export const MIN_RATE = 0.5
+export const MAX_RATE = 2.5
+export const RATE_STEP = 0.05
+export const RATE_PRESETS = [0.6, 0.8, 1, 1.25, 1.5, 2]
+/** Clamp to the supported range and snap to the 0.05 grid (also tidies float noise like 1.1500000000000001). */
+export const clampRate = (r: number) =>
+  Number.isFinite(r) ? Math.min(MAX_RATE, Math.max(MIN_RATE, Math.round(r * 20) / 20)) : 1
 export const SLEEP_MINUTES = [15, 30, 60]
 
 export type SleepMode =
@@ -88,7 +94,7 @@ function readPrefs(): Prefs {
     return {}
   }
 }
-const rateFor = (id?: string) => (id ? readPrefs().rates?.[id] : undefined) ?? 1
+const rateFor = (id?: string) => clampRate((id ? readPrefs().rates?.[id] : undefined) ?? 1)
 
 function writePrefs(patch: Omit<Prefs, 'bookId'> & { bookId?: string | null }) {
   try {
@@ -247,7 +253,8 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     if (c) goToChapter(c.index + 1)
   }, [currentChapter, goToChapter])
 
-  const setRate = useCallback((r: number) => {
+  const setRate = useCallback((next: number) => {
+    const r = clampRate(next)
     setRateState(r)
     const id = bookRef.current?.id
     if (id) writePrefs({ rates: { ...readPrefs().rates, [id]: r } })
