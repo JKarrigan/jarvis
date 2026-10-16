@@ -1,7 +1,7 @@
 import 'server-only'
 import { revalidateTag } from 'next/cache'
 import type { MediaItem } from '@/app/_components/media/MediaCard'
-import type { ReelTitle, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion, TrailerInfo } from '@/app/_components/media/types'
+import type { ReelTitle, ReelCredit, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson, ReelPersonEpisode, MediaInfo, MediaVersion, TrailerInfo } from '@/app/_components/media/types'
 import { hueFromId, poster as posterArt, backdrop as backdropArt } from '@/app/_components/media/artwork'
 import {
   MOCK_JELLYFIN_ITEMS,
@@ -131,7 +131,7 @@ export function qs(params: Params): string {
 export async function jfGet<T>(
   path: string,
   params: Params = {},
-  opts: { revalidate?: number; tags?: string[] } = {},
+  opts: { revalidate?: number; tags?: string[]; timeoutMs?: number } = {},
 ): Promise<T> {
   const url = baseUrl()!
   const run = (token: string) =>
@@ -139,7 +139,7 @@ export async function jfGet<T>(
       headers: { Authorization: authHeader(token), Accept: 'application/json' },
       next: { revalidate: opts.revalidate ?? 300, tags: opts.tags },
       // Fresh timeout per call, so the 401-reauth retry below isn't starved.
-      signal: AbortSignal.timeout(JF_TIMEOUT_MS),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? JF_TIMEOUT_MS),
     })
   let session = await getSession()
   let res = await run(session.accessToken)
@@ -411,6 +411,42 @@ function progressOf(it: RawItem): number {
   return 0
 }
 
+/** Compact credits for the catalog: every director, then the top-billed cast. Someone who
+    both directs and stars gets one credit of each kind. Kept small because the whole
+    catalog ships to the client with the media layout. */
+function creditsFromRaw(
+  people: ReadonlyArray<{ Id: string; Name: string; Type?: string; PrimaryImageTag?: string }> | undefined,
+  maxActors = 8,
+): ReelCredit[] | undefined {
+  if (!people?.length) return undefined
+  const seenDirectors = new Set<string>()
+  const seenActors = new Set<string>()
+  const out: ReelCredit[] = []
+  const credit = (p: { Id: string; Name: string; PrimaryImageTag?: string }, director?: true): ReelCredit => ({
+    id: p.Id,
+    name: p.Name,
+    ...(director && { director }),
+    // Search rows show a 36 px avatar, so a small image is plenty.
+    ...(p.PrimaryImageTag && { imageUrl: imageUrl(p.Id, 'Primary', { tag: p.PrimaryImageTag, maxWidth: 96 }) }),
+  })
+  for (const p of people) {
+    if (p.Type === 'Director' && p.Id && p.Name && !seenDirectors.has(p.Id)) {
+      seenDirectors.add(p.Id)
+      out.push(credit(p, true))
+    }
+  }
+  let actors = 0
+  for (const p of people) {
+    if (actors >= maxActors) break
+    if (p.Type === 'Actor' && p.Id && p.Name && !seenActors.has(p.Id)) {
+      seenActors.add(p.Id)
+      out.push(credit(p))
+      actors++
+    }
+  }
+  return out.length ? out : undefined
+}
+
 function toReelTitle(it: RawItem, kind: 'movies' | 'tv'): ReelTitle {
   const hue = hueFromId(it.Id)
   const runtimeMin = it.RunTimeTicks ? Math.round(it.RunTimeTicks / 600_000_000) : undefined
@@ -474,6 +510,7 @@ function mockToReel(item: JellyfinItem): ReelTitle {
     posterColor: posterArt(hue),
     backdropColor: backdropArt(hue),
     synopsis: item.Overview,
+    people: creditsFromRaw(item.People),
   }
 }
 
@@ -500,12 +537,78 @@ async function fetchReel(kind: 'movies' | 'tv', limit = 600): Promise<ReelTitle[
   return data.Items.map(it => toReelTitle(it, kind))
 }
 
+// ---------------------------------------------------------------------------
+// Credits index — directors + top-billed cast per title, for search by person
+// ---------------------------------------------------------------------------
+
+type CreditsIndex = Map<string, ReelCredit[]>
+
+/** Jellyfin takes several seconds to attach People to the whole library, and adding
+    them to the catalog query pushes it past Next's 2 MB fetch-cache limit (so nothing
+    would be cached). The compact index is fetched on its own and memoized in-process
+    instead: a stale copy is served while a refresh runs in the background, so only the
+    first request after a server start waits for Jellyfin. */
+const CREDITS_TTL_MS = 5 * 60_000
+const creditsG = globalThis as unknown as {
+  __reelCredits?: { at: number; index: CreditsIndex }
+  __reelCreditsLoad?: Promise<CreditsIndex>
+}
+
+async function fetchCreditsIndex(): Promise<CreditsIndex> {
+  const { userId } = await getSession()
+  const data = await jfGet<{ Items: RawItem[] }>('/Items', {
+    userId,
+    IncludeItemTypes: 'Movie,Series',
+    Recursive: true,
+    Fields: 'People',
+    EnableImages: false,
+    EnableUserData: false,
+    Limit: 1200,
+  }, { revalidate: 0, timeoutMs: 30_000 }) // ~6 s for 200 movies; the default 10 s is too tight as the library grows
+  const index: CreditsIndex = new Map()
+  for (const it of data.Items) {
+    const credits = creditsFromRaw(it.People)
+    if (credits) index.set(it.Id, credits)
+  }
+  return index
+}
+
+/** One refresh in flight at a time; on failure a stale copy keeps being served and the
+    next request after another TTL tries again. */
+function loadCreditsIndex(): Promise<CreditsIndex> {
+  creditsG.__reelCreditsLoad ??= fetchCreditsIndex()
+    .then(index => {
+      creditsG.__reelCredits = { at: Date.now(), index }
+      return index
+    })
+    .catch(err => {
+      if (creditsG.__reelCredits) creditsG.__reelCredits.at = Date.now()
+      throw err
+    })
+    .finally(() => { creditsG.__reelCreditsLoad = undefined })
+  return creditsG.__reelCreditsLoad
+}
+
+async function getCreditsIndex(): Promise<CreditsIndex> {
+  const cached = creditsG.__reelCredits
+  if (cached && Date.now() - cached.at < CREDITS_TTL_MS) return cached.index
+  const load = loadCreditsIndex()
+  if (cached) {
+    load.catch(() => {})
+    return cached.index
+  }
+  return load.catch(() => new Map())
+}
+
 /** The whole library as ReelTitles — drives Home, Library, Picker, Search, Stats. */
 export async function getCatalog(): Promise<ReelTitle[]> {
   if (!isJellyfinConfigured()) return mockCatalog()
   try {
-    const [movies, series] = await Promise.all([fetchReel('movies'), fetchReel('tv')])
-    return [...movies, ...series]
+    const [movies, series, credits] = await Promise.all([fetchReel('movies'), fetchReel('tv'), getCreditsIndex()])
+    return [...movies, ...series].map(t => {
+      const people = credits.get(t.id)
+      return people ? { ...t, people } : t
+    })
   } catch {
     return []
   }

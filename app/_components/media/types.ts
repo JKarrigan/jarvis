@@ -39,6 +39,19 @@ export interface ReelTitle {
   tagline?: string
   /** Free-form tags (Jellyfin Tags). */
   tags?: string[]
+  /** Every director plus the top-billed cast — lets Search find titles by person. */
+  people?: ReelCredit[]
+}
+
+/** A compact credit on a title (who, and whether they directed it). */
+export interface ReelCredit {
+  /** Jellyfin person id — links to /media/person/[id]. */
+  id: string
+  name: string
+  /** True for a directing credit; absent for an acting credit. */
+  director?: true
+  /** Small headshot (Jellyfin Primary image), when the person has one. */
+  imageUrl?: string
 }
 
 /** A Continue-watching entry (movie in progress, or a show's next/in-progress episode). */

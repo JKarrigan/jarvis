@@ -51,6 +51,12 @@ This is a Next.js 16 App Router app that polls a local [AirGradient](https://www
 
 When none of the `JELLYFIN_*` vars are set, `lib/jellyfinServer.ts` serves mock data so the media UI still renders in dev.
 
+### Search by person
+
+The global Search modal (`SearchModal.tsx`) is client-side over the catalog the media layout ships to the browser. To match movies/shows by director or actor, each `ReelTitle` carries compact `people` credits (every director plus the top 8 billed actors, `ReelCredit`). They are **not** part of the catalog query: asking Jellyfin for `People` on the whole library takes ~6 s and pushes the response past Next's 2 MB fetch-cache cap, so `getCatalog()` merges them from a separate `Fields=People` fetch memoized on `globalThis` (`getCreditsIndex`, 5 min TTL, stale-while-revalidate). Search results list matching people (linking to `/media/person/[id]`) and the titles they're credited on.
+
+The same credits drive the library filter bar (`library.tsx`): type (on mixed views), genre, tag, searchable Director / Actor dropdowns (`allPeople` in `selectors.ts`), a free-text filter over titles and names, Show and Sort, plus Reset. Someone who both directs and stars in a title holds one credit of each kind.
+
 ### Audiobooks
 
 Audiobooks are a separate model from movies/TV (`Audiobook*` types, not `ReelTitle`) — `lib/jellyfinAudiobooks.ts` reads Jellyfin `AudioBook` items (a **Books** library, one M4B per book). Jellyfin 10.11 does not return chapter markers for audiobooks, so they are read with `ffprobe` over the Direct Play stream and cached in the SQLite `settings` table (`audiobook.chapters.<id>.<size>`); Jellyfin's own `Chapters` win if a future release provides them. Playback is *not* `JellyfinPlayer`: `app/_components/media/audiobooks/AudiobookPlayer.tsx` is a provider mounted in `MediaShell` (outside `PageTransition`) that owns a single `<audio>` element so a book keeps playing across navigation; `PlayerChrome.tsx` renders the docked mini player and the full now-playing sheet. Resume position lives in Jellyfin (progress reported through `/api/jellyfin/report`); only the loaded book id, speed and volume are in `localStorage` (`reel.audiobook.v1`).
