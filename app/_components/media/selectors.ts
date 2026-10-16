@@ -134,6 +134,39 @@ export function pickerPool(catalog: ReelTitle[], f: PickerFilters, view: UserVie
 
 export type LibrarySort = 'added' | 'title' | 'year' | 'rating' | 'runtime'
 export type LibraryShow = 'all' | 'unwatched' | 'watched' | 'favorites'
+export type LibraryType = 'all' | 'movie' | 'tv'
+export type CreditRole = 'director' | 'actor'
+
+export interface PersonOption {
+  id: string
+  name: string
+  /** Titles in the list they hold this credit on. */
+  count: number
+}
+
+/** Everyone credited on the given titles in one capacity, A–Z, with their title counts. */
+export function allPeople(list: ReelTitle[], role: CreditRole): PersonOption[] {
+  const map = new Map<string, PersonOption>()
+  for (const t of list) {
+    for (const c of t.people ?? []) {
+      if ((role === 'director') !== Boolean(c.director)) continue
+      const p = map.get(c.id) ?? { id: c.id, name: c.name, count: 0 }
+      p.count++
+      map.set(c.id, p)
+    }
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** True when the person holds this kind of credit on the title. */
+export function creditedAs(t: ReelTitle, personId: string, role: CreditRole): boolean {
+  return (t.people ?? []).some(c => c.id === personId && (role === 'director') === Boolean(c.director))
+}
+
+/** Free-text library filter: the title, or anyone credited on it. `needle` is lower-case. */
+export function matchesQuery(t: ReelTitle, needle: string): boolean {
+  return t.title.toLowerCase().includes(needle) || (t.people ?? []).some(c => c.name.toLowerCase().includes(needle))
+}
 
 export function sortTitles(list: ReelTitle[], sort: LibrarySort): ReelTitle[] {
   const arr = [...list]

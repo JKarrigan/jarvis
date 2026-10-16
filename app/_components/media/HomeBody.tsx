@@ -125,13 +125,7 @@ export function HomeBody({
 
         <section>
           <SectionHeader title={showRows ? 'Your library' : 'Movies & shows'} />
-          <LibraryFilterBar
-            sort={lib.sort} setSort={lib.setSort}
-            genre={lib.genre} setGenre={lib.setGenre}
-            tag={lib.tag} setTag={lib.setTag}
-            show={lib.show} setShow={lib.setShow}
-            genres={lib.genres} tags={lib.tags} count={lib.result.length}
-          />
+          <LibraryFilterBar lib={lib} />
           <LibraryGridInner titles={lib.result} />
         </section>
       </div>
