@@ -10,46 +10,60 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 npm run dev      # start dev server (http://localhost:3000)
 npm run build    # production build
 npm run lint     # ESLint
-npx tsc --noEmit # type-check without emitting
+npm run typecheck # tsc --noEmit
+npm test         # Vitest (tests/**/*.test.ts, lib/**/*.test.ts; `server-only` is aliased in vitest.config.ts)
 ```
 
-No test suite exists yet.
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, test and build on Node 22 (`engines` ≥ 20.9, `.nvmrc` 22; better-sqlite3 and sharp are native modules, so the Node version on the Pi matters).
 
 ## Architecture
 
-This is a Next.js 16 App Router app that polls a local [AirGradient](https://www.airgradient.com/) device and stores readings in a local SQLite database.
+This is a Next.js 16 App Router app for the home: **Air** (`app/(air)/**`: air quality, Hue lights, file browser, system) and **Media / "Reel"** (`app/media/**`: Jellyfin movies, TV, audiobooks, books, and the family **Photos** library). It runs on a Raspberry Pi; everything irreplaceable lives on the Synology NAS (Jellyfin libraries, the photo share), the Pi only indexes, serves and caches.
+
+### App shell
+
+The root layout owns metadata (title template `%s · Home`), the `viewport` export, the PWA bits (`app/manifest.ts`, `app/icon.png`, `app/apple-icon.png`, `public/icons/`) and `<MotionConfig reducedMotion="user">`; reduced motion for CSS animations is handled in `globals.css`. `app/global-error.tsx`, `app/(air)/error.tsx` and `app/media/{error,loading,not-found}.tsx` are the boundaries. `AppSwitcher` (top-left) is the only bridge between the two apps. Shared accessible dialog primitives (`Modal`, `Drawer`, `Sheet`: role=dialog, focus trap, Escape handled by the top-most dialog only, which calls `preventDefault` — window-level Escape listeners must check `e.defaultPrevented`) live in `app/_components/lights/dialog.tsx` and are re-exported from `HueControls.tsx`. `lib/http.ts` has the request helpers every API route uses: `assertSameOrigin` (called first in every mutating handler — the app has no auth, this is the CSRF/DNS-rebinding defence; never put it in `proxy.ts`), `intParam`/`numParam`, `isLanHost`, `parseRange`, `readJson`.
 
 ### Data flow
 
-1. **Server poller** (`lib/poller.ts`) — a `globalThis` singleton that runs `setInterval` inside the Next.js server process, fetching `/measures/current` from the device every 10 s and writing rows to SQLite via `lib/db.ts`. Survives hot reloads by storing state on `globalThis`.
-2. **SQLite** (`lib/db.ts`) — another `globalThis` singleton (`better-sqlite3`). Single table: `readings(id, timestamp, data TEXT)` where `data` is JSON-stringified `DeviceMeasures`. Readings older than 30 days are pruned on each `/api/history` call.
-3. **API routes** (`app/api/`) — thin wrappers around `lib/db.ts` and `lib/poller.ts`. No auth. `better-sqlite3` must stay server-side; it is listed in `serverExternalPackages` in `next.config.ts`.
-4. **PollingProvider** (`app/_components/PollingProvider.tsx`) — client-side React context that polls `/api/latest` every 10 s and hydrates from `/api/history?limit=3600` on mount. Stores up to 3600 history entries in memory. Persists device IP, PM batch ID, and outdoor lat/lon to `localStorage`.
-5. **Dashboard** — `DashboardShell` reads from `PollingProvider` and passes props down to `Dashboard`, which renders the AQI hero, 8 metric cards, and history charts.
+1. **Startup** — `instrumentation.ts` (Node.js runtime only) calls `startBackgroundJobs()` in `lib/startup.ts`, which starts the poller from the saved device host (`settings` key `ag.deviceHost`, saved by `POST /api/device`, else `DEVICE_HOST`), prunes hourly (readings 30 d, closed events 90 d) and starts the photo scanner. Nothing waits for a browser any more.
+2. **Server poller** (`lib/poller.ts`) — a `globalThis` singleton (hot-reload safe) running a `setTimeout` chain with an in-flight guard, fetching `/measures/current` every 10 s, validating the payload (`insertReading` rejects junk) and writing rows via `lib/db.ts`. **Event detection runs here**, server-side: `lib/eventDetection.ts` is one incremental `EventDetector` (1-minute wall-clock grid, id `${type}_${startMs}` created once at onset, baseline frozen at onset, closes after 5 clear minutes, per-gap warm-up); batch reprocess replays readings through the same detector in one transaction and keeps acknowledgements. Clients only read `/api/events`.
+3. **SQLite** (`lib/db.ts`) — `globalThis` singleton (`better-sqlite3`; external by default in Next, no config needed). Tables: `readings(id, timestamp, data TEXT)` (JSON `DeviceMeasures`), `settings(key, value)`, `events`, plus the photo tables. `getHistory` returns raw rows for spans ≤ 6 h and SQL-averaged buckets (≤ ~800 points, cached per bucket) above that, so 30 days is 800 points instead of 259k rows.
+4. **API routes** (`app/api/`) — thin wrappers around `lib/*`. No auth (LAN only) but every mutating route calls `assertSameOrigin`, every numeric input goes through `intParam`/`numParam`, and errors are generic (`{ error }`, real status codes; details only in the server log).
+5. **PollingProvider** (`app/_components/PollingProvider.tsx`, mounted in `app/(air)/layout.tsx` so media pages don't poll) — client context polling `/api/latest` every 10 s (setTimeout chain, paused while the tab is hidden, fills gaps after one) and `/api/events` every 30 s; reads its localStorage settings through `useSyncExternalStore` (cross-tab). The server is the source of truth for the device host. `lib/useNow.ts` + `Clock.tsx` keep the per-second clock out of the dashboard render; `StaleBanner.tsx` greys values when data is > 60 s old.
+6. **Dashboard** — `DashboardShell` reads from `PollingProvider` and passes props down to `Dashboard`, which renders the AQI hero, 8 metric cards (memoized), and history charts (time-based x-axis, lines break at gaps).
 
 ### Key lib files
 
 | File | Purpose |
 |---|---|
 | `lib/types.ts` | `DeviceMeasures`, `HistoryEntry`, `ComputedAqi`, `StatusColor` |
-| `lib/aqi.ts` | `computeAqi(pm25)` → EPA AQI; `aqiToColor(aqi)` → `StatusColor` |
+| `lib/aqi.ts` | `computeAqi(pm25)` → EPA AQI (2024 table); `aqiToColor(aqi)` → `StatusColor` |
 | `lib/thresholds.ts` | Per-metric `StatusColor` functions (`co2Status`, `pm25Status`, …) |
+| `lib/statusColors.ts` | The single `StatusColor` → hex / Tailwind class / label map (don't copy colours into components) |
+| `lib/http.ts` | Request helpers for API routes (same-origin check, param parsing, Range, LAN host validation) |
+| `lib/files.ts` | Storage-root-safe path resolution for the file browser (`resolveSafe`, `resolveEntry` refuses the root; realpath checks) |
 | `lib/pmCalibration.ts` | Batch-specific PMS5003 correction factors (client-side only) |
 
 ### Env vars
 
 | Variable | Where used |
 |---|---|
-| `NEXT_PUBLIC_DEVICE_HOST` | Client fallback device IP if no `localStorage` value |
+| `DEVICE_HOST` / `NEXT_PUBLIC_DEVICE_HOST` | Fallback AirGradient host when none is saved in `settings` (`POST /api/device` saves it); must pass `isLanHost` |
 | `DB_PATH` | Override SQLite file location (default: `airgradient.db` in cwd) |
 | `OUTDOOR_LAT` / `OUTDOOR_LON` | Server-side fallback coordinates for `/api/outdoor-aqi` |
 | `FILES_ROOT` | Root dir for the file browser / local media transcoding (default: `/mnt/storage`) — `lib/files.ts` |
-| `FFMPEG_PATH` / `FFPROBE_PATH` | ffmpeg/ffprobe binaries for local file streaming (default: on `PATH`) |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | ffmpeg/ffprobe binaries for local file streaming (default: on `PATH`; ≥ 7.1 for iPhone HEIC thumbnails) |
+| `MAX_UPLOAD_BYTES` / `MAX_TRANSCODES` | Per-file upload limit (default 8 GiB) and concurrent ffmpeg transcodes (default 2; extra requests get 503 + Retry-After) |
+| `HUE_SSE_IDLE_MS` | Idle watchdog for the bridge event stream (default 60000) — `lib/hueSse.ts` |
+| `DEV_ORIGINS` | Comma-separated `allowedDevOrigins` for `next dev` on the LAN |
 | `JELLYFIN_URL` | Jellyfin server base URL, e.g. `http://NAS_IP:8096` — `lib/jellyfinServer.ts` |
 | `JELLYFIN_USER` / `JELLYFIN_PASSWORD` | Dashboard user the frontend authenticates as (token cached server-side) |
+| `PHOTOS_ROOT` | Photo library (on the Pi: a mounted NAS share, e.g. `/mnt/nas/photo`; default `$FILES_ROOT/Photos`) — `lib/photos/config.ts` |
+| `PHOTOS_CACHE` | Local cache for derived thumbnails/previews/posters (default: `.photos-cache` in cwd; disposable) |
 | `JELLYFIN_API_KEY` | Alternative to user/password (admin-wide; server-side only). Optional `JELLYFIN_USER_ID` selects the user for user-scoped calls |
 
-When none of the `JELLYFIN_*` vars are set, `lib/jellyfinServer.ts` serves mock data so the media UI still renders in dev.
+All variables are documented in `.env.example`. When no `JELLYFIN_URL` is set in development, `lib/jellyfinServer.ts` serves mock data so the media UI still renders (`MEDIA_MOCK=1` forces it).
 
 ### Audiobooks
 
@@ -63,11 +77,19 @@ The Books rail entry has two halves: **Listen** (`/media/audiobooks`, above) and
 
 **Narration timings (karaoke-style read-along):** `scripts/sync-narration.py BOOK.pdf NARRATION.mp3 OUT.json --upload http://HOST:3000 --book <jellyfin book id>` runs **offline on a fast machine, never on the Pi**: faster-whisper (word timestamps, the book's vocabulary passed as `hotwords` so it spells like the book; windows kept independent because carrying context makes it loop), lines re-cut at real pauses, then each line placed on a page by comparing *hiragana readings* (pykakasi) with a length-weighted monotonic DP. Page text comes from the PDF text layer, else macOS Vision (`scripts/ocr-pdf.swift`, horizontal only), else Tesseract `jpn_vert` for vertical Japanese. Below 0.70 confidence every line gets `page: 0` (captions only, no auto page turns). Spelling: the title/author (`--names`) and the book's most frequent kanji/katakana words go to Whisper as hint words; afterwards any transcript word that *reads* the same as a name or recurring book word but is spelled differently is corrected automatically (猫股→猫又), and `--fix wrong=right` covers what can't be derived (ズレズレ草→徒然草). For pages without a text layer the Tesseract run also yields character positions (`pageChars`, page fractions): Tesseract's per-character boxes are broken for vertical text, so word boxes are split evenly along the reading direction and words are kept by thickness relative to a Japanese-weighted median (drops furigana and illustration junk). Timings are stored in the `settings` table (`book.sync.<id>`) via `/api/jellyfin/books/[id]/sync`. In the reader, `ReadAlong.tsx` draws a multiply-blended highlighter over the printed words (from the PDF text layer, or the timings' OCR'd `pageChars` when the layer holds almost no Japanese — a bare page number counts as none; `pageChars()` in `pdf.ts` skips furigana by type size, and an LCS aligns transcript to page), shows a caption strip or a large-type side panel, and turns pages 0.6 s ahead of each line.
 
+### Photos
+
+Family photos/videos (`docs/photos-spec.md`) are plain files under `PHOTOS_ROOT` — a NAS share the Pi only mounts — indexed into the `photos` / `albums` / `album_items` tables of the same SQLite db (`lib/photos/db.ts`; `getDb()` from `lib/db.ts`). `lib/photos/scan.ts` is a `globalThis` single-flight scanner (started from `lib/startup.ts`, then every 6 h, after uploads, and on `POST /api/photos/scan`): it walks the share (skipping dot-entries, `@eaDir`, `#recycle`), only re-reads files whose size/mtime changed, re-links moved files by a cheap hash (sha1 of size + first 1 MiB + last 64 KiB), and marks vanished files `.missing/…`. **Mount guard:** the first scan of a non-empty library writes `PHOTOS_ROOT/.photos-library`; if that marker is gone (or the root is unreadable) while the index has rows, scans abort with `libraryOnline: false` instead of treating everything as deleted. Favorites and albums are mirrored, keyed by `rel_path`, to `PHOTOS_ROOT/.library/catalog.json` (debounced 5 s, `lib/photos/catalog.ts`) and imported when those tables are empty (fresh Pi). Metadata: sharp + `exif-reader` (HEIC containers too), ffprobe for videos (`lib/photos/meta.ts`). Thumbnails (`t` 400 px, `p` 1600 px, video `poster`) are made lazily into `PHOTOS_CACHE/<id>/` by `lib/photos/thumbs.ts` through a 2-slot priority queue (requests before background fill); HEIC is decoded with ffmpeg (≥ 7.1 needed for iPhone tile grids). Uploads/trash/restore live in `lib/photos/store.ts` (uploads go to `YYYY/MM/` by capture date, trash is `PHOTOS_ROOT/.trash/<original path>`). Routes are under `app/api/photos/**`; `/[id]/stream` is a capped (2) live H.264 720p transcode killed on disconnect. Thumb URLs are `immutable`, so the UI appends `&v=` when an item changes; a decode failure leaves a `failed` marker in the item's cache folder until the file's mtime changes.
+
+**Photos UI** (`app/media/photos/**`, components in `app/_components/media/photos/**`): the timeline (month sections, keyset infinite scroll, filter chips, year/month jump list, select mode with long-press / shift-click), the lightbox `PhotoViewer` (opened with `?v=<id>` through the History API so Back closes it — passing `history.state` back to `pushState` silently skips Next's `useSearchParams` sync, always pass a fresh object; images show the `p` preview and load the original only on zoom; videos fall back from `/file` to `/stream?t=` when `canPlayType` rejects the codec), the batch `Uploader` (XHR per 10 files, cancel, `beforeunload`), albums, Recently deleted, and `MemoriesRow` on the media Home ("on this day" from earlier years, else the newest). A "Library offline" banner appears whenever the mount guard reports the share missing.
+
 ### Color system
 
-`StatusColor` (`good` → `hazardous`) is the single shared type that drives border classes, value text, sparkline stroke, and AQI badge color. Hex equivalents used in SVG contexts:
+`StatusColor` (`good` → `hazardous`) is the single shared type that drives border classes, value text, sparkline stroke, and AQI badge color. All of it comes from `lib/statusColors.ts` (hex, label, text/border/badge/background classes). Hex values:
 
 ```ts
 { good: '#34d399', moderate: '#facc15', sensitive: '#fb923c',
-  unhealthy: '#ef4444', 'very-unhealthy': '#a855f7', hazardous: '#9f1239' }
+  unhealthy: '#ef4444', 'very-unhealthy': '#a855f7', hazardous: '#e11d48' }
 ```
+
+(`hazardous` was `#9f1239`, which measured 2.5:1 on the dark background; `#e11d48` is 4.2:1.) Metric cards also show the status word, never colour alone.

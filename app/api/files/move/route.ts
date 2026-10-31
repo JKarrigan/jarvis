@@ -1,15 +1,17 @@
-import { moveEntry } from '@/lib/files'
+import { assertSameOrigin } from '@/lib/http'
+import { moveEntry, filesErrorResponse } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
 
+/** POST ?from=<entry>&to=<folder> — 409 when the destination already has that name. */
 export async function POST(request: Request) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const { searchParams } = new URL(request.url)
-  const from = searchParams.get('from') ?? ''
-  const to = searchParams.get('to') ?? ''
   try {
-    moveEntry(from, to)
+    await moveEntry(searchParams.get('from'), searchParams.get('to'))
     return Response.json({ ok: true })
   } catch (e) {
-    return Response.json({ error: String(e) }, { status: 500 })
+    return filesErrorResponse(e, 'move')
   }
 }

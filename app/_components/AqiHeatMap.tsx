@@ -1,12 +1,9 @@
 'use client'
 
-import { useState } from 'react'
-import type { DailySummary, StatusColor } from '@/lib/types'
-
-const STATUS_HEX: Record<StatusColor, string> = {
-  good: '#34d399', moderate: '#facc15', sensitive: '#fb923c',
-  unhealthy: '#ef4444', 'very-unhealthy': '#a855f7', hazardous: '#9f1239',
-}
+import { memo, useMemo, useState } from 'react'
+import type { DailySummary } from '@/lib/types'
+import { STATUS_COLORS } from '@/lib/statusColors'
+import { useNowMinute } from '@/lib/useNow'
 
 function toLocalDateString(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -18,28 +15,35 @@ function formatDate(dateStr: string): string {
 }
 
 
-export function AqiHeatMap({ summaries }: { summaries: DailySummary[] }) {
-  const [tooltip, setTooltip] = useState<{ summary: DailySummary; x: number; y: number } | null>(null)
+const DOW_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
-  const summaryByDate = new Map(summaries.map(s => [s.date, s]))
-
+/** Last 30 local days laid out in week columns (today rolls over at midnight). */
+function buildWeeks(nowMs: number): (string | null)[][] {
   const days: string[] = []
   for (let i = 29; i >= 0; i--) {
-    const d = new Date()
+    const d = new Date(nowMs)
     d.setDate(d.getDate() - i)
     days.push(toLocalDateString(d))
   }
-
   const [y0, m0, d0] = days[0].split('-').map(Number)
   const firstDow = new Date(y0, m0 - 1, d0).getDay()
   const cells: (string | null)[] = [...Array(firstDow).fill(null), ...days]
-
   const weeks: (string | null)[][] = []
   for (let i = 0; i < cells.length; i += 7) {
     weeks.push(cells.slice(i, i + 7).concat(Array(7).fill(null)).slice(0, 7))
   }
+  return weeks
+}
 
-  const DOW_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+export const AqiHeatMap = memo(function AqiHeatMap({ summaries }: { summaries: DailySummary[] }) {
+  const [tooltip, setTooltip] = useState<{ summary: DailySummary; x: number; y: number } | null>(null)
+  const nowMs = useNowMinute()
+  const today = nowMs != null ? toLocalDateString(new Date(nowMs)) : null
+
+  const summaryByDate = useMemo(() => new Map(summaries.map(s => [s.date, s])), [summaries])
+  // Recomputed only when the local date changes, not every minute.
+  const weeks = useMemo(() => (today ? buildWeeks(new Date(`${today}T12:00:00`).getTime()) : []), [today])
+  if (weeks.length === 0) return null
 
   return (
     <div className="space-y-3">
@@ -58,7 +62,7 @@ export function AqiHeatMap({ summaries }: { summaries: DailySummary[] }) {
           <div
             key={`label-${i}`}
             style={{ gridColumn: 1, gridRow: i + 1, height: 8 }}
-            className="flex items-center justify-center text-[9px] text-zinc-600 leading-none"
+            className="flex items-center justify-center text-[9px] text-zinc-500 leading-none"
           >
             {i % 2 !== 0 ? label : ''}
           </div>
@@ -76,10 +80,11 @@ export function AqiHeatMap({ summaries }: { summaries: DailySummary[] }) {
                   gridRow: di + 1,
                   height: 8,
                   backgroundColor: summary
-                    ? STATUS_HEX[summary.color]
+                    ? STATUS_COLORS[summary.color].hex
                     : date ? '#27272a' : 'transparent',
                 }}
                 className="rounded-sm cursor-default"
+                title={summary ? `${formatDate(summary.date)}: average AQI ${summary.avgAqi} (${STATUS_COLORS[summary.color].label})` : undefined}
                 onMouseEnter={summary ? (e) => {
                   const rect = (e.target as HTMLElement).getBoundingClientRect()
                   const parent = (e.target as HTMLElement).closest('.relative')!.getBoundingClientRect()
@@ -108,4 +113,4 @@ export function AqiHeatMap({ summaries }: { summaries: DailySummary[] }) {
 
     </div>
   )
-}
+})

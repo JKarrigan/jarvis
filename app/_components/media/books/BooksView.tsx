@@ -72,17 +72,23 @@ export function BookCard({ book, className = '' }: { book: Ebook; className?: st
  */
 function useCoverBackfill(books: Ebook[]) {
   const router = useRouter()
-  const running = useRef(false)
   const attempted = useRef(new Set<string>())
+  // Each effect run gets its own flag; a newer run (or unmount) retires the older one.
+  // Runs are chained so two never render PDFs at once, and a retired run stops before
+  // its next book and before uploading, so the same cover is never rendered twice.
+  const lastRun = useRef<Promise<void>>(Promise.resolve())
   useEffect(() => {
-    const todo = books.filter(b => !b.coverUrl && !attempted.current.has(b.id))
-    if (running.current || todo.length === 0) return
-    running.current = true
-    let cancelled = false
-    void (async () => {
+    const missing = books.filter(b => !b.coverUrl)
+    if (missing.length === 0) return
+    const run = { live: true }
+    const live = () => run.live
+    const previous = lastRun.current
+    lastRun.current = (async () => {
+      await previous
       let saved = 0
-      for (const b of todo) {
-        if (cancelled) break
+      for (const b of missing) {
+        if (!live()) return
+        if (attempted.current.has(b.id)) continue
         attempted.current.add(b.id)
         try {
           const { doc, close } = await openBook(b.id)
@@ -91,8 +97,10 @@ function useCoverBackfill(books: Ebook[]) {
             const { done } = await renderPage(doc, 1, canvas, 600, 900)
             await done
             const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.86))
+            // Retired mid-render: let the run that replaced this one handle the book.
+            if (!live()) { attempted.current.delete(b.id); return }
             if (blob) {
-              const res = await fetch(`/api/jellyfin/books/${b.id}/cover`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob })
+              const res = await fetch(`/api/jellyfin/books/${encodeURIComponent(b.id)}/cover`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob })
               if (res.ok) saved++
             }
           } finally {
@@ -100,10 +108,9 @@ function useCoverBackfill(books: Ebook[]) {
           }
         } catch { /* unreadable PDF: it keeps its gradient cover */ }
       }
-      running.current = false
-      if (saved > 0 && !cancelled) router.refresh()
+      if (saved > 0 && live()) router.refresh()
     })()
-    return () => { cancelled = true; running.current = false }
+    return () => { run.live = false }
   }, [books, router])
 }
 

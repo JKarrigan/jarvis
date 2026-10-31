@@ -2,9 +2,11 @@ import 'server-only'
 import { execFile } from 'node:child_process'
 import type { Audiobook, AudiobookChapter, AudiobookDetail, AudiobookEdit, AudiobookPlayback } from '@/app/_components/media/types'
 import { hueFromId } from '@/app/_components/media/artwork'
+import { cache } from 'react'
+import { ticksToSeconds } from '@/app/_components/media/playback'
 import {
-  BROWSER_PROFILE, baseUrl, fmtBytes, getSession, imageUrl, isJellyfinConfigured,
-  jfDelete, jfGet, jfPost, qs, withApiKey,
+  BROWSER_PROFILE, directStream, fmtBytes, getSession, imageUrl, isItemId, isMockMode, isNotFound,
+  jfJson, jfPost, proxied, setPlayed, upstreamAuthHeader,
 } from './jellyfinServer'
 import { getSetting, setSetting } from './db'
 import { folderKey, getBookFolderKeys } from './jellyfinBooks'
@@ -16,7 +18,6 @@ import { folderKey, getBookFolderKeys } from './jellyfinBooks'
 // purpose — nothing here flows through the picker, stats or collections.
 // ---------------------------------------------------------------------------
 
-const TICKS_PER_SECOND = 10_000_000
 const FFPROBE = process.env.FFPROBE_PATH ?? 'ffprobe'
 
 interface RawAudiobook {
@@ -60,8 +61,8 @@ function toAudiobook(it: RawAudiobook): Audiobook {
     author: it.AlbumArtist || it.Artists?.[0] || undefined,
     narrator,
     year: it.ProductionYear,
-    duration: (it.RunTimeTicks ?? 0) / TICKS_PER_SECOND,
-    position: (it.UserData?.PlaybackPositionTicks ?? 0) / TICKS_PER_SECOND,
+    duration: ticksToSeconds(it.RunTimeTicks),
+    position: ticksToSeconds(it.UserData?.PlaybackPositionTicks),
     finished: Boolean(it.UserData?.Played),
     favorite: Boolean(it.UserData?.IsFavorite),
     lastPlayedAt: ms(it.UserData?.LastPlayedDate),
@@ -76,7 +77,7 @@ function toAudiobook(it: RawAudiobook): Audiobook {
 /** Chapter markers → start/duration pairs. A file with no markers is one chapter. */
 function toChapters(it: RawAudiobook, duration: number): AudiobookChapter[] {
   const starts = (it.Chapters ?? [])
-    .map(c => ({ start: (c.StartPositionTicks ?? 0) / TICKS_PER_SECOND, name: c.Name?.trim() }))
+    .map(c => ({ start: ticksToSeconds(c.StartPositionTicks), name: c.Name?.trim() }))
     .sort((a, b) => a.start - b.start)
   if (starts.length === 0) return [{ index: 0, title: it.Album || it.Name, start: 0, duration }]
   return starts.map((c, i) => ({
@@ -104,11 +105,12 @@ function cleanChapterTitle(raw: string | undefined, bookTitle: string, n: number
   return t || `Chapter ${n}`
 }
 
-function ffprobeChapters(url: string): Promise<{ start: number; end: number; title?: string }[]> {
+function ffprobeChapters(url: string, auth: string): Promise<{ start: number; end: number; title?: string }[]> {
   return new Promise((resolve, reject) => {
     execFile(
       FFPROBE,
-      ['-v', 'error', '-print_format', 'json', '-show_chapters', url],
+      // The token goes in a request header, never in the URL.
+      ['-v', 'error', '-headers', `Authorization: ${auth}\r\n`, '-print_format', 'json', '-show_chapters', url],
       { timeout: 30_000, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout) => {
         // Never surface err.message — it echoes the command line, token included.
@@ -128,34 +130,59 @@ function ffprobeChapters(url: string): Promise<{ start: number; end: number; tit
   })
 }
 
+/** In-flight probes, so the detail page and /play opening at once share one ffprobe. */
+const probing = new Map<string, Promise<AudiobookChapter[] | null>>()
+
+/** A failed probe (ffprobe missing, NAS unreachable) is retried after this long. */
+const PROBE_RETRY_MS = 6 * 3600_000
+
 async function probedChapters(it: RawAudiobook, duration: number): Promise<AudiobookChapter[] | null> {
   const src = it.MediaSources?.[0]
   // Size in the key: a re-ripped or re-tagged file gets probed again.
   const key = `audiobook.chapters.${it.Id}.${src?.Size ?? 0}`
   const cached = getSetting(key)
   if (cached) {
-    try { return JSON.parse(cached) as AudiobookChapter[] } catch { /* re-probe below */ }
+    if (cached.startsWith('fail:')) {
+      if (Date.now() - Number(cached.slice(5)) < PROBE_RETRY_MS) return null
+    } else {
+      try {
+        const chapters = JSON.parse(cached) as AudiobookChapter[]
+        // "[]" caches "this file has fewer than two markers" (e.g. an MP3 narration).
+        return chapters.length ? chapters : null
+      } catch { /* re-probe below */ }
+    }
   }
-  try {
-    const { accessToken } = await getSession()
-    const container = src?.Container?.split(',')[0] || 'm4b'
-    const raw = await ffprobeChapters(`${baseUrl()}/Audio/${it.Id}/stream.${container}${qs({ static: true, api_key: accessToken })}`)
-    if (raw.length < 2) return null
-    const title = it.Album || it.Name
-    const chapters = raw
-      .sort((a, b) => a.start - b.start)
-      .map((c, i) => ({
-        index: i,
-        title: cleanChapterTitle(c.title, title, i + 1),
-        start: c.start,
-        duration: Math.max(0, (raw[i + 1]?.start ?? (c.end || duration)) - c.start),
-      }))
-    setSetting(key, JSON.stringify(chapters))
-    return chapters
-  } catch {
-    // ffprobe missing / stream unreachable: the book still plays as one long chapter.
-    return null
-  }
+  const pending = probing.get(key)
+  if (pending) return pending
+  const run = (async () => {
+    try {
+      const container = src?.Container?.split(',')[0] || 'm4b'
+      const raw = await ffprobeChapters(directStream('Audio', it.Id, container).upstreamUrl, await upstreamAuthHeader())
+      if (raw.length < 2) {
+        setSetting(key, '[]')
+        return null
+      }
+      const title = it.Album || it.Name
+      const chapters = raw
+        .sort((a, b) => a.start - b.start)
+        .map((c, i) => ({
+          index: i,
+          title: cleanChapterTitle(c.title, title, i + 1),
+          start: c.start,
+          duration: Math.max(0, (raw[i + 1]?.start ?? (c.end || duration)) - c.start),
+        }))
+      setSetting(key, JSON.stringify(chapters))
+      return chapters
+    } catch {
+      // ffprobe missing / stream unreachable: the book still plays as one long chapter.
+      try { setSetting(key, `fail:${Date.now()}`) } catch { /* ignore */ }
+      return null
+    } finally {
+      probing.delete(key)
+    }
+  })()
+  probing.set(key, run)
+  return run
 }
 
 // ── Chapter names ──
@@ -192,7 +219,7 @@ function toDetail(it: RawAudiobook): AudiobookDetail {
   }
 }
 
-// ── Mock mode (no JELLYFIN_* vars): enough to render the section in dev ──
+// ── Mock mode (MEDIA_MOCK=1): enough to render the section in dev ──
 
 const MOCK_BOOKS: { title: string; author: string; narrator: string; hours: number; chapters: number; at?: number; done?: boolean }[] = [
   { title: 'Project Hail Mary', author: 'Andy Weir', narrator: 'Ray Porter', hours: 16.17, chapters: 30, at: 0.58 },
@@ -236,13 +263,14 @@ function mockIndex(id: string): number {
 
 // ── Queries ──
 
-export async function getAudiobooks(): Promise<Audiobook[]> {
-  if (!isJellyfinConfigured()) return MOCK_BOOKS.map((_, i) => mockDetail(i))
-  try {
-    const { userId } = await getSession()
-    const bookFolders = getBookFolderKeys()
-    // Uncached: resume positions move every few seconds while a book is playing.
-    const data = await jfGet<{ Items: RawAudiobook[] }>(`/Users/${userId}/Items`, {
+/** Every audiobook on the Listen shelf. Throws when Jellyfin is unreachable. */
+export const getAudiobooks = cache(async (): Promise<Audiobook[]> => {
+  if (isMockMode()) return MOCK_BOOKS.map((_, i) => mockDetail(i))
+  const { userId } = await getSession()
+  const bookFolders = getBookFolderKeys()
+  // Uncached: resume positions move every few seconds while a book is playing.
+  const data = await jfJson<{ Items: RawAudiobook[] }>(`/Users/${encodeURIComponent(userId)}/Items`, {
+    params: {
       Recursive: true,
       IncludeItemTypes: 'AudioBook',
       Fields: LIST_FIELDS,
@@ -250,44 +278,47 @@ export async function getAudiobooks(): Promise<Audiobook[]> {
       SortOrder: 'Descending',
       EnableImageTypes: 'Primary',
       ImageTypeLimit: 1,
-      Limit: 1000,
-    }, { revalidate: 0 })
-    // A short narration that accompanies a readable book (same Author/Title path) belongs
-    // to that book's reader, not on the Listen shelf next to 20-hour audiobooks.
-    const readable = await bookFolders
-    return data.Items.filter(it => { const k = folderKey(it.Path); return !k || !readable.has(k) }).map(toAudiobook)
-  } catch {
-    return []
-  }
-}
+      Limit: 5000,
+    },
+  })
+  // A short narration that accompanies a readable book (same Author/Title path) belongs
+  // to that book's reader, not on the Listen shelf next to 20-hour audiobooks.
+  const readable = await bookFolders
+  return data.Items.filter(it => { const k = folderKey(it.Path); return !k || !readable.has(k) }).map(toAudiobook)
+})
 
-export async function getAudiobook(id: string): Promise<AudiobookDetail | null> {
-  if (!isJellyfinConfigured()) {
+/** One audiobook with chapters. null → not found; throws when Jellyfin is unreachable. */
+export const getAudiobook = cache(async (id: string): Promise<AudiobookDetail | null> => {
+  if (isMockMode()) {
     const i = mockIndex(id)
     return i < 0 ? null : mockDetail(i)
   }
+  if (!isItemId(id)) return null
+  let it: RawAudiobook & { Type?: string }
   try {
     const { userId } = await getSession()
-    const it = await jfGet<RawAudiobook & { Type?: string }>(`/Users/${userId}/Items/${id}`, {}, { revalidate: 0 })
-    if (it.Type !== 'AudioBook') return null
-    const detail = toDetail(it)
-    if (!it.Chapters?.length) {
-      const probed = await probedChapters(it, detail.duration)
-      if (probed) detail.chapters = probed
-    }
-    detail.chapters = withChapterNames(id, detail.chapters)
-    return detail
-  } catch {
-    return null
+    it = await jfJson<RawAudiobook & { Type?: string }>(`/Users/${encodeURIComponent(userId)}/Items/${encodeURIComponent(id)}`)
+  } catch (e) {
+    if (isNotFound(e)) return null
+    throw e
   }
-}
+  if (it.Type !== 'AudioBook') return null
+  const detail = toDetail(it)
+  if (!it.Chapters?.length) {
+    const probed = await probedChapters(it, detail.duration)
+    if (probed) detail.chapters = probed
+  }
+  detail.chapters = withChapterNames(id, detail.chapters)
+  return detail
+})
 
-/** Resolve a stream for the <audio> element. M4B/AAC and MP3 Direct Play (original
-    bytes, range-seekable); anything else falls back to Jellyfin's audio transcode. */
+/** Resolve a stream for the <audio> element — a same-origin proxied URL (no token).
+    M4B/AAC and MP3 Direct Play (original bytes, range-seekable); anything else falls
+    back to Jellyfin's audio transcode. */
 export async function getAudiobookPlayback(id: string): Promise<AudiobookPlayback | null> {
-  if (!isJellyfinConfigured()) return null
-  const { userId, accessToken } = await getSession()
-  const res = await jfPost(`/Items/${id}/PlaybackInfo`, { UserId: userId, DeviceProfile: BROWSER_PROFILE }, { userId })
+  if (isMockMode() || !isItemId(id)) return null
+  const { userId } = await getSession()
+  const res = await jfPost(`/Items/${encodeURIComponent(id)}/PlaybackInfo`, { UserId: userId, DeviceProfile: BROWSER_PROFILE }, { userId })
   if (!res.ok) return null
   const info = (await res.json()) as {
     PlaySessionId: string
@@ -302,26 +333,15 @@ export async function getAudiobookPlayback(id: string): Promise<AudiobookPlaybac
       ...common,
       transcoding: false,
       playMethodLabel: 'Direct Play',
-      url: `${baseUrl()}/Audio/${id}/stream.${container}${qs({
-        static: true, mediaSourceId: src.Id, api_key: accessToken, PlaySessionId: info.PlaySessionId,
-      })}`,
+      url: directStream('Audio', id, container, { mediaSourceId: src.Id, PlaySessionId: info.PlaySessionId }).url,
     }
   }
-  return { ...common, transcoding: true, playMethodLabel: 'Transcoding', url: withApiKey(src.TranscodingUrl, accessToken) }
+  return { ...common, transcoding: true, playMethodLabel: 'Transcoding', url: proxied(src.TranscodingUrl) }
 }
 
 /** Mark a book finished (true) or unplayed (false — also clears its resume position). */
 export async function setAudiobookFinished(id: string, finished: boolean): Promise<boolean> {
-  if (!isJellyfinConfigured()) return true
-  try {
-    const { userId } = await getSession()
-    const res = finished
-      ? await jfPost(`/Users/${userId}/PlayedItems/${id}`)
-      : await jfDelete(`/Users/${userId}/PlayedItems/${id}`)
-    return res.ok
-  } catch {
-    return false
-  }
+  return (await setPlayed(id, finished)) !== 'failed'
 }
 
 /** Save edited details. Chapter names stay in this app's DB; the rest is written to the
@@ -332,11 +352,11 @@ export async function updateAudiobook(id: string, edit: AudiobookEdit): Promise<
     setSetting(chapterNamesKey(id), JSON.stringify(edit.chapterTitles.map(t => t.trim().slice(0, 200))))
   }
   const touchesJellyfin = edit.narrator !== undefined || edit.year !== undefined || edit.synopsis !== undefined
-  if (!touchesJellyfin || !isJellyfinConfigured()) return true
+  if (!touchesJellyfin || isMockMode()) return true
   try {
     const { userId } = await getSession()
-    const item = await jfGet<Record<string, unknown> & { Type?: string; People?: { Name: string; Type?: string; Role?: string }[] }>(
-      `/Users/${userId}/Items/${id}`, {}, { revalidate: 0 },
+    const item = await jfJson<Record<string, unknown> & { Type?: string; People?: { Name: string; Type?: string; Role?: string }[] }>(
+      `/Users/${encodeURIComponent(userId)}/Items/${encodeURIComponent(id)}`,
     )
     if (item.Type !== 'AudioBook') return false
     if (edit.synopsis !== undefined) item.Overview = edit.synopsis.trim()
@@ -347,7 +367,7 @@ export async function updateAudiobook(id: string, edit: AudiobookEdit): Promise<
       const name = edit.narrator.trim()
       item.People = name ? [...others, { Name: name, Type: 'Composer', Role: 'Narrator' }] : others
     }
-    const res = await jfPost(`/Items/${id}`, item)
+    const res = await jfPost(`/Items/${encodeURIComponent(id)}`, item)
     return res.ok
   } catch {
     return false

@@ -1,61 +1,75 @@
-import { spawn, execFile } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { statSync } from 'fs'
-import { resolveSafe } from '@/lib/files'
+import fsp from 'fs/promises'
+import { numParam } from '@/lib/http'
+import { resolveSafe, filesErrorResponse, FilesError } from '@/lib/files'
+import { FFPROBE, INPUT_FLAGS, PROBE_FLAGS, busyResponse, startTranscode, tryAcquireTranscode } from '../_lib/transcode'
 
 export const dynamic = 'force-dynamic'
 
-const FFMPEG = process.env.FFMPEG_PATH ?? 'ffmpeg'
-const FFPROBE = process.env.FFPROBE_PATH ?? 'ffprobe'
 const execFileAsync = promisify(execFile)
 
-async function probeVideo(abs: string): Promise<{ durationSec: number; codec: string }> {
+type Probe = { durationSec: number; codec: string; hasAudio: boolean }
+
+async function probeVideo(abs: string): Promise<Probe> {
   try {
     const { stdout } = await execFileAsync(FFPROBE, [
-      '-v', 'quiet',
+      ...PROBE_FLAGS,
       '-print_format', 'json',
-      '-show_format',
-      '-show_streams',
-      '-select_streams', 'v:0',
-      abs,
-    ], { timeout: 8000 })
-    const data = JSON.parse(stdout)
-    const durationSec = parseFloat(data.format?.duration ?? '0')
-    const codec = (data.streams?.[0]?.codec_name ?? '') as string
-    return { durationSec, codec }
+      '-show_entries', 'format=duration:stream=codec_type,codec_name',
+      `file:${abs}`,
+    ], { timeout: 8000, maxBuffer: 1024 * 1024 })
+    const data = JSON.parse(stdout) as {
+      format?: { duration?: string }
+      streams?: { codec_type?: string; codec_name?: string }[]
+    }
+    const streams = data.streams ?? []
+    const durationSec = parseFloat(data.format?.duration ?? '0') || 0
+    const codec = streams.find(s => s.codec_type === 'video')?.codec_name ?? ''
+    // Unknown (probe failed) is treated as "has audio" so the old behaviour holds.
+    const hasAudio = streams.length === 0 || streams.some(s => s.codec_type === 'audio')
+    return { durationSec, codec, hasAudio }
   } catch {
-    return { durationSec: 0, codec: '' }
+    return { durationSec: 0, codec: '', hasAudio: true }
   }
 }
 
+/**
+ * GET ?path=<file>[&t=<seconds>] — remuxes the first video stream (copied) and
+ * the first audio stream (AAC) into fragmented MP4 for MSE playback.
+ *
+ * Response contract (VideoPlayer.tsx): chunked body (no Content-Length — the
+ * remux size is unknown), `Accept-Ranges: none`, `X-Duration-Seconds`,
+ * `X-Video-Codec`, `X-Has-Audio: 0|1`. 503 + Retry-After when the transcode
+ * slots are busy, 504 when ffmpeg produces nothing within 15 s.
+ */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
-  const relPath = searchParams.get('path') ?? ''
-  const seekTo = parseFloat(searchParams.get('t') ?? '0') || 0
+  const seekTo = numParam(searchParams.get('t'), 0, 7 * 24 * 3600) ?? 0
 
   let abs: string
-  try { abs = resolveSafe(relPath) }
-  catch { return new Response('Forbidden', { status: 403 }) }
-
-  let inputSize: number
   try {
-    const stat = statSync(abs)
-    if (!stat.isFile()) return new Response('Not a file', { status: 400 })
-    inputSize = stat.size
-  } catch { return new Response('Not found', { status: 404 }) }
+    abs = resolveSafe(searchParams.get('path') ?? '')
+    if (!(await fsp.stat(abs)).isFile()) throw new FilesError('Not a file', 400)
+  } catch (e) {
+    return filesErrorResponse(e, 'video')
+  }
 
-  const { durationSec, codec } = await probeVideo(abs)
+  const release = tryAcquireTranscode()
+  if (!release) return busyResponse()
 
-  let ff: ReturnType<typeof spawn> | null = null
-  let gotData = false
-  let settled = false
-  let firstByteTimer: ReturnType<typeof setTimeout> | null = null
+  const { durationSec, codec, hasAudio } = await probeVideo(abs)
+  if (request.signal.aborted) { release(); return new Response(null, { status: 499 }) }
 
   const ffArgs = [
+    ...INPUT_FLAGS,
     ...(seekTo > 0 ? ['-ss', String(seekTo)] : []),
-    '-i', abs,
-    '-vcodec', 'copy',
-    '-acodec', 'aac',
+    '-i', `file:${abs}`,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-sn', '-dn',
+    '-c:v', 'copy',
+    '-c:a', 'aac',
     '-b:a', '192k',
     // -copyts preserves original PTS values from the input so MSE can place
     // seek-stream fragments at the correct timeline position (e.g. t=3600 not t=0)
@@ -65,55 +79,18 @@ export async function GET(request: Request) {
     'pipe:1',
   ]
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const closeOk = () => { if (!settled) { settled = true; controller.close() } }
-      const fail = (err: Error) => {
-        if (settled) return
-        settled = true
-        ff?.kill('SIGKILL')
-        controller.error(err)
-      }
-
-      // A wedged transcode (e.g. ffmpeg hangs at startup) would otherwise leave
-      // the client buffering forever — bail if no bytes arrive in time.
-      firstByteTimer = setTimeout(() => {
-        if (!gotData) fail(new Error('ffmpeg produced no output'))
-      }, 15_000)
-
-      ff = spawn(FFMPEG, ffArgs)
-      ff.stdout!.on('data', (chunk: Buffer) => {
-        if (settled) return
-        if (!gotData) { gotData = true; if (firstByteTimer) clearTimeout(firstByteTimer) }
-        controller.enqueue(new Uint8Array(chunk))
-      })
-      ff.stdout!.on('end', () => { if (gotData) closeOk() })
-      ff.stderr!.on('data', (chunk: Buffer) => { process.stderr.write(chunk) })
-      ff.on('error', (err) => fail(err))
-      ff.on('close', (code) => {
-        if (firstByteTimer) clearTimeout(firstByteTimer)
-        // Non-zero exit before any bytes = a real failure; report it instead of
-        // closing an empty stream (which the client renders as a frozen frame).
-        if (code && code !== 0 && !gotData) fail(new Error(`ffmpeg exited with code ${code}`))
-        else closeOk()
-      })
-    },
-    cancel() {
-      settled = true
-      if (firstByteTimer) clearTimeout(firstByteTimer)
-      ff?.kill('SIGKILL')
-    },
-  })
+  const body = await startTranscode(ffArgs, request.signal, release, 'video')
+  if (body instanceof Response) return body
 
   const headers: Record<string, string> = {
     'Content-Type': 'video/mp4',
     'Cache-Control': 'no-store',
+    'Accept-Ranges': 'none',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Has-Audio': hasAudio ? '1' : '0',
   }
-
-  // Content-Length helps Chrome buffer aggressively on initial load (not used for seeks)
-  if (seekTo === 0) headers['Content-Length'] = String(inputSize)
   if (durationSec > 0) headers['X-Duration-Seconds'] = String(durationSec)
   if (codec) headers['X-Video-Codec'] = codec
 
-  return new Response(stream, { headers })
+  return new Response(body, { headers })
 }

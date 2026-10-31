@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { CloseIcon } from './icons'
+import { useDialog } from './hooks'
 
 /** Full-screen YouTube trailer overlay. Parent owns the AnimatePresence (same
     contract as JellyfinPlayer). Local trailers don't come here — they play
@@ -13,15 +14,28 @@ export default function TrailerModal({ youtubeId, remoteUrl, title, onClose }: {
   title?: string
   onClose: () => void
 }) {
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  useDialog(dialogRef, onClose)
 
-  const src = `https://www.youtube-nocookie.com/embed/${youtubeId}?autoplay=1&rel=0&modestbranding=1&playsinline=1`
+  // Keystrokes inside the cross-origin iframe never reach this page, so Escape would
+  // stop working the moment someone clicks the video. When the iframe takes focus,
+  // hand it straight back to the close button: clicks inside the player still work,
+  // and Escape keeps closing the trailer.
+  useEffect(() => {
+    const onBlur = () => {
+      setTimeout(() => {
+        if (document.activeElement instanceof HTMLIFrameElement && dialogRef.current?.contains(document.activeElement)) {
+          closeRef.current?.focus({ preventScroll: true })
+        }
+      }, 0)
+    }
+    window.addEventListener('blur', onBlur)
+    return () => window.removeEventListener('blur', onBlur)
+  }, [])
+
+  const src = `https://www.youtube-nocookie.com/embed/${encodeURIComponent(youtubeId)}?autoplay=1&rel=0&modestbranding=1&playsinline=1`
+  const label = title ?? 'Trailer'
 
   return (
     <motion.div
@@ -33,6 +47,10 @@ export default function TrailerModal({ youtubeId, remoteUrl, title, onClose }: {
       onClick={onClose}
     >
       <motion.div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
         className="w-full max-w-[1100px]"
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -41,7 +59,7 @@ export default function TrailerModal({ youtubeId, remoteUrl, title, onClose }: {
         onClick={e => e.stopPropagation()}
       >
         <div className="mb-2.5 flex items-center justify-between gap-3">
-          <div className="min-w-0 truncate text-sm font-semibold text-ink">{title ?? 'Trailer'}</div>
+          <div className="min-w-0 truncate text-sm font-semibold text-ink">{label}</div>
           <div className="flex shrink-0 items-center gap-2">
             {remoteUrl && (
               <a
@@ -54,10 +72,12 @@ export default function TrailerModal({ youtubeId, remoteUrl, title, onClose }: {
               </a>
             )}
             <button
+              ref={closeRef}
+              data-autofocus
               type="button"
               onClick={onClose}
               aria-label="Close trailer"
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 backdrop-blur-md transition hover:bg-white/10 hover:text-ink"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/70 backdrop-blur-md transition hover:bg-white/10 hover:text-ink"
             >
               <CloseIcon className="h-4 w-4" />
             </button>
@@ -66,7 +86,7 @@ export default function TrailerModal({ youtubeId, remoteUrl, title, onClose }: {
         <div className="aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl">
           <iframe
             src={src}
-            title={title ?? 'Trailer'}
+            title={label}
             className="h-full w-full"
             allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
             allowFullScreen

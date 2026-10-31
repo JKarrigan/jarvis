@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 import type { AirQualityEvent, EventType, Severity } from '@/lib/eventTypes'
+import { useNowMinute } from '@/lib/useNow'
 
 type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d'
 
@@ -68,9 +69,12 @@ interface Props {
 export function EventTimeline({ events, range, onRangeChange }: Props) {
   const router = useRouter()
   const [hovered, setHovered] = useState<AirQualityEvent | null>(null)
+  // Minute resolution is plenty for a timeline; null until hydrated.
+  const nowMinute   = useNowMinute()
+  if (nowMinute == null) return null
 
   const rangeMs     = TIMELINE_RANGES.find(r => r.key === range)!.ms
-  const now         = Date.now()
+  const now         = nowMinute + 60_000
   const windowEnd   = now
   const windowStart = now - rangeMs
   const CW          = VW - L_PAD - R_PAD
@@ -118,7 +122,7 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
       </div>
 
       {rowTypes.length === 0 ? (
-        <p className="text-xs text-zinc-600 py-6 text-center">No events in this window</p>
+        <p className="text-xs text-zinc-500 py-6 text-center">No events in this window</p>
       ) : (
         <svg
           viewBox={`0 0 ${VW} ${totalH}`}
@@ -132,7 +136,7 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
             return (
               <g key={t}>
                 <line x1={x} y1={T_PAD} x2={x} y2={chartBottom} stroke="#27272a" strokeWidth="1" />
-                <text x={x} y={totalH - 4} textAnchor="middle" fill="#52525b" fontSize="10">
+                <text x={x} y={totalH - 4} textAnchor="middle" fill="#71717a" fontSize="10">
                   {fmtTick(t, range)}
                 </text>
               </g>
@@ -150,7 +154,7 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
                   y={rowY + ROW_H / 2}
                   textAnchor="end"
                   dominantBaseline="middle"
-                  fill="#52525b"
+                  fill="#71717a"
                   fontSize="11"
                 >
                   {TYPE_LABEL[type]}
@@ -167,7 +171,7 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
                       key={event.id}
                       onMouseEnter={() => setHovered(event)}
                       onMouseLeave={() => setHovered(null)}
-                      onClick={() => router.push(`/events/${event.id}`)}
+                      onClick={() => router.push(`/events/${encodeURIComponent(event.id)}`)}
                       style={{ cursor: 'pointer' }}
                     >
                       <rect
@@ -246,10 +250,10 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
         {(['critical', 'warning', 'notable'] as Severity[]).map(s => (
           <div key={s} className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: EVENT_COLOR[s] }} />
-            <span className="text-xs text-zinc-600 capitalize">{s}</span>
+            <span className="text-xs text-zinc-500 capitalize">{s}</span>
           </div>
         ))}
-        <span className="text-xs text-zinc-700 ml-auto">hover for details · click to open</span>
+        <span className="text-xs text-zinc-500 ml-auto">hover for details · click to open</span>
       </div>
     </div>
   )

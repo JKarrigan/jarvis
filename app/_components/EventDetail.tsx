@@ -1,10 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import type { AirQualityEvent, Severity } from '@/lib/eventTypes'
-import type { HistoryEntry, DeviceMeasures } from '@/lib/types'
+import type { HistoryEntry } from '@/lib/types'
+import { findPmBatch } from '@/lib/pmCalibration'
 import { Chart } from './Chart'
+import { buildSeries } from './Dashboard'
+import { reviveEvent, usePolling } from './PollingProvider'
 import {
   co2Status, pm25Status, pm1Status, pm10Status,
   tempStatus, humidityStatus, tvocStatus, noxStatus,
@@ -33,34 +36,34 @@ function fmtDuration(min: number) {
   return `${(min / 60).toFixed(1)} hr`
 }
 
-function extract(history: HistoryEntry[], key: keyof DeviceMeasures): number[] {
-  return history.map(h => h.measures[key] as number)
-}
-
 interface EventDetailData {
   event: AirQualityEvent
   readings: HistoryEntry[]
 }
 
 export function EventDetail({ id }: { id: string }) {
+  const { tempUnit, pmBatchId } = usePolling()
   const [data, setData] = useState<EventDetailData | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    fetch(`/api/events/${id}`)
-      .then(r => r.ok ? r.json() : Promise.reject('not found'))
-      .then((raw: { event: AirQualityEvent; readings: HistoryEntry[] }) => {
-        setData({
-          event: {
-            ...raw.event,
-            startTime: new Date(raw.event.startTime),
-            endTime: raw.event.endTime ? new Date(raw.event.endTime) : null,
-          },
-          readings: raw.readings,
-        })
+    const ac = new AbortController()
+    fetch(`/api/events/${encodeURIComponent(id)}`, { signal: ac.signal })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('not found')))
+      .then((raw: { event: Parameters<typeof reviveEvent>[0]; readings: HistoryEntry[] }) => {
+        setData({ event: reviveEvent(raw.event), readings: raw.readings })
       })
-      .catch(() => setError('Event not found.'))
+      .catch(() => { if (!ac.signal.aborted) setError('Event not found.') })
+    return () => ac.abort()
   }, [id])
+
+  const pmBatch = findPmBatch(pmBatchId)
+  const series = useMemo(() => buildSeries(data?.readings ?? [], pmBatch, tempUnit), [data, pmBatch, tempUnit])
+  const events = useMemo(() => (data ? [data.event] : []), [data])
+  const tempFn = useMemo(
+    () => (tempUnit === 'F' ? (v: number) => tempStatus((v - 32) * 5 / 9) : tempStatus),
+    [tempUnit],
+  )
 
   if (error) {
     return (
@@ -79,13 +82,13 @@ export function EventDetail({ id }: { id: string }) {
   }
 
   const { event, readings } = data
-  const timestamps = readings.map(r => r.timestamp)
   const lastReading = readings[readings.length - 1]?.measures
+  const last = (arr: number[]) => arr[arr.length - 1] ?? NaN
 
-  // Determine the latest value for each metric's status fn
-  const pm02 = lastReading?.pm02 ?? 0
+  // Latest value of each series (same compensated/calibrated values as the charts)
+  const pm02 = last(series.pm25)
   const temp = lastReading?.atmpCompensated ?? lastReading?.atmp ?? 20
-  const hum = lastReading?.rhumCompensated ?? lastReading?.rhum ?? 50
+  const hum = last(series.hum)
 
   const isOngoing = !event.endTime
 
@@ -113,11 +116,11 @@ export function EventDetail({ id }: { id: string }) {
               <div className="flex items-center gap-2.5 text-xs text-zinc-500">
                 <span>{fmtDateTime(event.startTime)}</span>
                 {event.endTime && (
-                  <><span className="text-zinc-700">→</span><span>{fmtDateTime(event.endTime)}</span></>
+                  <><span className="text-zinc-500">→</span><span>{fmtDateTime(event.endTime)}</span></>
                 )}
-                <span className="text-zinc-700">·</span>
+                <span className="text-zinc-500">·</span>
                 <span>{fmtDuration(event.durationMinutes)}</span>
-                <span className="text-zinc-700">·</span>
+                <span className="text-zinc-500">·</span>
                 <span>{Math.round(event.confidence * 100)}% confidence</span>
                 {isOngoing && <span className="text-emerald-500 animate-pulse">ongoing</span>}
               </div>
@@ -132,7 +135,7 @@ export function EventDetail({ id }: { id: string }) {
           {/* Peak vs baseline */}
           <div className="grid grid-cols-2 gap-3 pt-1">
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2.5 space-y-1.5">
-              <p className="text-xs text-zinc-600 font-semibold uppercase tracking-wider">Peak</p>
+              <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Peak</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
                 <span className="text-zinc-400">NOx <span className="text-zinc-200">{event.peak.noxIndex}</span></span>
                 <span className="text-zinc-400">VOC <span className="text-zinc-200">{event.peak.tvocIndex}</span></span>
@@ -141,7 +144,7 @@ export function EventDetail({ id }: { id: string }) {
               </div>
             </div>
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2.5 space-y-1.5">
-              <p className="text-xs text-zinc-600 font-semibold uppercase tracking-wider">Baseline (pre-event)</p>
+              <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Baseline (pre-event)</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
                 <span className="text-zinc-400">NOx <span className="text-zinc-300">{event.baseline.noxIndex}</span></span>
                 <span className="text-zinc-400">VOC <span className="text-zinc-300">{event.baseline.tvocIndex}</span></span>
@@ -157,18 +160,18 @@ export function EventDetail({ id }: { id: string }) {
           <section className="space-y-3">
             <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 px-1">
               Sensor readings during event
-              <span className="ml-2 font-normal normal-case tracking-normal text-zinc-700">
+              <span className="ml-2 font-normal normal-case tracking-normal text-zinc-500">
                 ± 15 min context
               </span>
             </h2>
-            <Chart label="CO₂" unit="ppm" values={extract(readings, 'rco2')} timestamps={timestamps} status={co2Status(lastReading?.rco2 ?? 0)} statusFn={co2Status} events={[event]} />
-            <Chart label="PM2.5" unit="μg/m³" values={extract(readings, 'pm02')} timestamps={timestamps} status={pm25Status(pm02)} statusFn={pm25Status} events={[event]} />
-            <Chart label="TVOC" unit="idx" values={extract(readings, 'tvocIndex')} timestamps={timestamps} status={tvocStatus(lastReading?.tvocIndex ?? 0)} statusFn={tvocStatus} events={[event]} />
-            <Chart label="NOx" unit="idx" values={extract(readings, 'noxIndex')} timestamps={timestamps} status={noxStatus(lastReading?.noxIndex ?? 0)} statusFn={noxStatus} events={[event]} />
-            <Chart label="PM1" unit="μg/m³" values={extract(readings, 'pm01')} timestamps={timestamps} status={pm1Status(lastReading?.pm01 ?? 0)} statusFn={pm1Status} events={[event]} />
-            <Chart label="PM10" unit="μg/m³" values={extract(readings, 'pm10')} timestamps={timestamps} status={pm10Status(lastReading?.pm10 ?? 0)} statusFn={pm10Status} events={[event]} />
-            <Chart label="Temperature" unit="°F" values={extract(readings, 'atmp').map(v => v * 9 / 5 + 32)} timestamps={timestamps} status={tempStatus(temp)} statusFn={v => tempStatus((v - 32) * 5 / 9)} />
-            <Chart label="Humidity" unit="%" values={extract(readings, 'rhum')} timestamps={timestamps} status={humidityStatus(hum)} statusFn={humidityStatus} />
+            <Chart label="CO₂" unit="ppm" values={series.co2} timestamps={series.ts} status={co2Status(lastReading?.rco2 ?? 0)} statusFn={co2Status} events={events} />
+            <Chart label="PM2.5" unit="μg/m³" values={series.pm25} timestamps={series.ts} status={pm25Status(pm02)} statusFn={pm25Status} events={events} />
+            <Chart label="TVOC" unit="idx" values={series.tvoc} timestamps={series.ts} status={tvocStatus(lastReading?.tvocIndex ?? 0)} statusFn={tvocStatus} events={events} />
+            <Chart label="NOx" unit="idx" values={series.nox} timestamps={series.ts} status={noxStatus(lastReading?.noxIndex ?? 0)} statusFn={noxStatus} events={events} />
+            <Chart label="PM1" unit="μg/m³" values={series.pm1} timestamps={series.ts} status={pm1Status(lastReading?.pm01 ?? 0)} statusFn={pm1Status} events={events} />
+            <Chart label="PM10" unit="μg/m³" values={series.pm10} timestamps={series.ts} status={pm10Status(lastReading?.pm10 ?? 0)} statusFn={pm10Status} events={events} />
+            <Chart label="Temperature" unit={`°${tempUnit}`} values={series.temp} timestamps={series.ts} status={tempStatus(temp)} statusFn={tempFn} />
+            <Chart label="Humidity" unit="%" values={series.hum} timestamps={series.ts} status={humidityStatus(hum)} statusFn={humidityStatus} />
           </section>
         ) : (
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center">

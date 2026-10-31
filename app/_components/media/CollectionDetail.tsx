@@ -3,13 +3,14 @@
 import { useMemo, useState } from 'react'
 import { useRouter, notFound } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
-import { Sheet } from '@/app/_components/HueControls'
-import { useMedia } from './MediaProvider'
+import { Sheet } from './Sheet'
+import { BackPill } from './BackPill'
+import { useTitleState } from './MediaProvider'
 import type { ReelTitle, CollectionSummary } from './types'
-import { collArt, collColor, backdropFallback, resizeImage } from './artwork'
+import { BACKDROP_WIDTHS, collArt, collColor, backdropFallback, imageSrcSet, resizeImage } from './artwork'
 import { effectiveRuntime } from './selectors'
-import { Poster, detailHref } from './ReelCards'
-import { StarIcon, CheckIcon, ChevronLeftIcon, PlayIcon, PencilIcon, TrashIcon } from './icons'
+import { HOVER_REVEAL, Poster, detailHref } from './ReelCards'
+import { StarIcon, CheckIcon, PlayIcon, PencilIcon, TrashIcon } from './icons'
 import { deleteCollection, renameCollection } from './collectionsApi'
 
 function totalHours(titles: ReelTitle[]): number {
@@ -28,7 +29,7 @@ export function CollectionDetail({
   catalog, collection,
 }: { catalog: ReelTitle[]; collection: CollectionSummary | null }) {
   const router = useRouter()
-  const { isWatched, toggleWatched } = useMedia()
+  const { isWatched, toggleWatched } = useTitleState()
   const [deleting, setDeleting] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -59,19 +60,13 @@ export function CollectionDetail({
 
   return (
     <div className="relative pb-20">
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="absolute left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
-      >
-        <ChevronLeftIcon className="h-4 w-4" /> Back
-      </button>
+      <BackPill fallbackHref="/media/collections" />
 
       {/* Banner: the collection's own art, else a montage of its films, else a gradient */}
       <div className="relative h-[80vh] min-h-[360px] w-full overflow-hidden">
         <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
           {collection.backdropUrl ? (
-            <Poster gradient={collArt(collection.hue)} src={collection.backdropUrl} alt={collection.name} rounded="rounded-none" className="h-full w-full" />
+            <Poster gradient={collArt(collection.hue)} src={collection.backdropUrl} srcSet={imageSrcSet(collection.backdropUrl, BACKDROP_WIDTHS)} sizes="100vw" priority alt={collection.name} rounded="rounded-none" className="h-full w-full" />
           ) : montage.length > 0 ? (
             <div className="flex h-full w-full scale-105 blur-[3px]">
               {montage.map((url, i) => (
@@ -79,6 +74,9 @@ export function CollectionDetail({
                   key={i}
                   gradient={collArt(collection.hue)}
                   src={url}
+                  srcSet={imageSrcSet(url, [480, 960, 1280])}
+                  sizes={`${Math.ceil(100 / montage.length)}vw`}
+                  priority
                   alt=""
                   rounded="rounded-none"
                   className="h-full min-w-0 flex-1"
@@ -86,7 +84,7 @@ export function CollectionDetail({
               ))}
             </div>
           ) : collection.posterUrl ? (
-            <Poster gradient={collArt(collection.hue)} src={collection.posterUrl} alt={collection.name} rounded="rounded-none" className="h-full w-full" />
+            <Poster gradient={collArt(collection.hue)} src={collection.posterUrl} priority alt={collection.name} rounded="rounded-none" className="h-full w-full" />
           ) : (
             <div className="h-full w-full" style={{ background: collArt(collection.hue) }} />
           )}
@@ -100,6 +98,9 @@ export function CollectionDetail({
               <img
                 src={collection.logoUrl}
                 alt={name}
+                width={600}
+                height={224}
+                decoding="async"
                 className="mt-2 max-h-[112px] max-w-[78%] object-contain object-left drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]"
               />
               <h1 className="sr-only">{name}</h1>
@@ -147,12 +148,12 @@ export function CollectionDetail({
                   className="group flex cursor-pointer items-center gap-5 rounded-2xl p-2 transition hover:bg-surface"
                 >
                   <div className="relative aspect-video w-[220px] shrink-0 overflow-hidden rounded-xl sm:w-[340px]">
-                    <Poster gradient={t.backdropUrl ? t.backdropColor : backdropFallback(t.hue)} src={resizeImage(t.backdropUrl, 960)} alt={t.title} className="h-full w-full" />
+                    <Poster gradient={t.backdropUrl ? t.backdropColor : backdropFallback(t.hue)} src={resizeImage(t.backdropUrl, 960)} srcSet={imageSrcSet(t.backdropUrl, [480, 720, 960])} sizes="(min-width: 640px) 340px, 220px" alt={t.title} className="h-full w-full" />
                     <button
                       type="button"
                       aria-label={`Play ${t.title}`}
                       onClick={(ev) => { ev.stopPropagation(); router.push(`${detailHref(t)}?play=1`) }}
-                      className="absolute inset-0 grid place-items-center bg-black/30 opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+                      className={`absolute inset-0 grid place-items-center bg-black/30 transition-opacity duration-200 ${HOVER_REVEAL}`}
                     >
                       <span className="grid h-12 w-12 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm"><PlayIcon className="h-5 w-5" /></span>
                     </button>
@@ -227,11 +228,12 @@ function EditNameSheet({
   }
 
   return (
-    <Sheet onClose={onClose}>
+    <Sheet onClose={onClose} label="Rename collection">
       <form onSubmit={save} className="space-y-4 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">Rename collection</h3>
         <input
-          autoFocus
+          data-autofocus
+          aria-label="Collection name"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="Collection name…"
@@ -250,7 +252,7 @@ function DeleteConfirmSheet({
   name, busy, onConfirm, onClose,
 }: { name: string; busy: boolean; onConfirm: () => void; onClose: () => void }) {
   return (
-    <Sheet onClose={onClose}>
+    <Sheet onClose={onClose} label="Delete collection?">
       <div className="space-y-4 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">Delete collection?</h3>
         <p className="text-sm text-zinc-400">

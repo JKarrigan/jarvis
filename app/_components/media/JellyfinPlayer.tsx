@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import type { AudioTrack, SubtitleTrack, MediaVersion } from './types'
+import type { AudioTrack, SubtitleTrack, MediaVersion, PlaybackSource } from './types'
+import { postPlaybackReport, secondsToTicks, ticksToSeconds, type ReportKind } from './playback'
+import { useDialog, useHotkeys } from './hooks'
 import {
   CenterFlash,
   formatTime,
@@ -18,23 +20,6 @@ import {
   Slider,
   useActionFlash,
 } from './playerUi'
-
-interface PlaybackSource {
-  itemId: string
-  method: 'direct' | 'hls'
-  url: string
-  mediaSourceId: string
-  playSessionId: string
-  positionTicks: number
-  runtimeTicks: number
-  transcoding: boolean
-  playMethodLabel: string
-  audioStreamIndex?: number
-  subtitleStreamIndex?: number
-}
-
-type ReportKind = 'start' | 'progress' | 'stopped'
-
 
 /**
  * Structural type for a hls.js instance — declared here so the source-loading
@@ -58,6 +43,14 @@ const STALL_HARD_MS = 15_000 // …this long → full source reload
 const RELOAD_COOLDOWN_MS = 10_000 // min gap between reload escalations
 const HEALTHY_RESET_MS = 30_000 // healthy playback this long → reset recovery counters
 const MAX_RELOADS = 2 // hard cap on watchdog/fatal-driven reloads before giving up
+const MAX_DIRECT_RETRIES = 1 // transient direct-play errors retried as direct before falling back to HLS
+
+// MediaError codes: 3 = decode, 4 = source not supported — the browser can't play this
+// file at all, so only a server transcode helps. 1/2 (aborted/network) are transient.
+const MEDIA_ERR_DECODE = 3
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4
+
+type VideoWithWebkitFs = HTMLVideoElement & { webkitEnterFullscreen?: () => void }
 
 function MenuRow({
   label,
@@ -181,7 +174,21 @@ export default function JellyfinPlayer({
     onCloseRef.current = onClose
   }, [onClose])
 
-  const [attempt, setAttempt] = useState(0) // bump to retry; >0 forces HLS
+  // Declared before the source effect on purpose: on unmount React runs effect
+  // cleanups in declaration order, so the source effect's cleanup can tell a real
+  // close (send 'stopped') from a reload (send 'progress').
+  const unmountingRef = useRef(false)
+  useEffect(() => {
+    unmountingRef.current = false
+    return () => {
+      unmountingRef.current = true
+    }
+  }, [])
+
+  const [attempt, setAttempt] = useState(0) // bump to reload the source
+  // Direct play failed in a way only a server transcode can fix → HLS from now on.
+  const [forceHls, setForceHls] = useState(false)
+  const directRetriesRef = useRef(0)
   const [ready, setReady] = useState(false)
   // Whether the very first frame has loaded — gates the movie splash (initial load only).
   const [everReady, setEverReady] = useState(false)
@@ -192,8 +199,11 @@ export default function JellyfinPlayer({
   const [sourceId, setSourceId] = useState<string | undefined>(initialSourceId ?? versions[0]?.id)
   const [audioIndex, setAudioIndex] = useState<number | undefined>(initialAudioIndex)
   const [subIndex, setSubIndex] = useState<number | null>(initialSubtitleIndex)
-  // Seconds to resume to after a manual (selection-driven) reload; 0 = use server position.
+  // Seconds to resume to after a reload (track switch, fallback, watchdog); 0 = use server position.
   const pendingSeekRef = useRef(0)
+  // Last position known to be real (only updated once a load has started) — survives
+  // the element being reset or erroring, so reports never fall back to 0.
+  const lastTimeRef = useRef(0)
 
   // --- stall watchdog + recovery state (refs: no re-render churn) ----------
   const hlsRef = useRef<HlsInstance | null>(null)
@@ -222,6 +232,8 @@ export default function JellyfinPlayer({
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [bufferedEnd, setBufferedEnd] = useState(0)
+  // Seek-bar drag preview (fraction); the actual seek happens once on release.
+  const [scrub, setScrub] = useState<number | null>(null)
   const [volume, setVolume] = useState(1)
   const [muted, setMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -307,28 +319,33 @@ export default function JellyfinPlayer({
   }, [])
   const toggleFullscreen = useCallback(() => {
     const el = containerRef.current
-    if (!el) return
+    const video = videoRef.current as VideoWithWebkitFs | null
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {})
       flashAction('fs-exit')
-    } else {
-      el.requestFullscreen?.().catch(() => {})
-      flashAction('fs-enter')
+      return
     }
+    // iPhone Safari has no element fullscreen — only the video's own native player.
+    if (el && typeof el.requestFullscreen === 'function' && document.fullscreenEnabled !== false) {
+      el.requestFullscreen().catch(() => video?.webkitEnterFullscreen?.())
+    } else {
+      video?.webkitEnterFullscreen?.()
+    }
+    flashAction('fs-enter')
   }, [flashAction])
 
   // Remember where we are, so the next (selection-driven) source reload resumes here.
   // A deliberate user switch also refreshes the auto-recovery budget.
   const markResume = useCallback(() => {
-    pendingSeekRef.current = videoRef.current?.currentTime ?? 0
+    pendingSeekRef.current = videoRef.current?.currentTime || lastTimeRef.current
     recoveryRef.current.reload = 0
     recoveryRef.current.lastReloadAt = 0
   }, [])
 
-  // Manual retry from the error screen: fresh budget, resume in place, force HLS.
+  // Manual retry from the error screen: fresh budget, resume in place.
   const retry = useCallback(() => {
     recoveryRef.current = { media: 0, network: 0, reload: 0, lastMediaErrorAt: 0, lastReloadAt: 0 }
-    pendingSeekRef.current = videoRef.current?.currentTime || pendingSeekRef.current
+    pendingSeekRef.current = videoRef.current?.currentTime || lastTimeRef.current || pendingSeekRef.current
     setError(null)
     setAttempt(a => a + 1)
   }, [])
@@ -338,6 +355,9 @@ export default function JellyfinPlayer({
       if (id === sourceId) return
       markResume()
       const v = versions.find(x => x.id === id)
+      // A new file may Direct Play even if the old one couldn't.
+      setForceHls(false)
+      directRetriesRef.current = 0
       setSourceId(id)
       setAudioIndex(v ? v.defaultAudioIndex ?? v.audio[0]?.index : undefined)
       setSubIndex(v?.defaultSubtitleIndex ?? null)
@@ -366,8 +386,16 @@ export default function JellyfinPlayer({
   )
 
   // --- source loading + playback reporting --------------------------------
-  // Re-runs on retry (attempt), version (sourceId), audio, or a burned-in subtitle change.
-  // Text-subtitle changes do NOT re-run this (handled by the <track> below).
+  // Re-runs on reload (attempt), HLS fallback, version (sourceId), audio, or a
+  // burned-in subtitle change. Text-subtitle changes do NOT re-run this (<track> below).
+  //
+  // Reporting rules (Jellyfin keeps the resume point from these):
+  // - nothing is reported until the load has *started*: metadata is in and the resume
+  //   seek has landed — a report before that would carry position 0;
+  // - a reload (track switch, fallback, watchdog) reports 'progress' at the resume
+  //   position, never 'stopped';
+  // - exactly one 'stopped' per real end: the video ending, the player closing, or the
+  //   tab going away — whichever comes first.
   useEffect(() => {
     const video = videoRef.current
     if (!video) return
@@ -376,8 +404,10 @@ export default function JellyfinPlayer({
     let hls: HlsInstance | null = null
     let source: PlaybackSource | null = null
     let progressTimer: ReturnType<typeof setInterval> | null = null
+    let started = false
+    let startSent = false
+    let stopped = false
     const ac = new AbortController()
-    const forceHls = attempt > 0
 
     setReady(false)
     setBuffering(true)
@@ -390,67 +420,107 @@ export default function JellyfinPlayer({
     recoveryRef.current.lastMediaErrorAt = 0
     nudgedRef.current = false
 
-    function sendReport(kind: ReportKind, paused = false) {
-      if (!source || !video) return
-      fetch('/api/jellyfin/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          kind,
-          report: {
-            ItemId: source.itemId,
-            PlaySessionId: source.playSessionId,
-            MediaSourceId: source.mediaSourceId,
-            PositionTicks: Math.round(video.currentTime * 1e7),
-            IsPaused: paused,
-            AudioStreamIndex: source.audioStreamIndex,
-            SubtitleStreamIndex: source.subtitleStreamIndex,
-          },
-        }),
-        keepalive: kind === 'stopped',
-      }).catch(() => {})
+    /** Where playback really is: the element's clock while it has media, else the last good one. */
+    function position(): number {
+      if (video && started && video.readyState >= 1) return video.currentTime
+      return lastTimeRef.current
+    }
+
+    function sendReport(kind: ReportKind, opts: { paused?: boolean; at?: number } = {}) {
+      if (!source || !started || stopped || !video) return
+      if (kind === 'stopped') stopped = true
+      void postPlaybackReport(kind, {
+        ItemId: source.itemId,
+        PlaySessionId: source.playSessionId,
+        MediaSourceId: source.mediaSourceId,
+        PositionTicks: secondsToTicks(opts.at ?? position()),
+        IsPaused: opts.paused ?? video.paused,
+        AudioStreamIndex: source.audioStreamIndex,
+        SubtitleStreamIndex: source.subtitleStreamIndex,
+      })
+    }
+
+    function sendStart() {
+      if (startSent || !started) return
+      startSent = true
+      sendReport('start', { paused: false })
     }
 
     function resumeSeconds(): number {
       if (!source) return 0
       if (pendingSeekRef.current > 0) return pendingSeekRef.current
-      return source.positionTicks > 0 ? source.positionTicks / 1e7 : 0
+      return source.positionTicks > 0 ? ticksToSeconds(source.positionTicks) : 0
+    }
+
+    // The load is "started" once the resume position is in effect — from here on
+    // currentTime is meaningful and may be reported.
+    function markStarted() {
+      if (started || cancelled || !video) return
+      started = true
+      pendingSeekRef.current = 0
+      lastTimeRef.current = video.currentTime
+      if (!video.paused) sendStart()
+      progressTimer = setInterval(() => sendReport('progress'), 10_000)
     }
 
     function onLoadedMetadata() {
       if (!video || !source) return
       const startAt = resumeSeconds()
-      if (startAt > 0 && video.currentTime < 1) {
-        try {
-          video.currentTime = startAt
-        } catch {
-          /* not seekable yet */
-        }
-      }
-      pendingSeekRef.current = 0
-      setDuration(video.duration || source.runtimeTicks / 1e7 || 0)
+      setDuration(video.duration || ticksToSeconds(source.runtimeTicks) || 0)
       setReady(true)
       setEverReady(true)
+      if (startAt > 0 && video.currentTime < 1) {
+        try {
+          video.addEventListener('seeked', markStarted, { once: true })
+          video.currentTime = startAt
+          return
+        } catch {
+          video.removeEventListener('seeked', markStarted)
+          /* not seekable yet — start from wherever the element is */
+        }
+      }
+      markStarted()
+    }
+    function onTimeUpdate() {
+      if (started && video && video.readyState >= 1) lastTimeRef.current = video.currentTime
     }
     function onPlaying() {
-      sendReport('start')
+      sendStart()
     }
     function onPauseReport() {
-      sendReport('progress', true)
+      sendReport('progress', { paused: true })
     }
     function onEnded() {
       sendReport('stopped')
       onCloseRef.current()
     }
     function onError() {
-      // MKV / DTS etc. can fail browser direct-play even when Jellyfin allows it —
-      // retry once over HLS (server transcode).
-      if (source?.method === 'direct' && attempt === 0) setAttempt(1)
-      else if (!cancelled) setError('This title could not be played.')
+      if (cancelled || !video) return
+      pendingSeekRef.current = position() || pendingSeekRef.current
+      if (source?.method === 'direct') {
+        const code = video.error?.code
+        const unplayable = code === MEDIA_ERR_DECODE || code === MEDIA_ERR_SRC_NOT_SUPPORTED
+        // MKV / DTS etc. can fail browser direct play even when Jellyfin allows it —
+        // that needs the server transcode. A network hiccup just gets another direct try.
+        if (!unplayable && directRetriesRef.current < MAX_DIRECT_RETRIES) {
+          directRetriesRef.current++
+          setAttempt(a => a + 1)
+          return
+        }
+        if (!forceHls) {
+          setForceHls(true)
+          return
+        }
+      }
+      setError('This title could not be played.')
+    }
+    // Tab closed / navigated away from the document: React cleanup won't run.
+    function onPageHide() {
+      sendReport('stopped')
     }
 
     // --- recovery ladder ---------------------------------------------------
-    // Full source reload: resume at the current position via a fresh HLS load.
+    // Full source reload: resume at the current position via a fresh load.
     // Bounded by a cooldown + MAX_RELOADS so an unplayable title can't loop.
     function escalateReload() {
       if (cancelled || !video) return
@@ -462,8 +532,8 @@ export default function JellyfinPlayer({
       }
       recoveryRef.current.reload++
       recoveryRef.current.lastReloadAt = now
-      pendingSeekRef.current = video.currentTime || pendingSeekRef.current
-      setAttempt(a => (a > 0 ? a + 1 : 1)) // >0 forces HLS on reload
+      pendingSeekRef.current = position() || pendingSeekRef.current
+      setAttempt(a => a + 1)
     }
 
     function giveUp() {
@@ -565,6 +635,17 @@ export default function JellyfinPlayer({
         setPlayLabel(source.playMethodLabel)
         setTranscoding(source.transcoding)
 
+        // Listeners first, so a cached source can't fire loadedmetadata before we listen.
+        video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true })
+        video.addEventListener('playing', onPlaying)
+        video.addEventListener('pause', onPauseReport)
+        video.addEventListener('timeupdate', onTimeUpdate)
+        video.addEventListener('ended', onEnded)
+        video.addEventListener('error', onError)
+        window.addEventListener('pagehide', onPageHide)
+
+        // Stream URLs are same-origin (/api/jellyfin/stream/…): the server proxies
+        // Jellyfin and keeps the token, so they load as-is in hls.js or natively.
         const nativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== ''
         if (source.method === 'hls' && !nativeHls) {
           const { default: Hls } = await import('hls.js')
@@ -586,14 +667,6 @@ export default function JellyfinPlayer({
         } else {
           video.src = source.url
         }
-
-        video.addEventListener('loadedmetadata', onLoadedMetadata, { once: true })
-        video.addEventListener('playing', onPlaying, { once: true })
-        video.addEventListener('pause', onPauseReport)
-        video.addEventListener('ended', onEnded)
-        video.addEventListener('error', onError)
-
-        progressTimer = setInterval(() => sendReport('progress', video.paused), 10_000)
 
         playStartedAtRef.current = performance.now()
         lastProgressRef.current = { t: 0, at: performance.now() }
@@ -621,19 +694,29 @@ export default function JellyfinPlayer({
       if (progressTimer) clearInterval(progressTimer)
       if (watchdogRef.current) clearInterval(watchdogRef.current)
       watchdogRef.current = null
-      sendReport('stopped')
+      if (unmountingRef.current) {
+        // The player is closing: the session ends here.
+        sendReport('stopped')
+      } else if (started) {
+        // A reload: the next load resumes at pendingSeekRef — keep Jellyfin's resume
+        // point there rather than ending the session at whatever the element reads now.
+        sendReport('progress', { at: pendingSeekRef.current || position() })
+      }
       video.removeEventListener('loadedmetadata', onLoadedMetadata)
+      video.removeEventListener('seeked', markStarted)
       video.removeEventListener('playing', onPlaying)
       video.removeEventListener('pause', onPauseReport)
+      video.removeEventListener('timeupdate', onTimeUpdate)
       video.removeEventListener('ended', onEnded)
       video.removeEventListener('error', onError)
+      window.removeEventListener('pagehide', onPageHide)
       hls?.destroy()
       hlsRef.current = null
       video.pause()
       video.removeAttribute('src')
       video.load()
     }
-  }, [itemId, attempt, sourceId, audioIndex, burnSubIndex])
+  }, [itemId, attempt, forceHls, sourceId, audioIndex, burnSubIndex])
 
   // --- keep the active text-subtitle track showing ------------------------
   useEffect(() => {
@@ -691,45 +774,47 @@ export default function JellyfinPlayer({
     }
   }, [poke])
 
-  // --- keyboard shortcuts -------------------------------------------------
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (menuOpenRef.current) {
-          setMenuOpen(false)
-          return
-        }
-        onCloseRef.current()
-        return
+  // --- dialog semantics + keyboard ----------------------------------------
+  // Focus moves into the player (the video itself, so Space never lands on a button),
+  // stays trapped while it's open and returns to the Play button on close. Escape
+  // closes the track menu first, then the player — and only when the player is the
+  // top-most layer (a search modal over it takes Escape for itself).
+  useDialog(containerRef, () => {
+    if (menuOpenRef.current) setMenuOpen(false)
+    else onCloseRef.current()
+  })
+
+  // Plain keys only (⌘K, ⌘F etc. stay the browser's/app's); quiet while a modal opened
+  // above the player owns the keyboard.
+  useHotkeys((e) => {
+    const onButton = e.target instanceof HTMLButtonElement
+    if (e.key === ' ' || e.key === 'k') {
+      // Space on a focused control activates that control instead.
+      if (e.key === ' ' && onButton) return
+      e.preventDefault()
+      togglePlay()
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      seekBy(-10)
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      seekBy(10)
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const v = videoRef.current
+      if (v) {
+        const raw = (v.muted ? 0 : v.volume) + (e.key === 'ArrowUp' ? 0.1 : -0.1)
+        const next = Math.min(1, Math.max(0, Math.round(raw * 10) / 10)) // snap off IEEE754 drift
+        changeVolume(next)
+        flashAction(next === 0 ? 'mute' : 'volume', `${Math.round(next * 100)}%`)
       }
-      if (e.key === ' ' || e.key === 'k') {
-        e.preventDefault()
-        togglePlay()
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault()
-        seekBy(-10)
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault()
-        seekBy(10)
-      } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        e.preventDefault()
-        const v = videoRef.current
-        if (v) {
-          const raw = (v.muted ? 0 : v.volume) + (e.key === 'ArrowUp' ? 0.1 : -0.1)
-          const next = Math.min(1, Math.max(0, Math.round(raw * 10) / 10)) // snap off IEEE754 drift
-          changeVolume(next)
-          flashAction(next === 0 ? 'mute' : 'volume', `${Math.round(next * 100)}%`)
-        }
-      } else if (e.key === 'f') {
-        toggleFullscreen()
-      } else if (e.key === 'm') {
-        toggleMute()
-      }
-      poke()
+    } else if (e.key === 'f') {
+      toggleFullscreen()
+    } else if (e.key === 'm') {
+      toggleMute()
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [togglePlay, seekBy, toggleFullscreen, toggleMute, changeVolume, flashAction, poke])
+    poke()
+  }, { scope: containerRef })
 
   // --- track fullscreen state ---------------------------------------------
   useEffect(() => {
@@ -746,6 +831,9 @@ export default function JellyfinPlayer({
   return (
     <motion.div
       ref={containerRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title ?? 'Video player'}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -755,6 +843,8 @@ export default function JellyfinPlayer({
     >
       <video
         ref={videoRef}
+        data-autofocus
+        tabIndex={-1}
         autoPlay
         playsInline
         onClick={togglePlay}
@@ -874,13 +964,20 @@ export default function JellyfinPlayer({
         >
           <div className="flex items-center gap-3">
             <span className="w-12 text-right text-xs tabular-nums text-zinc-300">
-              {formatTime(currentTime)}
+              {formatTime(scrub != null ? scrub * duration : currentTime)}
             </span>
             <Slider
               ariaLabel="Seek"
-              fraction={duration ? currentTime / duration : 0}
+              ariaValueText={`${formatTime(currentTime)} of ${formatTime(duration)}`}
+              fraction={scrub ?? (duration ? currentTime / duration : 0)}
               buffered={duration ? bufferedEnd / duration : 0}
-              onChange={seekToFraction}
+              step={duration ? Math.min(1, 10 / duration) : 0.05}
+              onChange={setScrub}
+              onChangeEnd={f => {
+                // One seek per drag: on an HLS transcode every seek restarts ffmpeg.
+                seekToFraction(f)
+                setScrub(null)
+              }}
             />
             <span className="w-12 text-xs tabular-nums text-zinc-400">{formatTime(duration)}</span>
           </div>

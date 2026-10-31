@@ -19,7 +19,6 @@ const MAX_ENTRIES = 500
 const MAX_DATA_LEN = 1000
 
 declare global {
-  // eslint-disable-next-line no-var
   var __ag_httplog: LogState | undefined
 }
 
@@ -45,6 +44,16 @@ export function truncateData(raw: unknown): string {
   return str.length > MAX_DATA_LEN ? str.slice(0, MAX_DATA_LEN) + '\n…' : str
 }
 
-export function getLogs(): HttpLogEntry[] {
-  return [...state().entries].reverse()
+/**
+ * Newest first. `sinceId` returns only entries newer than that id (incremental
+ * polling); `limit` caps the count.
+ */
+export function getLogs({ sinceId = 0, limit = MAX_ENTRIES }: { sinceId?: number; limit?: number } = {}): HttpLogEntry[] {
+  const out: HttpLogEntry[] = []
+  const entries = state().entries
+  for (let i = entries.length - 1; i >= 0 && out.length < limit; i--) {
+    if (entries[i].id <= sinceId) break
+    out.push(entries[i])
+  }
+  return out
 }

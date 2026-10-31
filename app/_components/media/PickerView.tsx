@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
-import { useMedia } from './MediaProvider'
+import { useTitleState, useUserView } from './MediaProvider'
+import { useHotkeys } from './hooks'
 import type { CollectionSummary, MediaInfo, ReelDetail, ReelTitle } from './types'
 import {
   allGenres, pickerPool, shuffle,
-  type PickerType, type PickerMood, type PickerSort, type PickerMatch, type UserView,
+  type PickerType, type PickerMood, type PickerSort, type PickerMatch,
 } from './selectors'
 import { AmbientClip, useAmbientMute } from './AmbientClip'
 import { DetailView } from './DetailView'
@@ -94,11 +95,8 @@ function Confetti() {
 
 export function PickerView({ catalog, collections = [], startFromList = false }: { catalog: ReelTitle[]; collections?: CollectionSummary[]; startFromList?: boolean }) {
   const router = useRouter()
-  const { pickList, clearPickList, isWatched, isFavorite } = useMedia()
-  const view: UserView = useMemo(() => ({
-    watched: (t) => isWatched(t.id, t.watched),
-    favorite: (t) => isFavorite(t.id, t.favorite),
-  }), [isWatched, isFavorite])
+  const { pickList, clearPickList } = useTitleState()
+  const view = useUserView()
 
   const [type, setType] = useState<PickerType>('all')
   const [genres, setGenres] = useState<string[]>([])
@@ -225,16 +223,12 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
     }
   }, [stage, done])
 
-  useEffect(() => {
-    if (stage !== 'swipe' || done) return
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') vote(true)
-      else if (e.key === 'ArrowLeft') vote(false)
-      else if (e.key === 'ArrowDown') skip()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [stage, done, vote, skip])
+  // Votes are one per key press: a held arrow key must not burn through the deck.
+  useHotkeys((e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); vote(true) }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); vote(false) }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); skip() }
+  }, { enabled: stage === 'swipe' && !done, allowRepeat: false })
 
   const anotherRound = () => { setPool(shuffle(kept)); setIdx(0); setKept([]); setClipLive(false); setEndedEarly(false) }
   const newPicker = () => { setStage('setup'); setPool([]); setIdx(0); setKept([]); setClipLive(false); setEndedEarly(false) }
@@ -413,8 +407,8 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
       {current && (
         <div className="absolute inset-0">
           <Poster gradient={current.backdropColor} src={current.backdropUrl} alt={current.title} rounded="rounded-none" className="h-full w-full" />
-          {/* Movies only — picker TV titles are series ids with no playable MediaSources */}
-          {/* Series ids resolve to a random episode server-side (getPlayback) */}
+          {/* Movies play a clip of themselves; a series id resolves to a random episode
+              server-side (getPlayback), since a series has no MediaSources of its own. */}
           <AmbientClip key={current.id} itemId={current.id} muted={clipMuted} onAutoplayBlocked={forceClipMute} onClipPlaying={() => setClipLive(true)} />
           <div className="absolute inset-0" style={{ background: 'radial-gradient(90% 90% at 50% 55%, rgba(8,6,13,0.7), rgba(8,6,13,0.45) 60%, rgba(8,6,13,0.3)), linear-gradient(180deg, rgba(8,6,13,0.35), rgba(8,6,13,0.55))' }} />
         </div>

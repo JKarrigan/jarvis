@@ -1,5 +1,10 @@
 import type { NarrationLine, NarrationPageChar, NarrationSync } from '@/app/_components/media/types'
+import { assertSameOrigin } from '@/lib/http'
 import { getNarrationSync, saveNarrationSync } from '@/lib/jellyfinBooks'
+import { TOO_LARGE, readJsonCapped, tooLarge } from '../../../_lib/request'
+
+// Timings for a long book with OCR'd character boxes run to several MB.
+const MAX_BODY = 32 * 1024 * 1024
 
 const okId = (id: string) => /^[0-9a-f]{32}$/i.test(id)
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0
@@ -11,16 +16,18 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   return sync ? Response.json(sync) : Response.json({ error: 'No timings' }, { status: 404 })
 }
 
-// PUT: store timings produced by scripts/sync-narration.py. Only known fields are kept.
+// PUT: store timings produced by scripts/sync-narration.py (run from another machine,
+// so it carries no Origin header — assertSameOrigin still lets it through). Only known
+// fields are kept.
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const { id } = await params
   if (!okId(id)) return Response.json({ error: 'Bad id' }, { status: 400 })
-  let body: Partial<NarrationSync>
-  try {
-    body = await request.json()
-  } catch {
-    return Response.json({ error: 'Invalid JSON' }, { status: 400 })
-  }
+  const parsed = await readJsonCapped<Partial<NarrationSync>>(request, MAX_BODY)
+  if (parsed === TOO_LARGE) return tooLarge(MAX_BODY)
+  if (!parsed || typeof parsed !== 'object') return Response.json({ error: 'Invalid JSON' }, { status: 400 })
+  const body = parsed
   if (!Array.isArray(body.lines) || body.lines.length === 0 || body.lines.length > 20_000 || !num(body.duration) || !num(body.pages)) {
     return Response.json({ error: 'Invalid timings' }, { status: 400 })
   }

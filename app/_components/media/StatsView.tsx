@@ -1,9 +1,9 @@
 'use client'
 
 import { useMemo } from 'react'
-import { useMedia } from './MediaProvider'
+import { useMediaNotes, useTitleState, useUserView } from './MediaProvider'
 import type { ReelTitle } from './types'
-import { computeStats, type UserView } from './selectors'
+import { computeStats } from './selectors'
 import { StarIcon, HeartIcon, BookmarkIcon } from './icons'
 
 function StatCard({ value, label, sub }: { value: React.ReactNode; label: string; sub?: string }) {
@@ -17,11 +17,9 @@ function StatCard({ value, label, sub }: { value: React.ReactNode; label: string
 }
 
 export function StatsView({ catalog }: { catalog: ReelTitle[] }) {
-  const { ratings, watchlist, isWatched, isFavorite } = useMedia()
-  const view: UserView = useMemo(() => ({
-    watched: (t) => isWatched(t.id, t.watched),
-    favorite: (t) => isFavorite(t.id, t.favorite),
-  }), [isWatched, isFavorite])
+  const { ratings } = useMediaNotes()
+  const { watchlist } = useTitleState()
+  const view = useUserView()
 
   const stats = useMemo(
     () => computeStats(catalog, view, ratings, watchlist.length),

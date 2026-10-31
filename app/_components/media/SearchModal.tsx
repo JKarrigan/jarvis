@@ -1,44 +1,119 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
-import type { ReelTitle, CollectionSummary, Audiobook, Ebook } from './types'
+import type { SearchIndex } from './types'
 import { BookCover } from './books/BooksView'
 import { Cover } from './audiobooks/parts'
-import { collArt } from './artwork'
+import { collArt, poster } from './artwork'
 import { Poster, detailHref } from './ReelCards'
 import { SearchIcon, CloseIcon } from './icons'
+import { useDialog } from './hooks'
 
-export function SearchModal({
-  catalog, collections, audiobooks, ebooks, onClose,
-}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; ebooks: Ebook[]; onClose: () => void }) {
+// The index is fetched when the modal opens (not baked into every page) and reused
+// for a short while so reopening is instant.
+let cached: { at: number; index: SearchIndex } | null = null
+const FRESH_MS = 60_000
+
+function loadIndex(signal: AbortSignal): Promise<SearchIndex> {
+  if (cached && Date.now() - cached.at < FRESH_MS) return Promise.resolve(cached.index)
+  return fetch('/api/media/search-index', { signal })
+    .then(r => (r.ok ? (r.json() as Promise<SearchIndex>) : Promise.reject(new Error(String(r.status)))))
+    .then(index => {
+      cached = { at: Date.now(), index }
+      return index
+    })
+}
+
+interface Result {
+  key: string
+  href: string
+  art: React.ReactNode
+  title: string
+  sub: string
+}
+
+export function SearchModal({ onClose }: { onClose: () => void }) {
   const router = useRouter()
+  const listId = useId()
+  const panelRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const [q, setQ] = useState('')
+  const [index, setIndex] = useState<SearchIndex | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [active, setActive] = useState(0)
+
+  useDialog(panelRef, onClose)
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+    const ac = new AbortController()
+    loadIndex(ac.signal).then(setIndex, () => { if (!ac.signal.aborted) setFailed(true) })
+    return () => ac.abort()
+  }, [])
 
-  const { titles, colls, books, reads } = useMemo(() => {
+  const results = useMemo<Result[]>(() => {
     const needle = q.trim().toLowerCase()
-    if (!needle) return { titles: [] as ReelTitle[], colls: [] as CollectionSummary[], books: [] as Audiobook[], reads: [] as Ebook[] }
-    return {
-      titles: catalog.filter(t => t.title.toLowerCase().includes(needle)).slice(0, 8),
-      colls: collections.filter(c => c.name.toLowerCase().includes(needle)).slice(0, 4),
+    if (!needle || !index) return []
+    const has = (...vals: (string | undefined)[]) => vals.some(v => v?.toLowerCase().includes(needle))
+    return [
+      ...index.collections.filter(c => has(c.name)).slice(0, 4).map(c => ({
+        key: `c-${c.id}`,
+        href: `/media/collections/${c.id}`,
+        art: <span className="h-12 w-9 shrink-0 rounded-md" style={{ background: collArt(c.hue) }} />,
+        title: c.name,
+        sub: `Collection · ${c.count} ${c.count === 1 ? 'title' : 'titles'}`,
+      })),
       // Books also match on who wrote or reads them.
-      books: audiobooks
-        .filter(b => [b.title, b.author, b.narrator].some(v => v?.toLowerCase().includes(needle)))
-        .slice(0, 5),
-      reads: ebooks
-        .filter(b => [b.title, b.author].some(v => v?.toLowerCase().includes(needle)))
-        .slice(0, 5),
-    }
-  }, [q, catalog, collections, audiobooks, ebooks])
+      ...index.audiobooks.filter(b => has(b.title, b.author, b.narrator)).slice(0, 5).map(b => ({
+        key: `a-${b.id}`,
+        href: `/media/audiobooks/${b.id}`,
+        // Square cover centred in the poster-width slot so titles stay aligned.
+        art: <span className="grid h-12 w-9 shrink-0 place-items-center"><Cover book={b} rounded="rounded-md" titleClass="" className="w-9" /></span>,
+        title: b.title,
+        sub: ['Audiobook', b.author, b.narrator && `read by ${b.narrator}`].filter(Boolean).join(' · '),
+      })),
+      ...index.ebooks.filter(b => has(b.title, b.author)).slice(0, 5).map(b => ({
+        key: `e-${b.id}`,
+        href: `/media/books/${b.id}`,
+        art: <BookCover book={b} titleClass="" className="h-12 w-9 overflow-hidden rounded-md bg-white" />,
+        title: b.title,
+        sub: ['Book', b.author, b.level != null && `Level ${b.level}`].filter(Boolean).join(' · '),
+      })),
+      ...index.titles.filter(t => has(t.title)).slice(0, 8).map(t => ({
+        key: `t-${t.id}`,
+        href: detailHref(t),
+        art: (
+          <div className="h-12 w-9 shrink-0">
+            <Poster gradient={poster(t.hue)} src={t.posterUrl} alt="" rounded="rounded-md" className="h-full w-full" />
+          </div>
+        ),
+        title: t.title,
+        sub: [t.year, t.genres.slice(0, 2).join(', ')].filter(Boolean).join(' · '),
+      })),
+    ]
+  }, [q, index])
+
+  const activeIndex = Math.min(active, Math.max(0, results.length - 1))
+
+  // Keep the highlighted result in view while arrowing through the list.
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-index="${activeIndex}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex])
 
   const go = (href: string) => { onClose(); router.push(href) }
+
+  const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (results.length === 0) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive((activeIndex + 1) % results.length) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((activeIndex - 1 + results.length) % results.length) }
+    else if (e.key === 'Home' && e.ctrlKey) { e.preventDefault(); setActive(0) }
+    else if (e.key === 'End' && e.ctrlKey) { e.preventDefault(); setActive(results.length - 1) }
+    else if (e.key === 'Enter') { e.preventDefault(); go(results[activeIndex].href) }
+  }
+
+  const optionId = (i: number) => `${listId}-opt-${i}`
+  const trimmed = q.trim()
 
   return (
     <div className="fixed inset-0 z-[95] flex items-start justify-center p-4 pt-[12vh]">
@@ -49,6 +124,10 @@ export function SearchModal({
         onClick={onClose}
       />
       <motion.div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search the library"
         className="relative z-10 w-full max-w-[640px] overflow-hidden rounded-[18px] border border-white/10 bg-zinc-900/95 shadow-2xl backdrop-blur-xl"
         initial={{ opacity: 0, y: -10, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -56,69 +135,54 @@ export function SearchModal({
         transition={{ type: 'spring', bounce: 0.18, duration: 0.34 }}
       >
         <div className="flex items-center gap-3 border-b border-white/10 px-4">
-          <SearchIcon className="h-5 w-5 text-white/40" />
+          <SearchIcon className="h-5 w-5 text-white/40" aria-hidden="true" />
           <input
-            autoFocus
+            data-autofocus
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => { setQ(e.target.value); setActive(0) }}
+            onKeyDown={onInputKey}
+            role="combobox"
+            aria-label="Search movies, shows, books and collections"
+            aria-expanded={results.length > 0}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={results.length ? optionId(activeIndex) : undefined}
             placeholder="Search movies, shows, books, collections…"
             className="flex-1 bg-transparent py-4 text-[15px] text-ink placeholder:text-white/35 focus:outline-none"
           />
-          <button type="button" onClick={onClose} aria-label="Close" className="grid h-8 w-8 place-items-center rounded-lg text-white/45 hover:bg-white/10 hover:text-white">
+          <button type="button" onClick={onClose} aria-label="Close search" className="grid h-8 w-8 place-items-center rounded-lg text-white/45 hover:bg-white/10 hover:text-white">
             <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="max-h-[55vh] overflow-y-auto p-2">
-          {q.trim() && titles.length === 0 && colls.length === 0 && books.length === 0 && reads.length === 0 && (
+        <div ref={listRef} id={listId} role="listbox" aria-label="Results" className="max-h-[55vh] overflow-y-auto p-2">
+          {trimmed && !index && !failed && <p className="px-3 py-6 text-center text-sm text-white/45">Loading the library…</p>}
+          {trimmed && failed && !index && <p className="px-3 py-6 text-center text-sm text-white/45">Couldn’t load the library index. Try again in a moment.</p>}
+          {trimmed && index && results.length === 0 && (
             <p className="px-3 py-6 text-center text-sm text-white/45">No matches for “{q}”.</p>
           )}
-
-          {colls.map(c => (
-            <button key={c.id} type="button" onClick={() => go(`/media/collections/${c.id}`)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-white/5">
-              <span className="h-12 w-9 shrink-0 rounded-md" style={{ background: collArt(c.hue) }} />
+          {results.map((r, i) => (
+            <div
+              key={r.key}
+              id={optionId(i)}
+              data-index={i}
+              role="option"
+              aria-selected={i === activeIndex}
+              onClick={() => go(r.href)}
+              onMouseMove={() => { if (i !== activeIndex) setActive(i) }}
+              className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition ${i === activeIndex ? 'bg-white/[0.07]' : ''}`}
+            >
+              {r.art}
               <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-ink">{c.name}</span>
-                <span className="block text-xs text-white/45">Collection · {c.itemIds.length} films</span>
+                <span className="block truncate text-sm font-semibold text-ink">{r.title}</span>
+                <span className="block truncate text-xs text-white/45">{r.sub}</span>
               </span>
-            </button>
-          ))}
-
-          {books.map(b => (
-            <button key={b.id} type="button" onClick={() => go(`/media/audiobooks/${b.id}`)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-white/5">
-              {/* Square cover centred in the poster-width slot so titles stay aligned. */}
-              <span className="grid h-12 w-9 shrink-0 place-items-center">
-                <Cover book={b} rounded="rounded-md" titleClass="" className="w-9" />
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-ink">{b.title}</span>
-                <span className="block truncate text-xs text-white/45">{['Audiobook', b.author, b.narrator && `read by ${b.narrator}`].filter(Boolean).join(' · ')}</span>
-              </span>
-            </button>
-          ))}
-
-          {reads.map(b => (
-            <button key={b.id} type="button" onClick={() => go(`/media/books/${b.id}`)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-white/5">
-              <BookCover book={b} titleClass="" className="h-12 w-9 overflow-hidden rounded-md bg-white" />
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-ink">{b.title}</span>
-                <span className="block truncate text-xs text-white/45">{['Book', b.author, b.level != null && `Level ${b.level}`].filter(Boolean).join(' · ')}</span>
-              </span>
-            </button>
-          ))}
-
-          {titles.map(t => (
-            <button key={t.id} type="button" onClick={() => go(detailHref(t))} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition hover:bg-white/5">
-              <div className="h-12 w-9 shrink-0">
-                <Poster gradient={t.posterColor} src={t.posterUrl} alt={t.title} rounded="rounded-md" className="h-full w-full" />
-              </div>
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-ink">{t.title}</span>
-                <span className="block truncate text-xs text-white/45">{[t.year, t.genres.slice(0, 2).join(', ')].filter(Boolean).join(' · ')}</span>
-              </span>
-            </button>
+            </div>
           ))}
         </div>
+        <p className="sr-only" aria-live="polite">
+          {trimmed && index ? `${results.length} result${results.length === 1 ? '' : 's'}` : ''}
+        </p>
       </motion.div>
     </div>
   )

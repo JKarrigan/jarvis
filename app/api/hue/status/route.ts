@@ -1,15 +1,14 @@
 import { getSetting } from '@/lib/db'
+import { getBridgeConfig } from '@/lib/hue'
 
 export async function GET() {
-  const ip = getSetting('hue_bridge_ip')
-  const key = getSetting('hue_api_key')
-
-  if (!ip || !key) return Response.json({ configured: false, ip: null, reachable: false })
+  const cfg = getBridgeConfig()
+  if (!cfg) return Response.json({ configured: false, ip: getSetting('hue_bridge_ip'), reachable: false })
 
   try {
-    const res = await fetch(`http://${ip}/api/${key}/lights`, { signal: AbortSignal.timeout(3000) })
-    return Response.json({ configured: true, ip, reachable: res.ok })
+    const res = await fetch(`http://${cfg.ip}/api/${cfg.key}/lights`, { signal: AbortSignal.timeout(3000) })
+    return Response.json({ configured: true, ip: cfg.ip, reachable: res.ok })
   } catch {
-    return Response.json({ configured: true, ip, reachable: false })
+    return Response.json({ configured: true, ip: cfg.ip, reachable: false })
   }
 }

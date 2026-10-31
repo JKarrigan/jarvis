@@ -1,27 +1,28 @@
-import { addToCollection, removeFromCollection } from '@/lib/jellyfinServer'
+import { assertSameOrigin } from '@/lib/http'
+import { addToCollection, isItemId, removeFromCollection } from '@/lib/jellyfinServer'
+import { badRequest, invalidId, itemIdParam } from '../../../_lib/request'
+
+type Ctx = { params: Promise<{ id: string }> }
 
 // Item ids come as a comma-separated `ids` query param (we toggle one at a time).
-function idsFrom(request: Request): string[] {
+function idsFrom(request: Request): string[] | null {
   const raw = new URL(request.url).searchParams.get('ids') ?? ''
-  return raw.split(',').map(s => s.trim()).filter(Boolean)
+  const ids = raw.split(',').map(s => s.trim()).filter(Boolean)
+  return ids.length > 0 && ids.length <= 200 && ids.every(isItemId) ? ids : null
 }
 
-// POST: add titles to the collection.
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params
+async function handle(request: Request, { params }: Ctx, add: boolean) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
+  const id = await itemIdParam(params)
+  if (!id) return invalidId()
   const ids = idsFrom(request)
-  if (ids.length === 0) return Response.json({ error: 'Missing ids' }, { status: 400 })
-  const ok = await addToCollection(id, ids)
-  if (!ok) return Response.json({ error: 'Could not add to collection' }, { status: 502 })
+  if (!ids) return badRequest('Missing or invalid ids')
+  const ok = add ? await addToCollection(id, ids) : await removeFromCollection(id, ids)
+  if (!ok) return Response.json({ error: add ? 'Could not add to collection' : 'Could not remove from collection' }, { status: 502 })
   return new Response(null, { status: 204 })
 }
 
-// DELETE: remove titles from the collection.
-export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params
-  const ids = idsFrom(request)
-  if (ids.length === 0) return Response.json({ error: 'Missing ids' }, { status: 400 })
-  const ok = await removeFromCollection(id, ids)
-  if (!ok) return Response.json({ error: 'Could not remove from collection' }, { status: 502 })
-  return new Response(null, { status: 204 })
-}
+// POST: add titles to the collection. DELETE: remove them.
+export const POST = (request: Request, ctx: Ctx) => handle(request, ctx, true)
+export const DELETE = (request: Request, ctx: Ctx) => handle(request, ctx, false)

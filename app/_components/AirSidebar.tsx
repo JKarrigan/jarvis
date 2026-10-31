@@ -16,9 +16,10 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         key={href}
         href={href}
         onClick={onNavigate}
+        aria-current={active ? 'page' : undefined}
         className={`px-3 py-2 rounded-lg text-sm transition-colors ${active
           ? 'bg-zinc-800 text-zinc-100'
-          : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900'
+          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
           }`}
       >
         {label}
@@ -36,7 +37,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       {link('/logs', 'Logs')}
       {link('/settings', 'Settings')}
       {link('/system', 'System')}
-      <div className="mt-5 mb-1 px-3 text-xs text-zinc-700 uppercase tracking-widest">Metrics</div>
+      <div className="mt-5 mb-1 px-3 text-xs text-zinc-500 uppercase tracking-widest">Metrics</div>
       {METRICS.map(m => link(`/measurement/${m.slug}`, m.label))}
     </>
   )
@@ -45,10 +46,19 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 export function AirSidebar() {
   const [isOpen, setIsOpen] = useState(false)
 
-  // Prevent body scroll when drawer is open
+  // Prevent body scroll when drawer is open; Escape closes it (unless a
+  // dialog on top already handled the key and called preventDefault).
   useEffect(() => {
-    document.body.style.overflow = isOpen ? 'hidden' : ''
-    return () => { document.body.style.overflow = '' }
+    if (!isOpen) return
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) setIsOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = ''
+      window.removeEventListener('keydown', onKey)
+    }
   }, [isOpen])
 
   return (
@@ -71,7 +81,7 @@ export function AirSidebar() {
 
       {/* ── Desktop sidebar (nav padded down to clear the floating AppSwitcher) ── */}
       <aside className="hidden md:flex sticky top-0 h-screen w-44 shrink-0 border-r border-zinc-800 bg-zinc-950 flex-col">
-        <nav className="flex flex-col gap-0.5 px-2 pt-16 flex-1 pb-4">
+        <nav aria-label="Air Gradient" className="flex flex-col gap-0.5 px-2 pt-16 flex-1 pb-4">
           <NavLinks />
         </nav>
       </aside>
@@ -79,7 +89,7 @@ export function AirSidebar() {
       {/* ── Mobile drawer overlay ── */}
       <AnimatePresence>
         {isOpen && (
-          <div className="md:hidden fixed inset-0 z-50 flex">
+          <div className="md:hidden fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label="Menu">
             <motion.div
               className="absolute inset-0 bg-black/60 backdrop-blur-sm"
               initial={{ opacity: 0 }}

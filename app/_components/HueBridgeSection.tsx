@@ -12,75 +12,98 @@ type ConnectState = 'idle' | 'waiting' | 'success' | 'timeout' | 'error'
 
 const inputCls = 'rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-600 focus:border-amber-500 focus:outline-none transition-colors disabled:opacity-50'
 
+const REGISTER_TIMEOUT_MS = 30_000
+const REGISTER_INTERVAL_MS = 2_000
+
+function sleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const t = setTimeout(resolve, ms)
+    signal.addEventListener('abort', () => { clearTimeout(t); reject(signal.reason) }, { once: true })
+  })
+}
+
 export function HueBridgeSection() {
   const [status, setStatus] = useState<HueStatus | null>(null)
   const [ipInput, setIpInput] = useState('')
   const [connectState, setConnectState] = useState<ConnectState>('idle')
   const [errorMsg, setErrorMsg] = useState('')
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    fetch('/api/hue/status')
+    const ac = new AbortController()
+    fetch('/api/hue/status', { signal: ac.signal })
       .then(r => r.json() as Promise<HueStatus>)
       .then(s => {
         setStatus(s)
         if (s.ip) setIpInput(s.ip)
       })
       .catch(() => {})
+    return () => ac.abort()
   }, [])
 
-  function stopPolling() {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null }
-  }
+  // Abort a running registration when leaving the page.
+  useEffect(() => () => abortRef.current?.abort(), [])
 
-  async function attemptRegister(): Promise<boolean> {
-    const res = await fetch('/api/hue/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ip: ipInput.trim() }),
-    })
-    const data = await res.json() as { ok: boolean; reason?: string }
-    if (data.ok) {
-      stopPolling()
-      setConnectState('success')
-      setStatus({ configured: true, ip: ipInput.trim(), reachable: true })
-      return true
-    }
-    if (data.reason !== 'press_button') {
-      stopPolling()
-      setConnectState('error')
-      setErrorMsg(data.reason ?? 'Unknown error')
-    }
-    return false
-  }
-
+  /**
+   * Registration loop: one request at a time (never overlapping, so the bridge
+   * never creates duplicate users), every 2 s until the link button is pressed,
+   * the 30 s deadline passes, the bridge reports a real error, or the user cancels.
+   */
   async function handleConnect() {
-    if (!ipInput.trim()) return
+    const ip = ipInput.trim()
+    if (!ip) return
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
     setConnectState('waiting')
     setErrorMsg('')
+    const deadline = Date.now() + REGISTER_TIMEOUT_MS
 
-    const done = await attemptRegister()
-    if (done) return
+    try {
+      while (true) {
+        let data: { ok: boolean; reason?: string } | null = null
+        try {
+          const res = await fetch('/api/hue/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip }),
+            signal: ac.signal,
+          })
+          data = await res.json() as { ok: boolean; reason?: string }
+        } catch (err) {
+          if (ac.signal.aborted) throw err
+          data = null // network hiccup: keep trying until the deadline
+        }
 
-    // Poll every 2 s while waiting for button press
-    pollRef.current = setInterval(() => { attemptRegister().catch(() => {}) }, 2000)
-
-    // Time out after 30 s
-    timeoutRef.current = setTimeout(() => {
-      stopPolling()
-      setConnectState(c => c === 'waiting' ? 'timeout' : c)
-    }, 30000)
+        if (data?.ok) {
+          setConnectState('success')
+          setStatus({ configured: true, ip, reachable: true })
+          return
+        }
+        if (data && data.reason !== 'press_button') {
+          setConnectState('error')
+          setErrorMsg(data.reason === 'missing_ip' ? 'Enter the bridge IP address' : data.reason ?? 'Unknown error')
+          return
+        }
+        if (Date.now() + REGISTER_INTERVAL_MS > deadline) {
+          setConnectState('timeout')
+          return
+        }
+        await sleep(REGISTER_INTERVAL_MS, ac.signal)
+      }
+    } catch {
+      // Aborted by Cancel / unmount; handleReset already reset the UI.
+    } finally {
+      if (abortRef.current === ac) abortRef.current = null
+    }
   }
 
   function handleReset() {
-    stopPolling()
+    abortRef.current?.abort()
+    abortRef.current = null
     setConnectState('idle')
     setErrorMsg('')
   }
-
-  useEffect(() => () => stopPolling(), [])
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
@@ -103,18 +126,20 @@ export function HueBridgeSection() {
                     : `Unreachable — ${status.ip}`}
                 </p>
               </div>
-              <span className={`shrink-0 h-2 w-2 rounded-full ${
+              <span aria-hidden className={`shrink-0 h-2 w-2 rounded-full ${
                 !status.configured ? 'bg-zinc-600' :
                 status.reachable ? 'bg-amber-400' : 'bg-red-500'
               }`} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Bridge IP Address</label>
+              <label htmlFor="hue-bridge-ip" className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Bridge IP Address</label>
               <div className="flex gap-2">
                 <input
+                  id="hue-bridge-ip"
                   type="text"
-                  inputMode="numeric"
+                  inputMode="decimal"
+                  autoComplete="off"
                   value={ipInput}
                   onChange={e => setIpInput(e.target.value)}
                   placeholder="192.168.1.x"
@@ -143,19 +168,19 @@ export function HueBridgeSection() {
             </div>
 
             {connectState === 'waiting' && (
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+              <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                 <p className="text-sm text-amber-300 font-medium">Press the button on your Hue Bridge now</p>
                 <p className="text-xs text-amber-400/70 mt-1">Waiting up to 30 seconds…</p>
               </div>
             )}
             {connectState === 'success' && (
-              <p className="text-sm text-emerald-400">Bridge connected successfully.</p>
+              <p role="status" className="text-sm text-emerald-400">Bridge connected successfully.</p>
             )}
             {connectState === 'timeout' && (
-              <p className="text-sm text-red-400">Timed out — try again and press the button within 30 seconds.</p>
+              <p role="alert" className="text-sm text-red-400">Timed out — try again and press the button within 30 seconds.</p>
             )}
             {connectState === 'error' && errorMsg && (
-              <p className="text-sm text-red-400">{errorMsg}</p>
+              <p role="alert" className="text-sm text-red-400">{errorMsg}</p>
             )}
           </>
         )}

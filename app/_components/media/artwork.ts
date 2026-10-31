@@ -58,14 +58,27 @@ export function backdropForId(id: string): string {
 }
 
 /** Rewrite a Jellyfin image URL's maxWidth. Backdrop URLs are built hero-res (4K);
-    card-size renders use this to avoid downloading and decoding 4K into a thumbnail. */
+    card-size renders use this to avoid downloading and decoding 4K into a thumbnail.
+    Works for absolute and same-origin (`/api/jellyfin/stream/…`) URLs alike. */
 export function resizeImage(url: string | undefined, maxWidth: number): string | undefined {
   if (!url) return undefined
   try {
-    const u = new URL(url)
+    const absolute = /^https?:\/\//i.test(url)
+    const u = new URL(url, 'http://reel.local')
     u.searchParams.set('maxWidth', String(maxWidth))
-    return u.toString()
+    return absolute ? u.toString() : `${u.pathname}${u.search}`
   } catch {
     return url
   }
 }
+
+/** `srcset` for a Jellyfin image at several widths — Jellyfin resizes server-side, so a
+    phone downloads a phone-sized backdrop. Pair with a `sizes` attribute. */
+export function imageSrcSet(url: string | undefined, widths: readonly number[]): string | undefined {
+  if (!url) return undefined
+  return widths.map(w => `${resizeImage(url, w)} ${w}w`).join(', ')
+}
+
+/** Standard width ladders for `imageSrcSet`. */
+export const BACKDROP_WIDTHS = [640, 960, 1280, 1920, 2560, 3840] as const
+export const POSTER_WIDTHS = [180, 240, 360, 540] as const

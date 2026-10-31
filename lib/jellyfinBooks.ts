@@ -1,7 +1,8 @@
 import 'server-only'
 import type { Ebook, EbookProgress, NarrationSync } from '@/app/_components/media/types'
 import { hueFromId } from '@/app/_components/media/artwork'
-import { baseUrl, getSession, imageUrl, isJellyfinConfigured, jfGet } from './jellyfinServer'
+import { cache } from 'react'
+import { getSession, imageUrl, isItemId, isMockMode, isNotFound, jfFetch, jfJson } from './jellyfinServer'
 import { getSetting, setSetting } from './db'
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,17 @@ interface StoredProgress extends EbookProgress { at: number }
 
 const progressKey = (id: string) => `book.progress.${id}`
 const syncKey = (id: string) => `book.sync.${id}`
+/** Small "has timings" flag, so listing books never reads the multi-MB timings blobs. */
+const syncedKey = (id: string) => `book.synced.${id}`
+
+function hasSync(id: string): boolean {
+  const flag = getSetting(syncedKey(id))
+  if (flag != null) return flag === '1'
+  // Timings uploaded before the flag existed: look once, then remember.
+  const has = getSetting(syncKey(id)) != null
+  try { setSetting(syncedKey(id), has ? '1' : '0') } catch { /* ignore */ }
+  return has
+}
 
 function readProgress(id: string): StoredProgress | null {
   try {
@@ -50,12 +62,12 @@ export function folderKey(path?: string): string | undefined {
 
 /** Folder keys of every readable book — lets the Listen shelf leave their narrations out. */
 export async function getBookFolderKeys(): Promise<Set<string>> {
-  if (!isJellyfinConfigured()) return new Set()
+  if (isMockMode()) return new Set()
   try {
     const { userId } = await getSession()
-    const data = await jfGet<{ Items: RawBook[] }>(`/Users/${userId}/Items`, {
-      Recursive: true, IncludeItemTypes: 'Book', Fields: 'Path', Limit: 2000,
-    }, { revalidate: 0 })
+    const data = await jfJson<{ Items: RawBook[] }>(`/Users/${encodeURIComponent(userId)}/Items`, {
+      params: { Recursive: true, IncludeItemTypes: 'Book', Fields: 'Path', Limit: 5000 },
+    })
     return new Set(data.Items.map(it => folderKey(it.Path)).filter((k): k is string => Boolean(k)))
   } catch {
     return new Set()
@@ -65,9 +77,9 @@ export async function getBookFolderKeys(): Promise<Set<string>> {
 /** folder key → AudioBook id, for pairing narrations to books. */
 async function getNarrations(userId: string): Promise<Map<string, string>> {
   try {
-    const data = await jfGet<{ Items: RawBook[] }>(`/Users/${userId}/Items`, {
-      Recursive: true, IncludeItemTypes: 'AudioBook', Fields: 'Path', Limit: 2000,
-    }, { revalidate: 0 })
+    const data = await jfJson<{ Items: RawBook[] }>(`/Users/${encodeURIComponent(userId)}/Items`, {
+      params: { Recursive: true, IncludeItemTypes: 'AudioBook', Fields: 'Path', Limit: 5000 },
+    })
     const map = new Map<string, string>()
     for (const it of data.Items) {
       const key = folderKey(it.Path)
@@ -103,43 +115,59 @@ function toEbook(it: RawBook, narrations: Map<string, string>): Ebook {
     readAt: progress?.at,
     rtl: progress?.rtl,
     audioId: key ? narrations.get(key) : undefined,
-    synced: getSetting(syncKey(it.Id)) != null,
+    synced: hasSync(it.Id),
   }
 }
 
 const FIELDS = 'Path,DateCreated,Tags,People'
 
-export async function getEbooks(): Promise<Ebook[]> {
-  if (!isJellyfinConfigured()) return []
-  try {
-    const { userId } = await getSession()
-    const narrations = getNarrations(userId)
-    const data = await jfGet<{ Items: RawBook[] }>(`/Users/${userId}/Items`, {
+/** Every readable (PDF) book. Throws when Jellyfin is unreachable. Deduped per render. */
+export const getEbooks = cache(async (): Promise<Ebook[]> => {
+  if (isMockMode()) return []
+  const { userId } = await getSession()
+  const narrations = getNarrations(userId)
+  const data = await jfJson<{ Items: RawBook[] }>(`/Users/${encodeURIComponent(userId)}/Items`, {
+    params: {
       Recursive: true,
       IncludeItemTypes: 'Book',
       Fields: FIELDS,
       SortBy: 'SortName',
       EnableImageTypes: 'Primary',
       ImageTypeLimit: 1,
-      Limit: 2000,
-    }, { revalidate: 0 })
-    // The Books library also indexes EPUB/CBZ; this reader only opens PDFs.
-    const map = await narrations
-    return data.Items.filter(it => !it.Path || /\.pdf$/i.test(it.Path)).map(it => toEbook(it, map))
-  } catch {
-    return []
-  }
-}
+      Limit: 5000,
+    },
+  })
+  // The Books library also indexes EPUB/CBZ; this reader only opens PDFs.
+  const map = await narrations
+  return data.Items.filter(it => !it.Path || /\.pdf$/i.test(it.Path)).map(it => toEbook(it, map))
+})
 
-export async function getEbook(id: string): Promise<Ebook | null> {
-  if (!isJellyfinConfigured()) return null
+/** One book. null → not found / not a Book; throws when Jellyfin is unreachable. */
+export const getEbook = cache(async (id: string): Promise<Ebook | null> => {
+  if (isMockMode() || !isItemId(id)) return null
+  let it: RawBook & { Type?: string }
+  let userId: string
   try {
-    const { userId } = await getSession()
-    const it = await jfGet<RawBook & { Type?: string }>(`/Users/${userId}/Items/${id}`, { Fields: FIELDS }, { revalidate: 0 })
-    return it.Type === 'Book' ? toEbook(it, await getNarrations(userId)) : null
-  } catch {
-    return null
+    userId = (await getSession()).userId
+    it = await jfJson<RawBook & { Type?: string }>(`/Users/${encodeURIComponent(userId)}/Items/${encodeURIComponent(id)}`, { params: { Fields: FIELDS } })
+  } catch (e) {
+    if (isNotFound(e)) return null
+    throw e
   }
+  if (it.Type === 'Book') bookIds.add(id)
+  return it.Type === 'Book' ? toEbook(it, await getNarrations(userId)) : null
+})
+
+/** Ids confirmed to be Book items (the file proxy must not serve arbitrary items). */
+const bookIds = new Set<string>()
+
+async function isBook(id: string): Promise<boolean> {
+  if (bookIds.has(id)) return true
+  const { userId } = await getSession()
+  const it = await jfJson<{ Type?: string }>(`/Users/${encodeURIComponent(userId)}/Items/${encodeURIComponent(id)}`).catch(() => null)
+  if (it?.Type !== 'Book') return false
+  bookIds.add(id)
+  return true
 }
 
 export function saveEbookProgress(id: string, p: EbookProgress): void {
@@ -147,13 +175,14 @@ export function saveEbookProgress(id: string, p: EbookProgress): void {
 }
 
 /** The PDF bytes, proxied so the Jellyfin token stays server-side. Range is passed
-    through: pdf.js fetches the pages it needs rather than the whole file. */
-export async function fetchEbookFile(id: string, range: string | null): Promise<Response | null> {
-  if (!isJellyfinConfigured()) return null
-  const { accessToken } = await getSession()
-  const res = await fetch(`${baseUrl()}/Items/${id}/Download?api_key=${accessToken}`, {
-    headers: range ? { Range: range } : {},
-    cache: 'no-store',
+    through (pdf.js fetches the pages it needs) and so is the caller's abort signal. */
+export async function fetchEbookFile(id: string, range: string | null, signal?: AbortSignal): Promise<Response | null> {
+  if (isMockMode() || !isItemId(id)) return null
+  if (!(await isBook(id))) return null
+  const res = await jfFetch(`/Items/${encodeURIComponent(id)}/Download`, {
+    headers: { Accept: '*/*', 'Accept-Encoding': 'identity', ...(range ? { Range: range } : {}) },
+    signal,
+    stream: true,
   })
   return res.ok || res.status === 206 ? res : null
 }
@@ -161,15 +190,14 @@ export async function fetchEbookFile(id: string, range: string | null): Promise<
 /** Save a rendered page-1 JPEG as the item's Primary image, so Jellyfin serves (and
     resizes) the cover from then on — in this app and in Jellyfin's own clients. */
 export async function saveEbookCover(id: string, jpeg: ArrayBuffer): Promise<boolean> {
-  if (!isJellyfinConfigured()) return false
+  if (isMockMode()) return false
   try {
-    const { accessToken } = await getSession()
-    const res = await fetch(`${baseUrl()}/Items/${id}/Images/Primary?api_key=${accessToken}`, {
+    const res = await jfFetch(`/Items/${encodeURIComponent(id)}/Images/Primary`, {
       method: 'POST',
       // Jellyfin's image upload takes the file base64-encoded in the body.
       headers: { 'Content-Type': 'image/jpeg' },
       body: Buffer.from(jpeg).toString('base64'),
-      cache: 'no-store',
+      timeoutMs: 30_000,
     })
     return res.ok
   } catch {
@@ -189,4 +217,5 @@ export function getNarrationSync(id: string): NarrationSync | null {
 
 export function saveNarrationSync(id: string, sync: NarrationSync): void {
   setSetting(syncKey(id), JSON.stringify(sync))
+  setSetting(syncedKey(id), '1')
 }

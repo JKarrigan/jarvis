@@ -16,7 +16,14 @@ export function formatTime(sec: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
 }
 
-/** Pointer-draggable track used for both the seek bar and the volume slider. */
+/**
+ * Pointer-draggable (and keyboard-operable) track used for the seek bar and the
+ * volume slider. `onChange` fires continuously while dragging; `onChangeEnd` fires
+ * once with the final fraction when the drag (or a key press) completes. Seek bars
+ * should preview in `onChange` and only seek in `onChangeEnd` — every seek on an HLS
+ * transcode restarts ffmpeg on the server. Sliders without `onChangeEnd` keep the
+ * old behaviour (act on every `onChange`).
+ */
 export function Slider({
   fraction,
   buffered = 0,
@@ -24,16 +31,23 @@ export function Slider({
   onChangeStart,
   onChangeEnd,
   ariaLabel,
+  ariaValueText,
+  step = 0.05,
 }: {
   fraction: number
   buffered?: number
   onChange: (f: number) => void
   onChangeStart?: () => void
-  onChangeEnd?: () => void
+  onChangeEnd?: (f: number) => void
   ariaLabel: string
+  /** Human value for screen readers (e.g. "12:04 of 1:52:10"). */
+  ariaValueText?: string
+  /** Fraction moved per arrow-key press. */
+  step?: number
 }) {
   const trackRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
+  const lastRef = useRef(0)
 
   const fracFromEvent = (clientX: number) => {
     const el = trackRef.current
@@ -46,16 +60,31 @@ export function Slider({
     e.preventDefault()
     draggingRef.current = true
     onChangeStart?.()
-    onChange(fracFromEvent(e.clientX))
+    lastRef.current = fracFromEvent(e.clientX)
+    onChange(lastRef.current)
     e.currentTarget.setPointerCapture(e.pointerId)
   }
   const move = (e: React.PointerEvent) => {
-    if (draggingRef.current) onChange(fracFromEvent(e.clientX))
+    if (!draggingRef.current) return
+    lastRef.current = fracFromEvent(e.clientX)
+    onChange(lastRef.current)
   }
   const up = () => {
     if (!draggingRef.current) return
     draggingRef.current = false
-    onChangeEnd?.()
+    onChangeEnd?.(lastRef.current)
+  }
+  const key = (e: React.KeyboardEvent) => {
+    const delta = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? step
+      : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -step
+        : null
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? 1 : delta == null ? null : Math.min(1, Math.max(0, fraction + delta))
+    if (to == null) return
+    // Keep the player's own arrow-key shortcuts from also acting on this press.
+    e.preventDefault()
+    e.stopPropagation()
+    onChange(to)
+    onChangeEnd?.(to)
   }
 
   const pct = `${Math.min(100, Math.max(0, fraction * 100))}%`
@@ -67,13 +96,15 @@ export function Slider({
       onPointerMove={move}
       onPointerUp={up}
       onPointerCancel={up}
+      onKeyDown={key}
       role="slider"
       aria-label={ariaLabel}
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(fraction * 100)}
+      aria-valuetext={ariaValueText}
       tabIndex={0}
-      className="group/slider relative flex h-4 w-full cursor-pointer touch-none select-none items-center"
+      className="group/slider relative flex h-4 w-full cursor-pointer touch-none select-none items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
     >
       <div className="absolute inset-x-0 h-1.5 rounded-full bg-white/25" />
       {buffered > 0 && (
@@ -84,7 +115,7 @@ export function Slider({
       )}
       <div className="absolute h-1.5 rounded-full" style={{ width: pct, background: ACCENT }} />
       <div
-        className="absolute h-3 w-3 -translate-x-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover/slider:opacity-100"
+        className="absolute h-3 w-3 -translate-x-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover/slider:opacity-100 group-focus-visible/slider:opacity-100 [@media(hover:none)]:opacity-100"
         style={{ left: pct }}
       />
     </div>

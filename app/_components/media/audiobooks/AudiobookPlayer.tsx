@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { AudiobookChapter, AudiobookDetail, AudiobookPlayback } from '../types'
 import { chapterAt } from './format'
+import { postPlaybackReport, secondsToTicks, type ReportKind } from '../playback'
 
 /**
  * The persistent audiobook player. Unlike JellyfinPlayer (a modal that unmounts
@@ -15,6 +16,9 @@ import { chapterAt } from './format'
 
 const STORAGE_KEY = 'reel.audiobook.v1'
 const REPORT_INTERVAL_MS = 10_000
+/** Automatic reloads after a stream error before the player gives up and shows Retry. */
+const MAX_AUTO_RECOVERIES = 2
+const RECOVERY_WINDOW_MS = 60_000
 export const SPEEDS = [0.6, 0.8, 1, 1.2, 1.5, 1.75, 2]
 export const SLEEP_MINUTES = [15, 30, 60]
 
@@ -39,6 +43,8 @@ interface PlayerValue {
   /** Load (if needed) and play a book. `chapterIndex` jumps to that chapter; `fromStart` ignores the resume point. */
   play: (id: string, opts?: { chapterIndex?: number; fromStart?: boolean }) => void
   toggle: () => void
+  /** Reload the loaded book's stream at the last known position and play (after an error). */
+  retry: () => void
   seek: (time: number) => void
   skip: (delta: number) => void
   goToChapter: (index: number) => void
@@ -116,32 +122,30 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   const sourceRef = useRef<AudiobookPlayback | null>(null)
   const sleepRef = useRef<SleepMode>(sleep)
   const startedRef = useRef(false)
+  const statusRef = useRef<Status>(status)
+  /** Last position the element reported — survives the element losing its stream. */
+  const lastTimeRef = useRef(0)
+  const recoveriesRef = useRef<number[]>([])
   const loadTokenRef = useRef(0)
   /** Seek + autoplay to apply once the new stream's metadata is in. */
   const pendingRef = useRef<{ time: number; autoplay: boolean } | null>(null)
   useEffect(() => { bookRef.current = book }, [book])
   useEffect(() => { sleepRef.current = sleep }, [sleep])
+  useEffect(() => { statusRef.current = status }, [status])
 
-  const report = useCallback((kind: 'start' | 'progress' | 'stopped') => {
+  const report = useCallback((kind: ReportKind) => {
     const audio = audioRef.current
     const src = sourceRef.current
     if (!audio || !src) return
-    void fetch('/api/jellyfin/report', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // keepalive lets the final "stopped" survive a tab close / navigation away.
-      keepalive: kind === 'stopped',
-      body: JSON.stringify({
-        kind,
-        report: {
-          ItemId: src.itemId,
-          MediaSourceId: src.mediaSourceId,
-          PlaySessionId: src.playSessionId,
-          PositionTicks: Math.round(audio.currentTime * 1e7),
-          IsPaused: audio.paused,
-        },
-      }),
-    }).catch(() => { })
+    // A dead element reads 0 — report where the listener actually was.
+    const position = audio.readyState > 0 ? audio.currentTime : lastTimeRef.current
+    void postPlaybackReport(kind, {
+      ItemId: src.itemId,
+      MediaSourceId: src.mediaSourceId,
+      PlaySessionId: src.playSessionId,
+      PositionTicks: secondsToTicks(position),
+      IsPaused: audio.paused,
+    })
   }, [])
 
   const stopSession = useCallback(() => {
@@ -149,7 +153,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     startedRef.current = false
   }, [report])
 
-  const load = useCallback(async (id: string, opts: { chapterIndex?: number; fromStart?: boolean; autoplay: boolean }) => {
+  const load = useCallback(async (id: string, opts: { chapterIndex?: number; fromStart?: boolean; startAt?: number; autoplay: boolean }) => {
     const audio = audioRef.current
     if (!audio) return
     const token = ++loadTokenRef.current
@@ -166,10 +170,11 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
       const chapter = opts.chapterIndex != null ? data.book.chapters[opts.chapterIndex] : undefined
       // A finished book (or one parked in its last seconds) restarts rather than resuming at the end.
       const resume = data.book.finished || data.book.position > data.book.duration - 10 ? 0 : data.book.position
-      const startAt = chapter ? chapter.start : opts.fromStart ? 0 : resume
+      const startAt = opts.startAt ?? (chapter ? chapter.start : opts.fromStart ? 0 : resume)
       setBook(data.book)
       setRateState(rateFor(id))
       setTime(startAt)
+      lastTimeRef.current = startAt
       writePrefs({ bookId: id })
       sourceRef.current = data.source
       setPlayMethodLabel(data.source?.playMethodLabel ?? null)
@@ -189,10 +194,27 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     }
   }, [stopSession])
 
+  // Reload the current book's stream where it left off — the recovery for a dead
+  // element (network drop, NAS restart); calling play() on it would do nothing.
+  const reload = useCallback((autoplay: boolean) => {
+    const id = bookRef.current?.id
+    if (id) void load(id, { startAt: lastTimeRef.current, autoplay })
+  }, [load])
+
+  const retry = useCallback(() => {
+    recoveriesRef.current = []
+    reload(true)
+  }, [reload])
+
   const play = useCallback<PlayerValue['play']>((id, opts = {}) => {
     const audio = audioRef.current
     if (!audio) return
-    if (bookRef.current?.id === id && sourceRef.current && audio.src) {
+    const dead = statusRef.current === 'error' || audio.error != null
+    if (bookRef.current?.id === id && dead && opts.chapterIndex == null && !opts.fromStart) {
+      retry()
+      return
+    }
+    if (bookRef.current?.id === id && sourceRef.current && audio.src && !dead) {
       const chapter = opts.chapterIndex != null ? bookRef.current.chapters[opts.chapterIndex] : undefined
       if (chapter) audio.currentTime = chapter.start
       else if (opts.fromStart) audio.currentTime = 0
@@ -200,14 +222,15 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
       return
     }
     void load(id, { ...opts, autoplay: true })
-  }, [load])
+  }, [load, retry])
 
   const toggle = useCallback(() => {
     const audio = audioRef.current
     if (!audio || !sourceRef.current) return
+    if (statusRef.current === 'error' || audio.error) return retry()
     if (audio.paused) void audio.play().catch(() => { })
     else audio.pause()
-  }, [])
+  }, [retry])
 
   const seek = useCallback((t: number) => {
     const audio = audioRef.current
@@ -331,6 +354,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     }
     const onTimeUpdate = () => {
       setTime(audio.currentTime)
+      if (audio.readyState > 0) lastTimeRef.current = audio.currentTime
       const s = sleepRef.current
       const b = bookRef.current
       if (s.kind === 'chapter' && b && !audio.paused) {
@@ -350,9 +374,19 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     }
     const onError = () => {
       if (!audio.getAttribute('src')) return
-      setStatus('error')
-      setError('The stream stopped responding. Try again.')
+      const wasPlaying = !audio.paused || startedRef.current
       setPlaying(false)
+      // Transient failures (Wi-Fi blip, NAS restart) reload the stream at the last
+      // position by themselves; repeated failures stop and offer Retry.
+      const now = Date.now()
+      const recent = recoveriesRef.current.filter(t => now - t < RECOVERY_WINDOW_MS)
+      if (recent.length < MAX_AUTO_RECOVERIES) {
+        recoveriesRef.current = [...recent, now]
+        reload(wasPlaying)
+        return
+      }
+      setStatus('error')
+      setError('The stream stopped responding.')
     }
     audio.addEventListener('loadedmetadata', onLoadedMetadata)
     audio.addEventListener('play', onPlay)
@@ -370,7 +404,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
       audio.removeEventListener('ended', onEnded)
       audio.removeEventListener('error', onError)
     }
-  }, [report, stopSession])
+  }, [report, stopSession, reload])
 
   // Progress heartbeat while playing.
   useEffect(() => {
@@ -440,11 +474,11 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
 
   const value = useMemo<PlayerValue>(() => ({
     book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
-    play, toggle, seek, skip, goToChapter, prevChapter, nextChapter,
+    play, toggle, retry, seek, skip, goToChapter, prevChapter, nextChapter,
     setRate, setVolume, setSleep, setExpanded, refreshBook, close,
   }), [
     book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
-    play, toggle, seek, skip, goToChapter, prevChapter, nextChapter,
+    play, toggle, retry, seek, skip, goToChapter, prevChapter, nextChapter,
     setRate, setVolume, setSleep, refreshBook, close,
   ])
 

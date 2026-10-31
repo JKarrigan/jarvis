@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Sheet } from '@/app/_components/HueControls'
+import { Sheet } from '../Sheet'
 import type { AudiobookDetail, AudiobookEdit } from '../types'
 import { useAudiobookPlayer } from './AudiobookPlayer'
 
@@ -39,7 +39,7 @@ export function EditAudiobookSheet({ book, onClose }: { book: AudiobookDetail; o
       ...(multi ? { chapterTitles: lines.slice(0, book.chapters.length) } : {}),
     }
     try {
-      const res = await fetch(`/api/jellyfin/audiobooks/${book.id}`, {
+      const res = await fetch(`/api/jellyfin/audiobooks/${encodeURIComponent(book.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(edit),
@@ -56,7 +56,7 @@ export function EditAudiobookSheet({ book, onClose }: { book: AudiobookDetail; o
   }
 
   return (
-    <Sheet onClose={onClose} wide>
+    <Sheet onClose={onClose} wide label="Edit details">
       <form onSubmit={save} className="space-y-4 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">Edit details</h3>
         <div className="flex gap-3">

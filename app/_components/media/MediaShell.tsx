@@ -1,36 +1,30 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { MediaRail } from './MediaRail'
 import { SearchModal } from './SearchModal'
 import { PageTransition } from './PageTransition'
 import { AudiobookPlayerProvider, useAudiobookPlayer } from './audiobooks/AudiobookPlayer'
 import { AudiobookPlayerChrome } from './audiobooks/PlayerChrome'
-import type { ReelTitle, CollectionSummary, Audiobook, Ebook } from './types'
+import { useHotkeys } from './hooks'
 
 /**
  * Media chrome: the left icon rail (desktop) / bottom tab bar (mobile), the
- * global Search modal, and the scrollable content area. The rail floats over
- * content (fixed); pages apply their own `--rail` / `--gx` gutters. The audiobook
- * player is mounted here, outside PageTransition, so a book keeps playing across
- * navigation.
+ * global Search modal (⌘K / Ctrl+K, the rail's Search button, the mobile Search
+ * tab), and the scrollable content area. The rail floats over content (fixed);
+ * pages apply their own `--rail` / `--gx` gutters. The audiobook player is mounted
+ * here, outside PageTransition, so a book keeps playing across navigation.
  */
-export function MediaShell({
-  catalog, collections, audiobooks, ebooks, children,
-}: { catalog: ReelTitle[]; collections: CollectionSummary[]; audiobooks: Audiobook[]; ebooks: Ebook[]; children: React.ReactNode }) {
+export function MediaShell({ children }: { children: React.ReactNode }) {
   const [searchOpen, setSearchOpen] = useState(false)
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        setSearchOpen(o => !o)
-      }
+  useHotkeys(e => {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault()
+      setSearchOpen(o => !o)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, { allowModifiers: true, allowInInputs: true, ignoreModals: true })
 
   return (
     <AudiobookPlayerProvider>
@@ -38,7 +32,7 @@ export function MediaShell({
       <ShellMain>{children}</ShellMain>
       <AudiobookPlayerChrome />
       <AnimatePresence>
-        {searchOpen && <SearchModal catalog={catalog} collections={collections} audiobooks={audiobooks} ebooks={ebooks} onClose={() => setSearchOpen(false)} />}
+        {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
       </AnimatePresence>
     </AudiobookPlayerProvider>
   )

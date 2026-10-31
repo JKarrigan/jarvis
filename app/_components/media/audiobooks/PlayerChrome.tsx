@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Sheet } from '@/app/_components/HueControls'
+import { Sheet } from '../Sheet'
+import { useDialog, useHotkeys } from '../hooks'
 import { Slider } from '../playerUi'
 import {
   Back15Icon, Forward30Icon, PlaySolidIcon, PauseIcon, PrevChapterIcon, NextChapterIcon,
@@ -23,29 +24,51 @@ function sleepLabel(sleep: SleepMode): string {
   return 'Sleep timer'
 }
 
-/** Spinner while the stream resolves, else play/pause. */
+/** Spinner while the stream resolves, a retry arrow after an error, else play/pause. */
 function PlayGlyph({ className }: { className: string }) {
   const { playing, status } = useAudiobookPlayer()
   if (status === 'loading') {
     return <span className={`${className} animate-spin rounded-full border-2 border-current border-t-transparent`} />
   }
+  if (status === 'error') {
+    return (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+        <path d="M16 10a6 6 0 1 1-1.76-4.24" /><path d="M16 3.5V6.5h-3" />
+      </svg>
+    )
+  }
   return playing ? <PauseIcon className={className} /> : <PlaySolidIcon className={className} />
+}
+
+/** The big round button: play/pause, or Retry once the stream has failed. */
+function usePlayButton() {
+  const { status, toggle, retry } = useAudiobookPlayer()
+  const failed = status === 'error'
+  return {
+    label: failed ? 'Retry' : 'Play or pause',
+    onClick: failed ? retry : toggle,
+    disabled: status === 'idle',
+  }
 }
 
 /** Scrubs the *current chapter* — a 16-hour bar is useless for finding your place. */
 function ChapterScrubber({ showTimes = true }: { showTimes?: boolean }) {
   const { book, seek } = useAudiobookPlayer()
   const time = useAudiobookTime()
+  // While dragging, preview the position; seek once on release.
+  const [drag, setDrag] = useState<number | null>(null)
   if (!book) return null
   const c = chapterAt(book.chapters, time)
   const start = c?.start ?? 0
   const len = c?.duration || book.duration || 1
-  const into = Math.min(len, Math.max(0, time - start))
+  const into = drag != null ? drag * len : Math.min(len, Math.max(0, time - start))
   const slider = (
     <Slider
       ariaLabel="Position in chapter"
+      ariaValueText={`${clock(into)} of ${clock(len)}`}
       fraction={into / len}
-      onChange={f => seek(start + f * len)}
+      onChange={setDrag}
+      onChangeEnd={f => { seek(start + f * len); setDrag(null) }}
     />
   )
   if (!showTimes) return slider
@@ -73,7 +96,7 @@ function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClos
     </button>
   )
   return (
-    <Sheet onClose={onClose} wide={kind === 'chapters'}>
+    <Sheet onClose={onClose} wide={kind === 'chapters'} label={kind === 'speed' ? 'Playback speed' : kind === 'sleep' ? 'Sleep timer' : 'Chapters'}>
       <div className="space-y-2 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">
           {kind === 'speed' ? 'Playback speed' : kind === 'sleep' ? 'Sleep timer' : 'Chapters'}
@@ -101,8 +124,9 @@ function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClos
 }
 
 function MiniPlayer({ onSheet }: { onSheet: (k: SheetKind) => void }) {
-  const { book, status, error, rate, sleep, toggle, skip, setExpanded, close } = useAudiobookPlayer()
+  const { book, status, error, rate, sleep, skip, setExpanded, close } = useAudiobookPlayer()
   const time = useAudiobookTime()
+  const playBtn = usePlayButton()
   if (!book) return null
   const chapter = chapterAt(book.chapters, time)
   const canPlay = status === 'ready' || status === 'loading'
@@ -136,9 +160,9 @@ function MiniPlayer({ onSheet }: { onSheet: (k: SheetKind) => void }) {
         </button>
         <button
           type="button"
-          aria-label="Play or pause"
-          disabled={!canPlay}
-          onClick={toggle}
+          aria-label={playBtn.label}
+          disabled={playBtn.disabled}
+          onClick={playBtn.onClick}
           className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-accent text-ink-on-accent shadow-[0_8px_22px_var(--glow)] transition hover:brightness-[1.06] disabled:opacity-40 md:h-[46px] md:w-[46px]"
         >
           <PlayGlyph className="h-5 w-5" />
@@ -184,6 +208,11 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
     toggle, skip, prevChapter, nextChapter, goToChapter, setVolume, setExpanded, close,
   } = useAudiobookPlayer()
   const time = useAudiobookTime()
+  const playBtn = usePlayButton()
+  const rootRef = useRef<HTMLDivElement>(null)
+  // A real modal: focus moves in and is trapped, Escape collapses it, focus returns on
+  // close. Paused while an option sheet (itself a dialog) is open on top.
+  useDialog(rootRef, () => setExpanded(false), { enabled: !sheetOpen })
 
   useEffect(() => {
     const prev = document.body.style.overflow
@@ -191,19 +220,13 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
     return () => { document.body.style.overflow = prev }
   }, [])
 
-  useEffect(() => {
-    if (sheetOpen) return
-    function onKey(e: KeyboardEvent) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.target instanceof HTMLElement && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
-      if (e.key === 'Escape') setExpanded(false)
-      else if (e.key === ' ' || e.key.toLowerCase() === 'k') { e.preventDefault(); toggle() }
-      else if (e.key === 'ArrowLeft') skip(-15)
-      else if (e.key === 'ArrowRight') skip(30)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [sheetOpen, setExpanded, toggle, skip])
+  useHotkeys((e) => {
+    // Space on a focused button already activates it — don't toggle twice.
+    if (e.key === ' ' && e.target instanceof HTMLButtonElement) return
+    if (e.key === ' ' || e.key.toLowerCase() === 'k') { e.preventDefault(); toggle() }
+    else if (e.key === 'ArrowLeft') skip(-15)
+    else if (e.key === 'ArrowRight') skip(30)
+  }, { enabled: !sheetOpen, scope: rootRef })
 
   if (!book) return null
   const chapter = chapterAt(book.chapters, time)
@@ -217,7 +240,9 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
 
   return (
     <motion.div
+      ref={rootRef}
       role="dialog"
+      aria-modal="true"
       aria-label={`Now playing: ${book.title}`}
       initial={{ y: '100%' }}
       animate={{ y: 0 }}
@@ -298,9 +323,10 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
               </button>
               <button
                 type="button"
-                aria-label="Play or pause"
-                disabled={!canPlay}
-                onClick={toggle}
+                data-autofocus
+                aria-label={playBtn.label}
+                disabled={playBtn.disabled}
+                onClick={playBtn.onClick}
                 className="grid h-[78px] w-[78px] shrink-0 place-items-center rounded-full bg-accent text-ink-on-accent shadow-[0_14px_44px_var(--glow)] transition hover:scale-[1.03] hover:brightness-[1.06] disabled:opacity-40 md:h-[96px] md:w-[96px]"
               >
                 <PlayGlyph className="h-8 w-8 md:h-10 md:w-10" />

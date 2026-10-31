@@ -1,28 +1,55 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { THEMES, type ThemeName } from './themeTokens'
+import type { ReelTitle } from './types'
+import type { UserView } from './selectors'
 
-export type ThemeName = 'ember' | 'aurora' | 'sage' | 'midnight' | 'noir'
+export { THEMES, type ThemeName }
 
-export const THEMES: { key: ThemeName; name: string; blurb: string; accent: string; bg: string }[] = [
-  { key: 'ember', name: 'Ember', blurb: 'Warm gold, candlelit darks', accent: '#e0a872', bg: 'radial-gradient(135% 135% at 94% 100%, rgba(224,168,114,0.17), transparent 62%), linear-gradient(150deg,#14110c,#0b0805)' },
-  { key: 'aurora', name: 'Aurora', blurb: 'Violet glow, glassy surfaces', accent: '#c08af0', bg: 'radial-gradient(135% 135% at 94% 100%, rgba(168,108,224,0.20), transparent 62%), linear-gradient(150deg,#0f0c18,#08060d)' },
-  { key: 'sage', name: 'Sage', blurb: 'Soft green, calm and low-key', accent: '#86cfa6', bg: 'radial-gradient(135% 135% at 94% 100%, rgba(110,200,150,0.15), transparent 62%), linear-gradient(150deg,#0c1511,#060e09)' },
-  { key: 'midnight', name: 'Midnight', blurb: 'Electric blue, deep space', accent: '#8ea6ff', bg: 'radial-gradient(135% 135% at 94% 100%, rgba(90,110,230,0.22), transparent 62%), linear-gradient(150deg,#0a0d1d,#05060f)' },
-  { key: 'noir', name: 'Noir', blurb: 'Restrained, near monochrome', accent: '#b9b4d6', bg: 'radial-gradient(135% 135% at 94% 100%, rgba(120,116,150,0.15), transparent 62%), linear-gradient(150deg,#111016,#090909)' },
-]
+/**
+ * Per-title override. Legacy `boolean` entries are local-only (written before
+ * favorites/watched synced to Jellyfin, or in mock mode) and always win. Object
+ * entries are optimistic copies of a write-through to Jellyfin: they win until the
+ * server's own value (which the write updated) catches up — see `resolveOverride`.
+ */
+type Override = boolean | { v: boolean; at: number; synced?: boolean }
+type OverrideMap = Record<string, Override>
+
+/** How long a synced override may outrank the server seed (covers server-side caching). */
+const OVERRIDE_TTL_MS = 10 * 60_000
+
+function resolveOverride(map: OverrideMap, id: string, serverDefault = false): boolean {
+  const o = map[id]
+  if (o === undefined) return serverDefault
+  if (typeof o === 'boolean') return o
+  // The server agrees, or the override is old enough that the server is authoritative.
+  if (o.synced && (o.v === serverDefault || Date.now() - o.at > OVERRIDE_TTL_MS)) return serverDefault
+  return o.v
+}
+
+/** Drop synced overrides past their TTL (the server has caught up by then). */
+function pruneOverrides(map: OverrideMap): OverrideMap {
+  const now = Date.now()
+  let changed = false
+  const out: OverrideMap = {}
+  for (const [id, o] of Object.entries(map)) {
+    if (typeof o === 'object' && o.synced && now - o.at > OVERRIDE_TTL_MS) { changed = true; continue }
+    out[id] = o
+  }
+  return changed ? out : map
+}
 
 interface ProfileState {
   theme: ThemeName
-  /** Local override maps (presence wins over the Jellyfin server seed). */
-  favorites: Record<string, boolean>
-  watched: Record<string, boolean>
+  favorites: OverrideMap
+  watched: OverrideMap
   ratings: Record<string, number>
   notes: Record<string, string>
   watchlist: string[]
   pickList: string[]
   /** Keyed by Jellyfin episode Id. */
-  epWatched: Record<string, boolean>
+  epWatched: OverrideMap
 }
 
 interface PersistShape {
@@ -36,16 +63,7 @@ const DEFAULT_PROFILE = 'A'
 const PROFILE_CYCLE = ['A', 'B', 'C']
 
 function emptyProfile(): ProfileState {
-  return {
-    theme: 'ember',
-    favorites: {},
-    watched: {},
-    ratings: {},
-    notes: {},
-    watchlist: [],
-    pickList: [],
-    epWatched: {},
-  }
+  return { theme: 'ember', favorites: {}, watched: {}, ratings: {}, notes: {}, watchlist: [], pickList: [], epWatched: {} }
 }
 
 function initialState(): PersistShape {
@@ -56,44 +74,66 @@ function toggleInArray(arr: string[], id: string): string[] {
   return arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]
 }
 
-interface MediaContextValue {
+type OverrideField = 'favorites' | 'watched' | 'epWatched'
+
+/** Write a favorite / played flag through to Jellyfin. Resolves to 'synced', 'local'
+    (mock mode: nothing to write to) or 'failed'. */
+async function writeThrough(field: OverrideField, id: string, value: boolean): Promise<'synced' | 'local' | 'failed'> {
+  const kind = field === 'favorites' ? 'favorite' : 'played'
+  try {
+    const res = await fetch(`/api/jellyfin/${kind}/${encodeURIComponent(id)}`, { method: value ? 'POST' : 'DELETE' })
+    if (!res.ok) return 'failed'
+    const body = (await res.json().catch(() => ({}))) as { local?: boolean }
+    return body.local ? 'local' : 'synced'
+  } catch {
+    return 'failed'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Contexts. Split so a component only re-renders for the state it reads: typing a
+// note must not re-render every poster card on the page.
+// ---------------------------------------------------------------------------
+
+interface ProfileContextValue {
   ready: boolean
   activeProfile: string
   profileIds: string[]
   switchProfile: () => void
-
   theme: ThemeName
   setTheme: (t: ThemeName) => void
+}
 
-  // per-title selectors (server value seeds the result; local override wins)
+interface TitleStateValue {
   isFavorite: (id: string, serverDefault?: boolean) => boolean
   isWatched: (id: string, serverDefault?: boolean) => boolean
-  rating: (id: string) => number
-  notes: (id: string) => string
+  isEpWatched: (episodeId: string, serverDefault?: boolean) => boolean
   inWatchlist: (id: string) => boolean
   inPickList: (id: string) => boolean
-  isEpWatched: (episodeId: string, serverDefault?: boolean) => boolean
-
-  // actions
   toggleFavorite: (id: string, serverDefault?: boolean) => void
   toggleWatched: (id: string, serverDefault?: boolean) => void
-  setRating: (id: string, value: number) => void
-  setNotes: (id: string, text: string) => void
+  toggleEpWatched: (episodeId: string, serverDefault?: boolean) => void
   toggleWatchlist: (id: string) => void
   togglePickList: (id: string) => void
   clearPickList: () => void
   removeFromPickList: (id: string) => void
-  toggleEpWatched: (episodeId: string, serverDefault?: boolean) => void
-
-  // raw lists for pages that enumerate
   watchlist: string[]
   pickList: string[]
-  favoriteOverrides: Record<string, boolean>
-  watchedOverrides: Record<string, boolean>
+}
+
+interface NotesValue {
+  rating: (id: string) => number
+  notes: (id: string) => string
+  setRating: (id: string, value: number) => void
+  setNotes: (id: string, text: string) => void
   ratings: Record<string, number>
 }
 
-const MediaContext = createContext<MediaContextValue | null>(null)
+type MediaContextValue = ProfileContextValue & TitleStateValue & NotesValue
+
+const ProfileContext = createContext<ProfileContextValue | null>(null)
+const TitleStateContext = createContext<TitleStateValue | null>(null)
+const NotesContext = createContext<NotesValue | null>(null)
 
 export function MediaProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<PersistShape>(initialState)
@@ -113,7 +153,13 @@ export function MediaProvider({ children }: { children: React.ReactNode }) {
           // ensure every profile has all keys (forward-compat merge)
           const merged: Record<string, ProfileState> = {}
           for (const [id, p] of Object.entries(parsed.profiles)) {
-            merged[id] = { ...emptyProfile(), ...p }
+            const full = { ...emptyProfile(), ...p }
+            merged[id] = {
+              ...full,
+              favorites: pruneOverrides(full.favorites),
+              watched: pruneOverrides(full.watched),
+              epWatched: pruneOverrides(full.epWatched),
+            }
           }
           setState({ v: 1, activeProfile: parsed.activeProfile || DEFAULT_PROFILE, profiles: merged })
         }
@@ -126,14 +172,18 @@ export function MediaProvider({ children }: { children: React.ReactNode }) {
   }, [])
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Persist on change (after hydration).
+  // Persist after hydration, debounced (a note is typed one key at a time), and
+  // flushed when the page is hidden so nothing is lost on close.
+  const latest = useRef(state)
   useEffect(() => {
+    latest.current = state
     if (!hydrated.current) return
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    } catch {
-      /* ignore quota / private-mode errors */
+    const write = () => {
+      try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(latest.current)) } catch { /* quota / private mode */ }
     }
+    const t = setTimeout(write, 400)
+    window.addEventListener('pagehide', write)
+    return () => { clearTimeout(t); window.removeEventListener('pagehide', write) }
   }, [state])
 
   const profile = state.profiles[state.activeProfile] ?? emptyProfile()
@@ -146,60 +196,105 @@ export function MediaProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
-  const value = useMemo<MediaContextValue>(() => {
-    const overrideBool = (map: Record<string, boolean>, id: string, serverDefault = false) =>
-      Object.prototype.hasOwnProperty.call(map, id) ? map[id] : serverDefault
+  // Optimistic set + write-through to Jellyfin; reverted if the write fails.
+  const setOverride = useCallback((field: OverrideField, id: string, next: boolean) => {
+    const at = Date.now()
+    updateProfile(p => ({ ...p, [field]: { ...p[field], [id]: { v: next, at } } }))
+    void writeThrough(field, id, next).then(result => {
+      updateProfile(p => {
+        const cur = p[field][id]
+        // A newer toggle has superseded this one — leave it alone.
+        if (typeof cur !== 'object' || cur.at !== at) return p
+        const map = { ...p[field] }
+        if (result === 'synced') map[id] = { v: next, at: Date.now(), synced: true }
+        else if (result === 'local') map[id] = next
+        else delete map[id]
+        return { ...p, [field]: map }
+      })
+    })
+  }, [updateProfile])
 
-    return {
-      ready,
-      activeProfile: state.activeProfile,
-      profileIds: Object.keys(state.profiles),
-      switchProfile: () =>
-        setState(s => {
-          const order = PROFILE_CYCLE
-          const idx = order.indexOf(s.activeProfile)
-          const next = order[(idx + 1) % order.length]
-          const profiles = s.profiles[next] ? s.profiles : { ...s.profiles, [next]: emptyProfile() }
-          return { ...s, activeProfile: next, profiles }
-        }),
+  const profileValue = useMemo<ProfileContextValue>(() => ({
+    ready,
+    activeProfile: state.activeProfile,
+    profileIds: Object.keys(state.profiles),
+    switchProfile: () =>
+      setState(s => {
+        const idx = PROFILE_CYCLE.indexOf(s.activeProfile)
+        const next = PROFILE_CYCLE[(idx + 1) % PROFILE_CYCLE.length]
+        const profiles = s.profiles[next] ? s.profiles : { ...s.profiles, [next]: emptyProfile() }
+        return { ...s, activeProfile: next, profiles }
+      }),
+    theme: profile.theme,
+    setTheme: (t) => updateProfile(p => ({ ...p, theme: t })),
+  }), [ready, state.activeProfile, state.profiles, profile.theme, updateProfile])
 
-      theme: profile.theme,
-      setTheme: (t) => updateProfile(p => ({ ...p, theme: t })),
+  const { favorites, watched, epWatched, watchlist, pickList, ratings, notes } = profile
 
-      isFavorite: (id, d) => overrideBool(profile.favorites, id, d),
-      isWatched: (id, d) => overrideBool(profile.watched, id, d),
-      rating: (id) => profile.ratings[id] ?? 0,
-      notes: (id) => profile.notes[id] ?? '',
-      inWatchlist: (id) => profile.watchlist.includes(id),
-      inPickList: (id) => profile.pickList.includes(id),
-      isEpWatched: (epId, d) => overrideBool(profile.epWatched, epId, d),
+  const titleValue = useMemo<TitleStateValue>(() => ({
+    isFavorite: (id, d) => resolveOverride(favorites, id, d),
+    isWatched: (id, d) => resolveOverride(watched, id, d),
+    isEpWatched: (id, d) => resolveOverride(epWatched, id, d),
+    inWatchlist: (id) => watchlist.includes(id),
+    inPickList: (id) => pickList.includes(id),
+    toggleFavorite: (id, d) => setOverride('favorites', id, !resolveOverride(favorites, id, d)),
+    toggleWatched: (id, d) => setOverride('watched', id, !resolveOverride(watched, id, d)),
+    toggleEpWatched: (id, d) => setOverride('epWatched', id, !resolveOverride(epWatched, id, d)),
+    toggleWatchlist: (id) => updateProfile(p => ({ ...p, watchlist: toggleInArray(p.watchlist, id) })),
+    togglePickList: (id) => updateProfile(p => ({ ...p, pickList: toggleInArray(p.pickList, id) })),
+    clearPickList: () => updateProfile(p => ({ ...p, pickList: [] })),
+    removeFromPickList: (id) => updateProfile(p => ({ ...p, pickList: p.pickList.filter(x => x !== id) })),
+    watchlist,
+    pickList,
+  }), [favorites, watched, epWatched, watchlist, pickList, setOverride, updateProfile])
 
-      toggleFavorite: (id, d) =>
-        updateProfile(p => ({ ...p, favorites: { ...p.favorites, [id]: !overrideBool(p.favorites, id, d) } })),
-      toggleWatched: (id, d) =>
-        updateProfile(p => ({ ...p, watched: { ...p.watched, [id]: !overrideBool(p.watched, id, d) } })),
-      setRating: (id, value) => updateProfile(p => ({ ...p, ratings: { ...p.ratings, [id]: value } })),
-      setNotes: (id, text) => updateProfile(p => ({ ...p, notes: { ...p.notes, [id]: text } })),
-      toggleWatchlist: (id) => updateProfile(p => ({ ...p, watchlist: toggleInArray(p.watchlist, id) })),
-      togglePickList: (id) => updateProfile(p => ({ ...p, pickList: toggleInArray(p.pickList, id) })),
-      clearPickList: () => updateProfile(p => ({ ...p, pickList: [] })),
-      removeFromPickList: (id) => updateProfile(p => ({ ...p, pickList: p.pickList.filter(x => x !== id) })),
-      toggleEpWatched: (epId, d) =>
-        updateProfile(p => ({ ...p, epWatched: { ...p.epWatched, [epId]: !overrideBool(p.epWatched, epId, d) } })),
+  const notesValue = useMemo<NotesValue>(() => ({
+    rating: (id) => ratings[id] ?? 0,
+    notes: (id) => notes[id] ?? '',
+    setRating: (id, value) => updateProfile(p => ({ ...p, ratings: { ...p.ratings, [id]: value } })),
+    setNotes: (id, text) => updateProfile(p => ({ ...p, notes: { ...p.notes, [id]: text } })),
+    ratings,
+  }), [ratings, notes, updateProfile])
 
-      watchlist: profile.watchlist,
-      pickList: profile.pickList,
-      favoriteOverrides: profile.favorites,
-      watchedOverrides: profile.watched,
-      ratings: profile.ratings,
-    }
-  }, [ready, state.activeProfile, state.profiles, profile, updateProfile])
-
-  return <MediaContext.Provider value={value}>{children}</MediaContext.Provider>
+  return (
+    <ProfileContext.Provider value={profileValue}>
+      <TitleStateContext.Provider value={titleValue}>
+        <NotesContext.Provider value={notesValue}>{children}</NotesContext.Provider>
+      </TitleStateContext.Provider>
+    </ProfileContext.Provider>
+  )
 }
 
+function need<T>(v: T | null, hook: string): T {
+  if (!v) throw new Error(`${hook} must be used within <MediaProvider>`)
+  return v
+}
+
+/** Theme + profile only. */
+export function useMediaProfile(): ProfileContextValue {
+  return need(useContext(ProfileContext), 'useMediaProfile')
+}
+
+/** Favorites / watched / watchlist / picker list — what cards and detail actions read. */
+export function useTitleState(): TitleStateValue {
+  return need(useContext(TitleStateContext), 'useTitleState')
+}
+
+/** Personal ratings + notes. */
+export function useMediaNotes(): NotesValue {
+  return need(useContext(NotesContext), 'useMediaNotes')
+}
+
+/** Everything (re-renders on any change — prefer the narrower hooks in lists). */
 export function useMedia(): MediaContextValue {
-  const ctx = useContext(MediaContext)
-  if (!ctx) throw new Error('useMedia must be used within <MediaProvider>')
-  return ctx
+  return { ...useMediaProfile(), ...useTitleState(), ...useMediaNotes() }
+}
+
+/** Resolved watched/favorite predicates (server seed + local overlay) for the selectors. */
+export function useUserView(): UserView {
+  const { isWatched, isFavorite } = useTitleState()
+  return useMemo(() => ({
+    watched: (t: ReelTitle) => isWatched(t.id, t.watched),
+    favorite: (t: ReelTitle) => isFavorite(t.id, t.favorite),
+  }), [isWatched, isFavorite])
 }

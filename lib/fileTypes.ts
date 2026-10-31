@@ -1,20 +1,3 @@
-export type FileEntry = {
-  name: string
-  kind: 'file'
-  size: number
-  modified: Date
-  ext: string
-}
-
-export type DirEntry = {
-  name: string
-  kind: 'dir'
-  modified: Date
-  children: Entry[]
-}
-
-export type Entry = FileEntry | DirEntry
-
 export type ApiFileEntry = {
   name: string
   kind: 'file'
@@ -40,25 +23,18 @@ const KB = 1024
 const MB = 1024 * KB
 const GB = 1024 * MB
 
-export function sortEntries(entries: ApiEntry[], key: SortKey): ApiEntry[]
-export function sortEntries(entries: Entry[], key: SortKey): Entry[]
-export function sortEntries(entries: (ApiEntry | Entry)[], key: SortKey): (ApiEntry | Entry)[] {
+export function sortEntries<T extends ApiEntry>(entries: T[], key: SortKey): T[] {
   const dirs = entries.filter(e => e.kind === 'dir')
   const files = entries.filter(e => e.kind === 'file')
 
-  const getTime = (e: ApiEntry | Entry) => {
-    const m = e.modified
-    return typeof m === 'string' ? new Date(m).getTime() : (m as Date).getTime()
-  }
-
-  const cmp = (a: ApiEntry | Entry, b: ApiEntry | Entry): number => {
+  const cmp = (a: T, b: T): number => {
     if (key === 'name') return a.name.localeCompare(b.name)
     if (key === 'size') {
-      const aSize = a.kind === 'file' ? (a as ApiFileEntry | FileEntry).size : 0
-      const bSize = b.kind === 'file' ? (b as ApiFileEntry | FileEntry).size : 0
+      const aSize = a.kind === 'file' ? a.size : 0
+      const bSize = b.kind === 'file' ? b.size : 0
       return bSize - aSize
     }
-    return getTime(b) - getTime(a)
+    return new Date(b.modified).getTime() - new Date(a.modified).getTime()
   }
 
   return [...dirs.sort(cmp), ...files.sort(cmp)]

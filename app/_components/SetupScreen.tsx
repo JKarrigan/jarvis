@@ -3,17 +3,20 @@
 import { useState } from 'react'
 
 interface SetupScreenProps {
-  onSave: (ip: string) => void
+  /** Saves the host on the server; resolves to an error message, or null on success. */
+  onSave: (ip: string) => Promise<string | null>
 }
 
+// Quick client-side check; the server validates properly (private IPv4 or .local).
 const VALID_HOST = (h: string) =>
-  /^(\d{1,3}\.){3}\d{1,3}$/.test(h) || /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.local$/.test(h)
+  /^(\d{1,3}\.){3}\d{1,3}$/.test(h) || /^[a-zA-Z0-9][a-zA-Z0-9_-]*\.local$/.test(h)
 
 export function SetupScreen({ onSave }: SetupScreenProps) {
   const [value, setValue] = useState('')
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const ip = value.trim()
     if (!VALID_HOST(ip)) {
@@ -21,8 +24,10 @@ export function SetupScreen({ onSave }: SetupScreenProps) {
       return
     }
     setError('')
-    localStorage.setItem('ag-device-ip', ip)
-    onSave(ip)
+    setSaving(true)
+    const err = await onSave(ip)
+    setSaving(false)
+    if (err) setError(err)
   }
 
   return (
@@ -36,19 +41,19 @@ export function SetupScreen({ onSave }: SetupScreenProps) {
         </div>
 
         <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">How to connect</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">How to connect</p>
           <ul className="space-y-2 text-sm text-zinc-400">
             <li className="flex gap-2">
-              <span className="text-zinc-600 shrink-0">1.</span>
+              <span className="text-zinc-500 shrink-0">1.</span>
               Try the mDNS hostname first — it&apos;s on the device label or shown on its display:{' '}
               <code className="font-mono text-zinc-300">airgradient_SERIALNO.local</code>
             </li>
             <li className="flex gap-2">
-              <span className="text-zinc-600 shrink-0">2.</span>
+              <span className="text-zinc-500 shrink-0">2.</span>
               If that doesn&apos;t work, find the IP in your router&apos;s admin panel under &ldquo;Connected Devices.&rdquo;
             </li>
             <li className="flex gap-2">
-              <span className="text-zinc-600 shrink-0">3.</span>
+              <span className="text-zinc-500 shrink-0">3.</span>
               Not on your network yet? Hold the button until the device creates a hotspot, then configure Wi-Fi via the captive portal.
             </li>
           </ul>
@@ -56,11 +61,14 @@ export function SetupScreen({ onSave }: SetupScreenProps) {
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-1.5">
+            <label htmlFor="device-host" className="block text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-1.5">
               IP Address or Hostname
             </label>
             <input
+              id="device-host"
               type="text"
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'device-host-error' : undefined}
               value={value}
               onChange={e => setValue(e.target.value)}
               placeholder="airgradient_abc123.local"
@@ -68,13 +76,14 @@ export function SetupScreen({ onSave }: SetupScreenProps) {
               autoComplete="off"
               className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm font-mono text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 focus:outline-none transition-colors"
             />
-            {error && <p className="mt-1.5 text-xs text-red-400">{error}</p>}
+            {error && <p id="device-host-error" role="alert" className="mt-1.5 text-xs text-red-400">{error}</p>}
           </div>
           <button
             type="submit"
-            className="w-full rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-sm py-2.5 transition-colors"
+            disabled={saving}
+            className="w-full rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-sm py-2.5 transition-colors disabled:opacity-60"
           >
-            Connect
+            {saving ? 'Connecting…' : 'Connect'}
           </button>
         </form>
       </div>

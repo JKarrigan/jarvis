@@ -157,6 +157,10 @@ export interface ReelEpisode {
   hue: number
   /** Episode thumbnail (Jellyfin Primary image). */
   imageUrl?: string
+  /** Server seed — Jellyfin UserData.Played. */
+  played?: boolean
+  /** Resume progress 0–1 (Jellyfin UserData). */
+  progress?: number
 }
 
 export interface ReelSeasonInfo {
@@ -210,6 +214,8 @@ export interface ReelDetail extends ReelTitle {
   seasonList?: ReelSeasonInfo[]
   /** Best available trailer (local preferred over remote); absent → no trailer button. */
   trailer?: TrailerInfo
+  /** TV only: Jellyfin's Next Up episode for this series (uncached), when there is one. */
+  nextUp?: { seasonId: string; episodeId: string }
 }
 
 /** Full detail for a single episode — same shape as a movie (`ReelDetail`) plus the
@@ -261,6 +267,26 @@ export interface AudiobookDetail extends Audiobook {
   genres: string[]
   chapters: AudiobookChapter[]
   file?: { container?: string; audio?: string; size?: string }
+}
+
+/** A resolved video stream for JellyfinPlayer (GET /api/jellyfin/playback). The URL is
+    same-origin (/api/jellyfin/stream/…) — the Jellyfin token never reaches the browser. */
+export interface PlaybackSource {
+  itemId: string
+  method: 'direct' | 'hls'
+  url: string
+  mediaSourceId: string
+  playSessionId: string
+  positionTicks: number
+  runtimeTicks: number
+  /** Whether the server is doing work (transcode/remux) vs streaming original bytes. */
+  transcoding: boolean
+  /** Human label for the UI, e.g. "Direct Play", "Transcoding (audio)", "Remuxing". */
+  playMethodLabel: string
+  /** Selected audio stream index, echoed back for reporting. */
+  audioStreamIndex?: number
+  /** Selected (burned-in) subtitle stream index, echoed back for reporting. */
+  subtitleStreamIndex?: number
 }
 
 /** A resolved audio stream for the persistent audiobook player. */
@@ -336,4 +362,14 @@ export interface NarrationSync {
   /** OCR'd body-text positions by 1-based page, for books whose text is drawn rather than
       typed — lets the reader highlight printed words where the PDF has no text layer. */
   pageChars?: Record<string, NarrationPageChar[]>
+}
+
+/** Compact global-search index (GET /api/media/search-index) — loaded when the search
+    modal opens instead of being serialised into every page. Gradients are derived
+    client-side from `hue`. */
+export interface SearchIndex {
+  titles: { id: string; title: string; year?: number; type: 'movie' | 'tv'; genres: string[]; hue: number; posterUrl?: string }[]
+  collections: { id: string; name: string; hue: number; count: number }[]
+  audiobooks: { id: string; title: string; author?: string; narrator?: string; hue: number; coverUrl?: string }[]
+  ebooks: { id: string; title: string; author?: string; level?: number; hue: number; coverUrl?: string }[]
 }

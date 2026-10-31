@@ -1,16 +1,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence } from 'framer-motion'
-import { Sheet } from '@/app/_components/HueControls'
-import { useMedia } from './MediaProvider'
+import { Sheet } from './Sheet'
+import { useMediaNotes } from './MediaProvider'
 import type { PlaybackSelection } from './PlaybackPicker'
 import { fetchCollections, createCollection, addToCollection, removeFromCollection } from './collectionsApi'
 import { canonicalizeGenres } from './selectors'
 import type { ReelDetail, ReelCastMember, CollectionSummary } from './types'
-import { avatar } from './artwork'
+import { avatar, hueFromId } from './artwork'
 import { Row, SectionHeader } from './ReelCards'
 import { StarIcon, CheckIcon, PlusIcon } from './icons'
 
@@ -128,7 +127,7 @@ export function CastRow({ cast }: { cast: ReelCastMember[] }) {
             <div className="relative aspect-[3/4] w-full overflow-hidden rounded-xl shadow-[0_16px_34px_rgba(0,0,0,0.5)] transition-transform duration-200 group-hover:-translate-y-1" style={{ background: avatar(c.hue) }}>
               {c.imageUrl
                 // eslint-disable-next-line @next/next/no-img-element
-                ? <img src={c.imageUrl} alt={c.name} loading="lazy" className="absolute inset-0 h-full w-full object-cover" />
+                ? <img src={c.imageUrl} alt={c.name} loading="lazy" decoding="async" width={152} height={203} className="absolute inset-0 h-full w-full object-cover" />
                 : <span className="absolute inset-0 grid place-items-center text-2xl font-bold text-white/85">{c.name.split(' ').map(w => w[0]).slice(0, 2).join('')}</span>}
               <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-inset ring-white/10 transition group-hover:ring-white/20" />
               {c.isDirector && (
@@ -149,7 +148,7 @@ export function CastRow({ cast }: { cast: ReelCastMember[] }) {
 /** Two-up grid: technical file details (from the selected version) + a private rating/notes box
     keyed by `itemId` (movie id or episode id). */
 export function FileAndRating({ selection, itemId }: { selection: PlaybackSelection; itemId: string }) {
-  const { rating, notes, setRating, setNotes } = useMedia()
+  const { rating, notes, setRating, setNotes } = useMediaNotes()
   const userRating = rating(itemId)
   return (
     <section className="mt-10 grid gap-4 pl-[var(--rail)] pr-[var(--gx)] md:grid-cols-2">
@@ -195,7 +194,6 @@ export function FileAndRating({ selection, itemId }: { selection: PlaybackSelect
 }
 
 function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: () => void }) {
-  const router = useRouter()
   const [collections, setCollections] = useState<CollectionSummary[] | null>(null)
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
@@ -206,10 +204,11 @@ function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: 
     return () => { active = false }
   }, [])
 
-  // Re-pull server truth (after a create, or to revert a failed toggle) and revalidate SSR.
+  // Re-pull server truth (after a create, or to revert a failed toggle). No router.refresh():
+  // the detail page doesn't render memberships, and the server busts its collections cache
+  // on every write, so the collection pages are fresh on the next visit.
   const resync = async () => {
     setCollections(await fetchCollections())
-    router.refresh()
   }
 
   const toggle = async (c: CollectionSummary) => {
@@ -221,8 +220,7 @@ function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: 
       : x) ?? cur)
     const ok = inIt ? await removeFromCollection(c.id, titleId) : await addToCollection(c.id, titleId)
     setBusy(false)
-    if (ok) router.refresh()
-    else resync()
+    if (!ok) resync()
   }
 
   const create = async (e: React.FormEvent) => {
@@ -232,11 +230,16 @@ function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: 
     setBusy(true)
     const id = await createCollection(n, [titleId])
     setBusy(false)
-    if (id) { setName(''); resync() }
+    if (id) {
+      setName('')
+      // Patch the new collection in locally instead of refetching every BoxSet.
+      setCollections(cur => [...(cur ?? []), { id, name: n, hue: hueFromId(id), itemIds: [titleId] }]
+        .sort((a, b) => a.name.localeCompare(b.name)))
+    }
   }
 
   return (
-    <Sheet onClose={onClose}>
+    <Sheet onClose={onClose} label="Add to collection">
       <div className="space-y-3 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">Add to collection</h3>
         {collections == null ? (
@@ -253,6 +256,7 @@ function AddToCollectionSheet({ titleId, onClose }: { titleId: string; onClose: 
                   type="button"
                   onClick={() => toggle(c)}
                   disabled={busy}
+                  aria-pressed={inIt}
                   className="flex w-full items-center gap-3 rounded-xl border border-zinc-700 bg-zinc-800/50 px-3 py-2.5 text-left transition hover:bg-zinc-800 disabled:opacity-60"
                 >
                   <span className="grid h-5 w-5 place-items-center rounded-md border border-zinc-600">

@@ -1,53 +1,70 @@
 import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline, Severity } from './eventTypes'
 
+/**
+ * Air-quality event detection.
+ *
+ * One incremental state machine (`EventDetector`) is used both live — the
+ * server poller pushes every reading into a long-lived instance — and in batch
+ * (`detectEvents`, `/api/events/reprocess`), which just replays readings
+ * through a fresh instance. Both paths therefore produce identical events.
+ *
+ * Detection runs on a fixed one-minute grid aligned to wall-clock minutes
+ * (not to the first reading in a buffer), so a given event always gets the
+ * same id: `${type}_${startMs}` where startMs is the first reading that met the
+ * rule. The id is created once at onset; afterwards the same event is updated
+ * in place and closed when the rule has stopped matching for CLEAR_STEPS
+ * consecutive minutes. A same-type re-trigger within MERGE_WINDOW_MS of the
+ * close reopens that event rather than creating a new one.
+ *
+ * Cost: each reading is a push plus O(log n) binary searches; each one-minute
+ * step looks only at its fixed-size windows, so detection is O(n) overall.
+ */
+
 const SAMPLE_WINDOW_MS = 3 * 60 * 1000
 const BASELINE_WINDOW_MS = 30 * 60 * 1000
 const MERGE_WINDOW_MS = 15 * 60 * 1000
 const WARM_UP_MS = 60 * 60 * 1000
 const WARM_UP_GAP_MS = 30 * 60 * 1000
-const BASELINE_FREEZE_MS = 2 * 60 * 60 * 1000
+const VENT_WINDOW_MS = 30 * 60 * 1000
+const STEP_MS = 60 * 1000
+/**
+ * Consecutive non-matching steps before an active event is closed. A one-
+ * minute dip fails the 3-minute window for up to four steps, so five keeps a
+ * flickering source from closing and reopening its event.
+ */
+const CLEAR_STEPS = 5
+/** Fraction of samples in a window that must satisfy a rule. */
+const PERSIST_RATIO = 0.8
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+/** Exposed for the poller and tests. */
+export const DETECTION_TIMING = {
+  SAMPLE_WINDOW_MS, BASELINE_WINDOW_MS, MERGE_WINDOW_MS, WARM_UP_MS, WARM_UP_GAP_MS,
+  VENT_WINDOW_MS, STEP_MS, CLEAR_STEPS,
+} as const
 
-function median(values: number[]): number {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(sorted.length / 2)
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+type Peak = AirQualityEvent['peak']
+
+/**
+ * Internal, normalised sample.
+ *
+ * Note: the earlier CO₂ step-jump filter (hold the pre-jump value for an hour
+ * after a >100 ppm change) was removed. Holding a value hides real changes in
+ * both directions — after a fast drop it kept reporting the high value, so a
+ * finished ventilation episode stayed "ongoing" for an hour — and the 30-minute
+ * persistence requirement already ignores brief spikes.
+ */
+interface Sample {
+  ts: number
+  pm02: number
+  rco2: number
+  tvocIndex: number
+  noxIndex: number
 }
 
-function rollingMedianBaseline(
-  readings: AirGradientReading[],
-  beforeMs: number,
-  windowMs: number,
-): LocalBaseline {
-  const window = readings.filter(
-    r => r.timestamp.getTime() >= beforeMs - windowMs && r.timestamp.getTime() < beforeMs,
-  )
-  return {
-    noxIndex: median(window.map(r => r.noxIndex)),
-    tvocIndex: median(window.map(r => r.tvocIndex)),
-    pm02: median(window.map(r => r.pm02)),
-    rco2: median(window.map(r => r.rco2)),
-  }
-}
+// ─── Text / scoring helpers ──────────────────────────────────────────────────
 
-function persistsFor(
-  readings: AirGradientReading[],
-  predicateFn: (r: AirGradientReading) => boolean,
-  minMs: number,
-): boolean {
-  // Count-based minimum: the endpoint-exclusive window filter makes the actual span
-  // slightly shorter than minMs for regularly-sampled data, so a span check always fails.
-  // Assume 10–15 s polling; require at least minMs/15s readings.
-  const minCount = Math.max(5, Math.floor(minMs / 15_000))
-  if (readings.length < minCount) return false
-  const passing = readings.filter(predicateFn).length
-  return passing / readings.length >= 0.8
-}
-
-function generateId(type: EventType, startTime: Date): string {
-  return `${type}_${startTime.getTime()}`
+function generateId(type: EventType, startMs: number): string {
+  return `${type}_${startMs}`
 }
 
 function eventTitle(type: EventType): string {
@@ -62,7 +79,7 @@ function eventTitle(type: EventType): string {
   return titles[type]
 }
 
-function eventDescription(type: EventType, peak: AirQualityEvent['peak']): string {
+function eventDescription(type: EventType, peak: Peak): string {
   switch (type) {
     case 'combustion_exhaust':
       return `NOx (${peak.noxIndex}), PM2.5 (${peak.pm02} μg/m³), and VOC rose together — a pattern consistent with combustion products entering the room.`
@@ -100,11 +117,7 @@ function defaultSeverity(type: EventType): Severity {
   }
 }
 
-function escalatedSeverity(
-  type: EventType,
-  peak: AirQualityEvent['peak'],
-  durationMs: number,
-): Severity {
+function escalatedSeverity(type: EventType, peak: Peak, durationMs: number): Severity {
   const base = defaultSeverity(type)
   if (base === 'critical') return 'critical'
   if (type === 'fuel_vapor' && peak.tvocIndex >= 400 && durationMs >= 10 * 60 * 1000) return 'critical'
@@ -116,15 +129,10 @@ function escalatedSeverity(
   return base
 }
 
-function computeConfidence(
-  type: EventType,
-  peak: AirQualityEvent['peak'],
-  baseline: LocalBaseline,
-  durationMs: number,
-): number {
+function computeConfidence(type: EventType, peak: Peak, baseline: LocalBaseline, durationMs: number): number {
   let score = 0.5
 
-  // +0.15 for each metric at least 2× its trigger threshold above baseline
+  // +0.15 for each metric well above its trigger threshold relative to baseline
   const noxTrigger = Math.max(4, baseline.noxIndex * 3)
   const tvocTrigger = baseline.tvocIndex + 60
   const pm02Trigger = baseline.pm02 + 6
@@ -139,362 +147,445 @@ function computeConfidence(
   return Math.min(1.0, score)
 }
 
-// ─── Event evaluation ────────────────────────────────────────────────────────
+// ─── Rules ───────────────────────────────────────────────────────────────────
 
-function peakValues(readings: AirGradientReading[]): AirQualityEvent['peak'] {
-  return {
-    noxIndex: Math.max(...readings.map(r => r.noxIndex)),
-    tvocIndex: Math.max(...readings.map(r => r.tvocIndex)),
-    pm02: Math.max(...readings.map(r => r.pm02)),
-    rco2: Math.max(...readings.map(r => r.rco2)),
-  }
+interface Rule {
+  type: EventType
+  test: (r: Sample, b: LocalBaseline) => boolean
 }
 
-const VENT_WINDOW_MS = 30 * 60 * 1000
+/**
+ * Short-window rules, in priority order: the first one that persists wins, so
+ * e.g. a VOC spike with low PM is classified as fuel vapour before VOC event.
+ * NOx thresholds are ratio-based (3× baseline, floor 4) because the sensor
+ * sits at 1 in clean air.
+ */
+const SAMPLE_RULES: Rule[] = [
+  {
+    type: 'combustion_exhaust',
+    test: (r, b) =>
+      r.noxIndex >= Math.max(4, b.noxIndex * 3) &&
+      r.pm02 >= 12 &&
+      r.pm02 >= b.pm02 + 6 &&
+      r.tvocIndex >= b.tvocIndex + 60,
+  },
+  {
+    type: 'fuel_vapor',
+    test: (r, b) =>
+      r.tvocIndex >= 250 &&
+      r.tvocIndex >= b.tvocIndex + 150 &&
+      r.noxIndex < b.noxIndex + 50 &&
+      r.pm02 < b.pm02 + 10,
+  },
+  {
+    // Same NOx gate as combustion, distinguished by flat CO₂.
+    type: 'outdoor_drift',
+    test: (r, b) =>
+      r.noxIndex >= Math.max(4, b.noxIndex * 3) &&
+      r.pm02 >= 10 &&
+      r.pm02 >= b.pm02 + 5 &&
+      (r.rco2 - b.rco2) < 100,
+  },
+  {
+    type: 'voc_event',
+    test: (r, b) =>
+      r.tvocIndex >= 200 &&
+      r.tvocIndex >= b.tvocIndex + 75 &&
+      r.noxIndex < b.noxIndex + 30,
+  },
+  {
+    type: 'particulate_spike',
+    test: (r, b) =>
+      r.pm02 >= 25 &&
+      r.pm02 >= b.pm02 + 15 &&
+      r.noxIndex < b.noxIndex + 30,
+  },
+]
 
-function tryDetectWindow(
-  window: AirGradientReading[],
-  baseline: LocalBaseline,
-  allReadings: AirGradientReading[],
-  currentMs: number,
-): EventType | null {
-  const b = baseline
+/** Ventilation is judged on its own 30-minute window and can overlap a short-window event. */
+const VENT_RULE: Rule = { type: 'ventilation_poor', test: r => r.rco2 >= 1000 }
 
-  // NOx threshold is ratio-based: 3× baseline (floor of 4) to handle sensors that sit at 1.
-  // Multi-channel correlation (NOx + PM2.5 + VOC together) provides specificity.
-  const noxCombustionThreshold = Math.max(4, b.noxIndex * 3)
-  const isCombustion = persistsFor(window, r =>
-    r.noxIndex >= noxCombustionThreshold &&
-    r.pm02 >= 12 &&
-    r.pm02 >= b.pm02 + 6 &&
-    r.tvocIndex >= b.tvocIndex + 60,
-    SAMPLE_WINDOW_MS,
-  )
-  if (isCombustion) return 'combustion_exhaust'
-
-  const isFuelVapor = persistsFor(window, r =>
-    r.tvocIndex >= 250 &&
-    r.tvocIndex >= b.tvocIndex + 150 &&
-    r.noxIndex < b.noxIndex + 50 &&
-    r.pm02 < b.pm02 + 10,
-    SAMPLE_WINDOW_MS,
-  )
-  if (isFuelVapor) return 'fuel_vapor'
-
-  // outdoor_drift: same ratio-based NOx gate, but distinguished from combustion by flat CO₂
-  const noxDriftThreshold = Math.max(4, b.noxIndex * 3)
-  const isOutdoorDrift = persistsFor(window, r =>
-    r.noxIndex >= noxDriftThreshold &&
-    r.pm02 >= 10 &&
-    r.pm02 >= b.pm02 + 5 &&
-    (r.rco2 - b.rco2) < 100,
-    SAMPLE_WINDOW_MS,
-  )
-  if (isOutdoorDrift) return 'outdoor_drift'
-
-  // voc_event: high VOC without combustion signature.
-  // No per-sample exclusion — priority order (fuel_vapor checked first) handles disambiguation.
-  const isVoc = persistsFor(window, r =>
-    r.tvocIndex >= 200 &&
-    r.tvocIndex >= b.tvocIndex + 75 &&
-    r.noxIndex < b.noxIndex + 30,
-    SAMPLE_WINDOW_MS,
-  )
-  if (isVoc) return 'voc_event'
-
-  const isParticulateSpike = persistsFor(window, r =>
-    r.pm02 >= 25 &&
-    r.pm02 >= b.pm02 + 15 &&
-    r.noxIndex < b.noxIndex + 30,
-    SAMPLE_WINDOW_MS,
-  )
-  if (isParticulateSpike) return 'particulate_spike'
-
-  // ventilation_poor requires 30 min of sustained CO₂ — use the full readings buffer,
-  // not the 3-min sample window, or the span check would never be satisfied.
-  const ventWindow = allReadings.filter(
-    r => r.timestamp.getTime() >= currentMs - VENT_WINDOW_MS && r.timestamp.getTime() < currentMs,
-  )
-  const isVentilationPoor = persistsFor(ventWindow, r => r.rco2 >= 1000, VENT_WINDOW_MS)
-  if (isVentilationPoor) return 'ventilation_poor'
-
-  return null
-}
-
-// ─── Merge overlapping / gap events ─────────────────────────────────────────
-
-function mergeEvents(events: AirQualityEvent[], mergeWindowMs: number): AirQualityEvent[] {
-  if (events.length === 0) return []
-  const sorted = [...events].sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
-  const merged: AirQualityEvent[] = [sorted[0]]
-
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = merged[merged.length - 1]
-    const curr = sorted[i]
-    if (curr.type !== prev.type) { merged.push(curr); continue }
-    const prevEnd = prev.endTime?.getTime() ?? curr.startTime.getTime()
-    if (curr.startTime.getTime() - prevEnd <= mergeWindowMs) {
-      // Extend previous event
-      prev.endTime = curr.endTime
-      prev.durationMinutes = prev.endTime
-        ? (prev.endTime.getTime() - prev.startTime.getTime()) / 60000
-        : (Date.now() - prev.startTime.getTime()) / 60000
-      prev.peak = {
-        noxIndex: Math.max(prev.peak.noxIndex, curr.peak.noxIndex),
-        tvocIndex: Math.max(prev.peak.tvocIndex, curr.peak.tvocIndex),
-        pm02: Math.max(prev.peak.pm02, curr.peak.pm02),
-        rco2: Math.max(prev.peak.rco2, curr.peak.rco2),
-      }
-      prev.confidence = Math.max(prev.confidence, curr.confidence)
-      prev.severity = escalatedSeverity(prev.type, prev.peak, prev.durationMinutes * 60000)
-    } else {
-      merged.push(curr)
-    }
-  }
-  return merged
-}
-
-// ─── Warm-up gap detection ───────────────────────────────────────────────────
-
-function findWarmUpCutoff(readings: AirGradientReading[]): number {
-  for (let i = readings.length - 1; i > 0; i--) {
-    const gap = readings[i].timestamp.getTime() - readings[i - 1].timestamp.getTime()
-    if (gap >= WARM_UP_GAP_MS) {
-      return readings[i].timestamp.getTime() + WARM_UP_MS
-    }
-  }
-  return 0
-}
-
-// ─── CO₂ step-jump filter ────────────────────────────────────────────────────
-
-function filterCo2Jumps(readings: AirGradientReading[]): AirGradientReading[] {
-  const skipUntil: number[] = []
-  for (let i = 1; i < readings.length; i++) {
-    const delta = Math.abs(readings[i].rco2 - readings[i - 1].rco2)
-    if (delta > 100) {
-      const cutoff = readings[i].timestamp.getTime() + 60 * 60 * 1000
-      skipUntil.push(cutoff)
-    }
-  }
-  return readings.map((r, i) => {
-    const ts = r.timestamp.getTime()
-    const skipped = skipUntil.some(cutoff => ts <= cutoff)
-    return skipped ? { ...r, rco2: readings[i > 0 ? i - 1 : 0].rco2 } : r
-  })
-}
-
-// ─── detectEvents (pure batch) ───────────────────────────────────────────────
+// ─── Detector ────────────────────────────────────────────────────────────────
 
 export interface DetectOptions {
   sampleWindowMin?: number
   baselineWindowMin?: number
 }
 
-export function detectEvents(
-  rawReadings: AirGradientReading[],
-  options?: DetectOptions,
-): AirQualityEvent[] {
-  const sampleWindowMs = options?.sampleWindowMin != null ? options.sampleWindowMin * 60 * 1000 : SAMPLE_WINDOW_MS
-  const baselineWindowMs = (options?.baselineWindowMin ?? 30) * 60 * 1000
+export type DetectorChangeKind = 'open' | 'update' | 'close' | 'reopen'
 
-  // Filter samples missing critical fields
-  const readings = filterCo2Jumps(
-    rawReadings.filter(r => r.noxIndex != null && r.tvocIndex != null && r.pm02 != null),
-  )
-  if (readings.length === 0) return []
-
-  const warmUpCutoff = findWarmUpCutoff(readings)
-  const events: AirQualityEvent[] = []
-  let frozenBaseline: LocalBaseline | null = null
-  let frozenAt: number | null = null
-
-  // Slide a sample window in 1-minute steps
-  const startTs = readings[0].timestamp.getTime()
-  const endTs = readings[readings.length - 1].timestamp.getTime()
-
-  let prevType: EventType | null = null
-  let eventStart: number | null = null
-  let eventBaseline: LocalBaseline | null = null
-
-  const step = 60 * 1000
-  for (let t = startTs + baselineWindowMs + sampleWindowMs; t <= endTs + step; t += step) {
-    if (t < warmUpCutoff) continue
-
-    const sampleWindow = readings.filter(
-      r => r.timestamp.getTime() >= t - sampleWindowMs && r.timestamp.getTime() < t,
-    )
-    if (sampleWindow.length === 0) continue
-
-    // Baseline freeze logic
-    const activeEventDuration = eventStart ? t - eventStart : 0
-    let baseline: LocalBaseline
-    if (frozenBaseline && frozenAt && activeEventDuration > BASELINE_FREEZE_MS) {
-      baseline = frozenBaseline
-    } else {
-      baseline = rollingMedianBaseline(readings, t - sampleWindowMs, baselineWindowMs)
-      if (!frozenBaseline || !eventStart) frozenBaseline = baseline
-    }
-
-    const detectedType = tryDetectWindow(sampleWindow, baseline, readings, t)
-
-    if (detectedType && prevType === null) {
-      // Event starts
-      eventStart = sampleWindow[0].timestamp.getTime()
-      eventBaseline = baseline
-      frozenBaseline = baseline
-      frozenAt = eventStart
-      prevType = detectedType
-    } else if (detectedType && prevType !== null && detectedType !== prevType) {
-      // Type changed — close previous, open new
-      if (eventStart !== null && eventBaseline !== null) {
-        events.push(buildEvent(prevType, eventStart, t - step, eventBaseline, readings))
-      }
-      eventStart = sampleWindow[0].timestamp.getTime()
-      eventBaseline = baseline
-      frozenBaseline = baseline
-      frozenAt = eventStart
-      prevType = detectedType
-    } else if (!detectedType && prevType !== null) {
-      // Event ends
-      if (eventStart !== null && eventBaseline !== null) {
-        events.push(buildEvent(prevType, eventStart, t - step, eventBaseline, readings))
-      }
-      prevType = null
-      eventStart = null
-      eventBaseline = null
-      frozenBaseline = null
-      frozenAt = null
-    }
-  }
-
-  // Close any still-active event
-  if (prevType !== null && eventStart !== null && eventBaseline !== null) {
-    events.push(buildEvent(prevType, eventStart, null, eventBaseline, readings))
-  }
-
-  return mergeEvents(events, MERGE_WINDOW_MS)
+export interface DetectorChange {
+  kind: DetectorChangeKind
+  event: AirQualityEvent
 }
 
-function buildEvent(
-  type: EventType,
-  startMs: number,
-  endMs: number | null,
-  baseline: LocalBaseline,
-  allReadings: AirGradientReading[],
-): AirQualityEvent {
-  const startTime = new Date(startMs)
-  const endTime = endMs ? new Date(endMs) : null
-  const durationMs = (endMs ?? Date.now()) - startMs
-  const durationMinutes = durationMs / 60000
-  const peak = peakValues(
-    allReadings.filter(r => r.timestamp.getTime() >= startMs && (endMs === null || r.timestamp.getTime() <= endMs)),
-  )
-  const severity = escalatedSeverity(type, peak, durationMs)
-  const confidence = computeConfidence(type, peak, baseline, durationMs)
+type SlotKey = 'sample' | 'vent'
 
+interface SlotState {
+  id: string
+  type: EventType
+  startMs: number
+  /** Frozen at onset so the baseline never drifts into the event itself. */
+  baseline: LocalBaseline
+  peak: Peak
+  /** Readings with ts < peakUntil have been folded into `peak`. */
+  peakUntil: number
+  /** Latest reading that satisfied the rule; becomes endTime on close. */
+  lastMatchMs: number
+  lastEvalMs: number
+  clearSteps: number
+  /** Non-null once closed; the slot is kept for MERGE_WINDOW_MS to allow a reopen. */
+  closedAt: number | null
+}
+
+interface Match {
+  rule: Rule
+  firstIdx: number
+  lastIdx: number
+}
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+function median(values: Float64Array): number {
+  const n = values.length
+  if (n === 0) return 0
+  values.sort()
+  const mid = n >> 1
+  return n % 2 === 0 ? (values[mid - 1] + values[mid]) / 2 : values[mid]
+}
+
+export class EventDetector {
+  private readonly sampleWindowMs: number
+  private readonly baselineWindowMs: number
+  private readonly keepMs: number
+
+  private buf: Sample[] = []
+  private head = 0
+  private lastTs = -Infinity
+  private segmentStart = NaN
+  private warmUpUntil = -Infinity
+  private nextEval = NaN
+
+  private slots: Record<SlotKey, SlotState | null> = { sample: null, vent: null }
+
+  constructor(options?: DetectOptions) {
+    this.sampleWindowMs = options?.sampleWindowMin != null ? options.sampleWindowMin * 60_000 : SAMPLE_WINDOW_MS
+    this.baselineWindowMs = options?.baselineWindowMin != null ? options.baselineWindowMin * 60_000 : BASELINE_WINDOW_MS
+    this.keepMs = Math.max(this.sampleWindowMs + this.baselineWindowMs, VENT_WINDOW_MS) + 5 * 60_000
+  }
+
+  /** Timestamp of the newest reading accepted, or null before the first one. */
+  get lastReadingMs(): number | null {
+    return Number.isFinite(this.lastTs) ? this.lastTs : null
+  }
+
+  /**
+   * Feeds one reading (must be newer than the previous one; older or duplicate
+   * readings are ignored) and returns the events that opened, changed, closed
+   * or reopened as a result.
+   */
+  push(reading: AirGradientReading): DetectorChange[] {
+    const ts = reading.timestamp.getTime()
+    if (!Number.isFinite(ts) || ts <= this.lastTs) return []
+    if (!isFiniteNumber(reading.pm02) || !isFiniteNumber(reading.rco2) ||
+        !isFiniteNumber(reading.tvocIndex) || !isFiniteNumber(reading.noxIndex)) return []
+
+    const changes: DetectorChange[] = []
+
+    // A long gap means the sensor (or the server) was off: close what was open,
+    // drop the stale baseline and give the sensors an hour to warm up.
+    if (Number.isFinite(this.lastTs) && ts - this.lastTs >= WARM_UP_GAP_MS) {
+      this.closeAll(changes)
+      this.buf = []
+      this.head = 0
+      this.segmentStart = ts
+      this.warmUpUntil = ts + WARM_UP_MS
+      this.nextEval = Math.floor(ts / STEP_MS) * STEP_MS + STEP_MS
+    }
+    if (!Number.isFinite(this.segmentStart)) {
+      this.segmentStart = ts
+      this.nextEval = Math.floor(ts / STEP_MS) * STEP_MS + STEP_MS
+    }
+
+    // Evaluate every grid minute up to this reading; windows are [t - w, t) so
+    // this reading belongs to later steps.
+    const firstEval = this.segmentStart + this.baselineWindowMs + this.sampleWindowMs
+    while (this.nextEval <= ts) {
+      if (this.nextEval >= firstEval && this.nextEval >= this.warmUpUntil) {
+        this.evaluate(this.nextEval, changes)
+      }
+      this.nextEval += STEP_MS
+    }
+
+    this.buf.push({
+      ts,
+      pm02: reading.pm02,
+      rco2: reading.rco2,
+      tvocIndex: reading.tvocIndex,
+      noxIndex: reading.noxIndex,
+    })
+    this.lastTs = ts
+    this.prune(ts - this.keepMs)
+    return changes
+  }
+
+  /**
+   * Closes active events when no reading has arrived for the warm-up gap
+   * (device offline), so they do not stay "ongoing" forever.
+   */
+  expire(nowMs: number): DetectorChange[] {
+    const changes: DetectorChange[] = []
+    if (Number.isFinite(this.lastTs) && nowMs - this.lastTs >= WARM_UP_GAP_MS) this.closeAll(changes)
+    return changes
+  }
+
+  /** Currently open events. */
+  activeEvents(): AirQualityEvent[] {
+    const out: AirQualityEvent[] = []
+    for (const key of ['sample', 'vent'] as const) {
+      const s = this.slots[key]
+      if (s && s.closedAt === null) out.push(this.snapshot(s))
+    }
+    return out
+  }
+
+  /**
+   * Continues events that were already open in the database (e.g. after a
+   * server restart, when the detector was primed from recent readings and
+   * re-detected the ongoing event with a later start). Returns the active
+   * events after adoption.
+   */
+  adopt(openEvents: AirQualityEvent[]): AirQualityEvent[] {
+    for (const key of ['sample', 'vent'] as const) {
+      const s = this.slots[key]
+      if (!s || s.closedAt !== null) continue
+      const match = openEvents
+        .filter(e => e.endTime === null && e.type === s.type && e.startTime.getTime() <= s.startMs)
+        .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0]
+      if (!match || match.id === s.id) continue
+      s.id = match.id
+      s.startMs = match.startTime.getTime()
+      s.baseline = { ...match.baseline }
+      s.peak = maxPeak(s.peak, match.peak)
+    }
+    return this.activeEvents()
+  }
+
+  // ─── internals ──────────────────────────────────────────────────────────
+
+  private prune(cutoff: number): void {
+    while (this.head < this.buf.length && this.buf[this.head].ts < cutoff) this.head++
+    if (this.head > 1024 && this.head * 2 > this.buf.length) {
+      this.buf = this.buf.slice(this.head)
+      this.head = 0
+    }
+  }
+
+  /** First buffer index with ts >= t. */
+  private lowerBound(t: number): number {
+    let lo = this.head
+    let hi = this.buf.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (this.buf[mid].ts < t) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+
+  private rollingBaseline(from: number, to: number): LocalBaseline {
+    const n = Math.max(0, to - from)
+    const nox = new Float64Array(n)
+    const tvoc = new Float64Array(n)
+    const pm = new Float64Array(n)
+    const co2 = new Float64Array(n)
+    for (let i = 0; i < n; i++) {
+      const r = this.buf[from + i]
+      nox[i] = r.noxIndex
+      tvoc[i] = r.tvocIndex
+      pm[i] = r.pm02
+      co2[i] = r.rco2
+    }
+    return { noxIndex: median(nox), tvocIndex: median(tvoc), pm02: median(pm), rco2: median(co2) }
+  }
+
+  /**
+   * Rule persists when the window holds enough samples (assumes 10–15 s
+   * polling: at least minMs / 15 s, minimum 5) and ≥ 80 % satisfy it.
+   */
+  private persists(from: number, to: number, rule: Rule, b: LocalBaseline, minMs: number): Match | null {
+    const count = to - from
+    const minCount = Math.max(5, Math.floor(minMs / 15_000))
+    if (count < minCount) return null
+    let passing = 0
+    let firstIdx = -1
+    let lastIdx = -1
+    for (let i = from; i < to; i++) {
+      if (rule.test(this.buf[i], b)) {
+        passing++
+        if (firstIdx < 0) firstIdx = i
+        lastIdx = i
+      }
+    }
+    if (passing / count < PERSIST_RATIO) return null
+    return { rule, firstIdx, lastIdx }
+  }
+
+  private evaluate(t: number, changes: DetectorChange[]): void {
+    const sEnd = this.lowerBound(t)
+    const sStart = this.lowerBound(t - this.sampleWindowMs)
+    if (sEnd === sStart) return // no data in this minute's window (short gap)
+
+    // Drop closed slots whose merge window has passed.
+    for (const key of ['sample', 'vent'] as const) {
+      const s = this.slots[key]
+      if (s && s.closedAt !== null && t - s.closedAt > MERGE_WINDOW_MS) this.slots[key] = null
+    }
+
+    // While an event is active (or just closed) keep judging against its
+    // pre-event baseline; otherwise use the rolling median before the window.
+    const baseline = this.slots.sample?.baseline ??
+      this.rollingBaseline(this.lowerBound(t - this.sampleWindowMs - this.baselineWindowMs), sStart)
+
+    let sampleMatch: Match | null = null
+    for (const rule of SAMPLE_RULES) {
+      sampleMatch = this.persists(sStart, sEnd, rule, baseline, this.sampleWindowMs)
+      if (sampleMatch) break
+    }
+    this.step('sample', sampleMatch, baseline, t, sEnd, changes)
+
+    const ventMatch = this.persists(this.lowerBound(t - VENT_WINDOW_MS), sEnd, VENT_RULE, baseline, VENT_WINDOW_MS)
+    this.step('vent', ventMatch, baseline, t, sEnd, changes)
+  }
+
+  private step(key: SlotKey, match: Match | null, baseline: LocalBaseline, t: number, windowEnd: number, changes: DetectorChange[]): void {
+    const s = this.slots[key]
+
+    if (match) {
+      if (s && s.type === match.rule.type) {
+        const kind: DetectorChangeKind = s.closedAt !== null ? 'reopen' : 'update'
+        s.closedAt = null
+        s.clearSteps = 0
+        s.lastMatchMs = Math.max(s.lastMatchMs, this.buf[match.lastIdx].ts)
+        this.foldPeak(s, this.lowerBound(s.peakUntil), windowEnd)
+        s.peakUntil = t
+        s.lastEvalMs = t
+        changes.push({ kind, event: this.snapshot(s) })
+        return
+      }
+      // Type changed (or nothing tracked): close the old one, open a new one.
+      if (s && s.closedAt === null) changes.push({ kind: 'close', event: this.close(s) })
+      const startMs = this.buf[match.firstIdx].ts
+      const next: SlotState = {
+        id: generateId(match.rule.type, startMs),
+        type: match.rule.type,
+        startMs,
+        baseline: { ...(s?.baseline ?? baseline) },
+        peak: { noxIndex: -Infinity, tvocIndex: -Infinity, pm02: -Infinity, rco2: -Infinity },
+        peakUntil: t,
+        lastMatchMs: this.buf[match.lastIdx].ts,
+        lastEvalMs: t,
+        clearSteps: 0,
+        closedAt: null,
+      }
+      this.foldPeak(next, match.firstIdx, windowEnd)
+      this.slots[key] = next
+      changes.push({ kind: 'open', event: this.snapshot(next) })
+      return
+    }
+
+    if (s && s.closedAt === null) {
+      s.clearSteps++
+      s.lastEvalMs = t
+      if (s.clearSteps >= CLEAR_STEPS) changes.push({ kind: 'close', event: this.close(s) })
+    }
+  }
+
+  private foldPeak(s: SlotState, from: number, to: number): void {
+    for (let i = from; i < to; i++) {
+      const r = this.buf[i]
+      if (r.noxIndex > s.peak.noxIndex) s.peak.noxIndex = r.noxIndex
+      if (r.tvocIndex > s.peak.tvocIndex) s.peak.tvocIndex = r.tvocIndex
+      if (r.pm02 > s.peak.pm02) s.peak.pm02 = r.pm02
+      if (r.rco2 > s.peak.rco2) s.peak.rco2 = r.rco2
+    }
+  }
+
+  private close(s: SlotState): AirQualityEvent {
+    s.closedAt = s.lastMatchMs
+    return this.snapshot(s)
+  }
+
+  private closeAll(changes: DetectorChange[]): void {
+    for (const key of ['sample', 'vent'] as const) {
+      const s = this.slots[key]
+      if (s && s.closedAt === null) changes.push({ kind: 'close', event: this.close(s) })
+      this.slots[key] = null
+    }
+  }
+
+  private snapshot(s: SlotState): AirQualityEvent {
+    const endMs = s.closedAt
+    const durationMs = Math.max(0, (endMs ?? Math.max(s.lastEvalMs, s.lastMatchMs)) - s.startMs)
+    const peak = finitePeak(s.peak)
+    const severity = escalatedSeverity(s.type, peak, durationMs)
+    return {
+      id: s.id,
+      type: s.type,
+      severity,
+      startTime: new Date(s.startMs),
+      endTime: endMs !== null ? new Date(endMs) : null,
+      durationMinutes: durationMs / 60000,
+      peak,
+      baseline: { ...s.baseline },
+      title: eventTitle(s.type),
+      description: eventDescription(s.type, peak),
+      recommendation: eventRecommendation(s.type, severity),
+      confidence: computeConfidence(s.type, peak, s.baseline, durationMs),
+      acknowledged: false,
+    }
+  }
+}
+
+function finitePeak(p: Peak): Peak {
+  const f = (v: number) => (Number.isFinite(v) ? v : 0)
+  return { noxIndex: f(p.noxIndex), tvocIndex: f(p.tvocIndex), pm02: f(p.pm02), rco2: f(p.rco2) }
+}
+
+function maxPeak(a: Peak, b: Peak): Peak {
   return {
-    id: generateId(type, startTime),
-    type,
-    severity,
-    startTime,
-    endTime,
-    durationMinutes,
-    peak,
-    baseline,
-    title: eventTitle(type),
-    description: eventDescription(type, peak),
-    recommendation: eventRecommendation(type, severity),
-    confidence,
-    acknowledged: false,
+    noxIndex: Math.max(a.noxIndex, b.noxIndex),
+    tvocIndex: Math.max(a.tvocIndex, b.tvocIndex),
+    pm02: Math.max(a.pm02, b.pm02),
+    rco2: Math.max(a.rco2, b.rco2),
   }
 }
 
-// ─── AirQualityDetector (streaming) ─────────────────────────────────────────
+// ─── Batch ───────────────────────────────────────────────────────────────────
 
-export class AirQualityDetector {
-  private buffer: AirGradientReading[] = []
-  private activeEvents: Map<string, AirQualityEvent> = new Map()
-  private historicalEvents: AirQualityEvent[] = []
-
-  // Maximum buffer: baseline window + sample window + some headroom
-  private readonly maxBufferMs = BASELINE_WINDOW_MS + SAMPLE_WINDOW_MS + 5 * 60 * 1000
-
-  ingest(reading: AirGradientReading): AirQualityEvent[] {
-    this.buffer.push(reading)
-    this.pruneBuffer(reading.timestamp.getTime())
-
-    const detected = detectEvents(this.buffer)
-    const newOrUpdated: AirQualityEvent[] = []
-
-    for (const event of detected) {
-      const existing = this.activeEvents.get(event.id)
-      if (!existing) {
-        const withAck = { ...event, acknowledged: this.rehydrateAck(event.id) }
-        this.activeEvents.set(event.id, withAck)
-        newOrUpdated.push(withAck)
-      } else if (existing.endTime === null && event.endTime !== null) {
-        // Event just closed
-        const closed = { ...existing, endTime: event.endTime, durationMinutes: event.durationMinutes }
-        this.activeEvents.delete(event.id)
-        this.historicalEvents.push(closed)
-        newOrUpdated.push(closed)
-      } else if (event.endTime === null) {
-        // Still active — update
-        const updated = { ...event, acknowledged: existing.acknowledged }
-        this.activeEvents.set(event.id, updated)
-        newOrUpdated.push(updated)
-      }
-    }
-
-    // Close events that are no longer in the detected set
-    for (const [id, event] of this.activeEvents) {
-      if (!detected.find(e => e.id === id) && event.endTime === null) {
-        const closed = { ...event, endTime: reading.timestamp }
-        this.activeEvents.delete(id)
-        this.historicalEvents.push(closed)
-        newOrUpdated.push(closed)
-      }
-    }
-
-    return newOrUpdated
+/**
+ * Replays readings (ascending by time) through a fresh detector. Returns the
+ * final state of every event, oldest first, plus the detector itself so a
+ * caller can continue live detection from where the batch ended.
+ */
+export function runDetector(
+  readings: Iterable<AirGradientReading>,
+  options?: DetectOptions,
+): { events: AirQualityEvent[]; detector: EventDetector; readingsProcessed: number } {
+  const detector = new EventDetector(options)
+  const byId = new Map<string, AirQualityEvent>()
+  let readingsProcessed = 0
+  for (const r of readings) {
+    readingsProcessed++
+    for (const change of detector.push(r)) byId.set(change.event.id, change.event)
   }
+  const events = [...byId.values()].sort((a, b) => a.startTime.getTime() - b.startTime.getTime())
+  return { events, detector, readingsProcessed }
+}
 
-  getActiveEvents(): AirQualityEvent[] {
-    return Array.from(this.activeEvents.values())
-  }
-
-  getHistory(since: Date): AirQualityEvent[] {
-    return this.historicalEvents.filter(e => e.startTime >= since)
-  }
-
-  acknowledge(id: string): void {
-    const event = this.activeEvents.get(id)
-    if (event) this.activeEvents.set(id, { ...event, acknowledged: true })
-    const hist = this.historicalEvents.find(e => e.id === id)
-    if (hist) hist.acknowledged = true
-  }
-
-  loadHistory(readings: AirGradientReading[]): void {
-    this.buffer = readings.slice(-Math.ceil(this.maxBufferMs / 10000))
-    const events = detectEvents(readings)
-    for (const event of events) {
-      const withAck = { ...event, acknowledged: this.rehydrateAck(event.id) }
-      if (event.endTime === null) {
-        this.activeEvents.set(event.id, withAck)
-      } else {
-        this.historicalEvents.push(withAck)
-      }
-    }
-  }
-
-  private pruneBuffer(nowMs: number): void {
-    const cutoff = nowMs - this.maxBufferMs
-    this.buffer = this.buffer.filter(r => r.timestamp.getTime() >= cutoff)
-  }
-
-  private rehydrateAck(id: string): boolean {
-    if (typeof localStorage === 'undefined') return false
-    return localStorage.getItem(`aq-ack-${id}`) === '1'
-  }
+/** Pure batch detection over ascending readings. */
+export function detectEvents(readings: AirGradientReading[], options?: DetectOptions): AirQualityEvent[] {
+  return runDetector(readings, options).events
 }

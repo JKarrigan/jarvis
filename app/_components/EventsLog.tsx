@@ -3,7 +3,9 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import type { AirQualityEvent, Severity, EventType } from '@/lib/eventTypes'
+import { useNowMinute } from '@/lib/useNow'
 import { EventTimeline, TIMELINE_RANGES } from './EventTimeline'
+import { reviveEvent } from './PollingProvider'
 
 const SEVERITY_STYLES: Record<Severity, string> = {
   critical: 'bg-red-500/15 text-red-300 border-red-500/30',
@@ -42,7 +44,7 @@ const EVENT_LEGEND: EventTypeMeta[] = [
     label: 'Combustion exhaust',
     severity: 'critical',
     sensors: 'NOx + PM2.5 + VOC elevated together',
-    pattern: 'NOx ≥ 3× baseline (floor of 4), PM2.5 ≥ 12 μg/m³ (+6 above baseline), VOC +60 above baseline — all sustained ≥ 5 min',
+    pattern: 'NOx ≥ 3× baseline (floor of 4), PM2.5 ≥ 12 μg/m³ (+6 above baseline), VOC +60 above baseline — all sustained ≥ 3 min',
     causes: 'Heater venting failure, generator backdraft, vehicle exhaust infiltration',
     action: 'Check stove/heater venting. Open windows. Verify CO detector.',
   },
@@ -99,8 +101,7 @@ function fmtDuration(min: number) {
 
 type DateGroup = 'today' | 'yesterday' | 'this-week' | 'last-week' | 'earlier'
 
-function getDateGroup(d: Date): DateGroup {
-  const now = new Date()
+function getDateGroup(d: Date, now: Date): DateGroup {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
   const startOfYesterday = new Date(startOfToday.getTime() - 86400_000)
   const startOfThisWeek = new Date(startOfToday.getTime() - startOfToday.getDay() * 86400_000)
@@ -137,7 +138,7 @@ function Legend() {
       >
         <span className="text-xs font-semibold uppercase tracking-widest text-zinc-500">What we monitor</span>
         <svg
-          className={`w-4 h-4 text-zinc-600 transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`w-4 h-4 text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`}
           viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"
         >
           <polyline points="4 6 8 10 12 6" />
@@ -148,7 +149,8 @@ function Legend() {
         <div className="px-4 pb-4 space-y-px border-t border-zinc-800/60 pt-3">
           <p className="text-xs text-zinc-500 mb-4 leading-relaxed">
             The sensor detects six real-world patterns by combining readings from the NOx, VOC, PM2.5, and CO₂ channels.
-            Each event must persist for at least 3 minutes (or 80% of samples in a 3-minute window) to filter out single-spike noise.
+            Each event must persist in at least 80% of the samples in a 3-minute window (30 minutes for ventilation) to filter out single-spike noise,
+            and ends once the pattern has been gone for 5 minutes; a recurrence within 15 minutes continues the same event.
             Confidence scores reflect how far readings exceeded their thresholds and how long the event lasted.
           </p>
           <div className="grid gap-3">
@@ -161,19 +163,19 @@ function Legend() {
                   <span className="text-sm font-medium text-zinc-200">{e.label}</span>
                 </div>
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-                  <span className="text-zinc-600 shrink-0">Signals</span>
+                  <span className="text-zinc-500 shrink-0">Signals</span>
                   <span className="text-zinc-400">{e.sensors}</span>
-                  <span className="text-zinc-600 shrink-0">Threshold</span>
+                  <span className="text-zinc-500 shrink-0">Threshold</span>
                   <span className="text-zinc-500">{e.pattern}</span>
-                  <span className="text-zinc-600 shrink-0">Causes</span>
+                  <span className="text-zinc-500 shrink-0">Causes</span>
                   <span className="text-zinc-400">{e.causes}</span>
-                  <span className="text-zinc-600 shrink-0">Action</span>
+                  <span className="text-zinc-500 shrink-0">Action</span>
                   <span className="text-zinc-300">{e.action}</span>
                 </div>
               </div>
             ))}
           </div>
-          <p className="text-xs text-zinc-700 pt-3">
+          <p className="text-xs text-zinc-500 pt-3">
             Thresholds are conservative by design. After a few weeks of real data, revisit VOC-only criteria if common household activities (cooking, sunscreen) trigger false positives.
           </p>
         </div>
@@ -189,21 +191,21 @@ export function EventsLog() {
   const [reprocessing, setReprocessing] = useState(false)
   const [reprocessResult, setReprocessResult] = useState<{ readingsProcessed: number; eventsFound: number; span: { from: string; to: string } | null } | null>(null)
 
-  function loadEvents() {
-    return fetch('/api/events?limit=200')
+  const nowMinute = useNowMinute()
+
+  function loadEvents(signal?: AbortSignal) {
+    return fetch('/api/events?limit=200', { signal })
       .then(r => r.ok ? r.json() : [])
-      .then((data: AirQualityEvent[]) => {
-        setEvents(data.map(e => ({
-          ...e,
-          startTime: new Date(e.startTime),
-          endTime: e.endTime ? new Date(e.endTime) : null,
-        })))
+      .then((data: Parameters<typeof reviveEvent>[0][]) => {
+        if (Array.isArray(data)) setEvents(data.map(reviveEvent))
       })
       .catch(() => { })
   }
 
   useEffect(() => {
-    loadEvents().finally(() => setLoading(false))
+    const ac = new AbortController()
+    loadEvents(ac.signal).finally(() => { if (!ac.signal.aborted) setLoading(false) })
+    return () => ac.abort()
   }, [])
 
   async function handleReprocess() {
@@ -235,7 +237,7 @@ export function EventsLog() {
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-lg font-semibold text-zinc-100">Air Quality Events</h1>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-zinc-600">{events.length} recorded</span>
+            <span className="text-xs text-zinc-500">{events.length} recorded</span>
             <button
               onClick={handleReprocess}
               disabled={reprocessing}
@@ -270,15 +272,15 @@ export function EventsLog() {
         {events.length === 0 && (
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center">
             <p className="text-sm text-zinc-500">No events recorded yet.</p>
-            <p className="text-xs text-zinc-700 mt-1">Events are detected from live sensor readings as they arrive.</p>
+            <p className="text-xs text-zinc-500 mt-1">Events are detected from live sensor readings as they arrive.</p>
           </div>
         )}
 
-        {(() => {
-          const now = new Date()
+        {nowMinute != null && (() => {
+          const now = new Date(nowMinute)
           const grouped = new Map<DateGroup, AirQualityEvent[]>()
           for (const e of events) {
-            const g = getDateGroup(e.startTime)
+            const g = getDateGroup(e.startTime, now)
             if (!grouped.has(g)) grouped.set(g, [])
             grouped.get(g)!.push(e)
           }
@@ -286,13 +288,13 @@ export function EventsLog() {
             <div className="space-y-6">
               {GROUP_ORDER.filter(g => grouped.has(g)).map(g => (
                 <div key={g} className="space-y-2">
-                  <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-600 px-1">
+                  <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 px-1">
                     {GROUP_LABEL[g](now)}
                   </h2>
                   {grouped.get(g)!.map(event => (
                     <Link
                       key={event.id}
-                      href={`/events/${event.id}`}
+                      href={`/events/${encodeURIComponent(event.id)}`}
                       className={`block rounded-xl border bg-zinc-900/40 px-4 py-3 space-y-2 transition-opacity hover:bg-zinc-900/60 ${event.acknowledged ? 'opacity-40 border-zinc-800' : SEVERITY_BORDER[event.severity]}`}
                     >
                       {/* Title row */}
@@ -306,21 +308,21 @@ export function EventsLog() {
                           </span>
                           <span className="text-xs text-zinc-500">{TYPE_LABEL[event.type]}</span>
                         </div>
-                        {event.acknowledged && <span className="shrink-0 text-xs text-zinc-600">dismissed</span>}
+                        {event.acknowledged && <span className="shrink-0 text-xs text-zinc-500">dismissed</span>}
                         {!event.endTime && !event.acknowledged && (
                           <span className="shrink-0 text-xs text-emerald-500 animate-pulse">ongoing</span>
                         )}
                       </div>
 
                       {/* Time row */}
-                      <div className="flex items-center gap-2.5 text-xs text-zinc-600">
+                      <div className="flex items-center gap-2.5 text-xs text-zinc-500">
                         <span>{fmtTime(event.startTime)}</span>
                         {event.endTime && (
-                          <><span className="text-zinc-800">→</span><span>{fmtTime(event.endTime)}</span></>
+                          <><span className="text-zinc-500" aria-hidden="true">→</span><span>{fmtTime(event.endTime)}</span></>
                         )}
-                        <span className="text-zinc-800">·</span>
+                        <span className="text-zinc-500" aria-hidden="true">·</span>
                         <span>{fmtDuration(event.durationMinutes)}</span>
-                        <span className="text-zinc-800">·</span>
+                        <span className="text-zinc-500" aria-hidden="true">·</span>
                         <span>{Math.round(event.confidence * 100)}% confidence</span>
                       </div>
 
@@ -331,12 +333,12 @@ export function EventsLog() {
                       )}
 
                       {/* Peak readings */}
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono text-zinc-600 pt-0.5">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono text-zinc-500 pt-0.5">
                         <span>NOx <span className="text-zinc-400">{event.peak.noxIndex}</span></span>
                         <span>VOC <span className="text-zinc-400">{event.peak.tvocIndex}</span></span>
                         <span>PM2.5 <span className="text-zinc-400">{event.peak.pm02.toFixed(1)}</span></span>
                         <span>CO₂ <span className="text-zinc-400">{event.peak.rco2}</span></span>
-                        <span className="text-zinc-700">baseline:</span>
+                        <span className="text-zinc-500">baseline:</span>
                         <span>NOx <span className="text-zinc-500">{event.baseline.noxIndex}</span></span>
                         <span>PM2.5 <span className="text-zinc-500">{event.baseline.pm02.toFixed(1)}</span></span>
                       </div>

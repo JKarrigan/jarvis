@@ -47,19 +47,30 @@ export function LogsViewer() {
   const [paused, setPaused] = useState(false)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
-  function load() {
-    fetch('/api/logs')
-      .then(r => r.ok ? r.json() : [])
-      .then((data: HttpLogEntry[]) => setLogs(data))
-      .catch(() => {})
-  }
-
-  useEffect(() => { load() }, [])
-
+  // Polls every 3 s while not paused and the tab is visible (refreshes on return).
   useEffect(() => {
     if (paused) return
-    const id = setInterval(load, 3000)
-    return () => clearInterval(id)
+    const ac = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async () => {
+      clearTimeout(timer)
+      if (!document.hidden) {
+        try {
+          const r = await fetch('/api/logs', { signal: ac.signal })
+          const data = r.ok ? await r.json() as HttpLogEntry[] : null
+          if (Array.isArray(data)) setLogs(data)
+        } catch { /* keep last logs */ }
+      }
+      if (!ac.signal.aborted) timer = setTimeout(tick, 3000)
+    }
+    const onVisible = () => { if (!document.hidden) void tick() }
+    document.addEventListener('visibilitychange', onVisible)
+    void tick()
+    return () => {
+      ac.abort()
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [paused])
 
   function toggleExpand(id: number) {

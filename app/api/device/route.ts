@@ -1,20 +1,28 @@
-import { startPoller, getPollerStatus } from '@/lib/poller'
+import { setSetting } from '@/lib/db'
+import { assertSameOrigin, readJson } from '@/lib/http'
+import { getPollerStatus, normalizeDeviceHost, startPoller } from '@/lib/poller'
+import { DEVICE_HOST_SETTING } from '@/lib/startup'
 
-function validateHost(ip: string): string | null {
-  let host = ip
-  if (ip.startsWith('http')) {
-    try { host = new URL(ip).hostname } catch { return null }
-  }
-  const valid = /^(\d{1,3}\.){3}\d{1,3}$/.test(host) || /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.local$/.test(host)
-  return valid ? host : null
-}
-
+/**
+ * POST /api/device { ip } — saves the AirGradient host server-side and
+ * (re)targets the poller. The saved host is what the poller uses after a
+ * restart (see lib/startup.ts), so browsers no longer drive polling.
+ */
 export async function POST(request: Request) {
-  const body = await request.json() as { ip?: string }
-  const host = validateHost(body?.ip ?? '')
-  if (!host) return Response.json({ error: 'Invalid host' }, { status: 400 })
+  const rejected = assertSameOrigin(request)
+  if (rejected) return rejected
+
+  const body = await readJson<{ ip?: unknown }>(request, 4096)
+  const host = normalizeDeviceHost(body?.ip)
+  if (!host) {
+    return Response.json(
+      { error: 'Enter a private IPv4 address (e.g. 192.168.1.42) or an mDNS name ending in .local' },
+      { status: 400 },
+    )
+  }
+  setSetting(DEVICE_HOST_SETTING, host)
   startPoller(host)
-  return Response.json({ ok: true })
+  return Response.json({ ok: true, ip: host })
 }
 
 export async function GET() {

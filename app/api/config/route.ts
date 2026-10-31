@@ -1,5 +1,13 @@
 import { lookup } from 'dns/promises'
+import { assertSameOrigin, isLanHost, readJson } from '@/lib/http'
 
+export const dynamic = 'force-dynamic'
+
+/**
+ * Only LAN devices may be proxied: a private IPv4 address or a `.local` name
+ * that resolves to one (so this cannot be pointed at the internet or at a
+ * DNS-rebinding name).
+ */
 async function resolveHost(ip: string | null): Promise<{ fetchHost: string } | { error: string; status: number }> {
   if (!ip) return { error: 'Invalid host', status: 400 }
 
@@ -10,17 +18,17 @@ async function resolveHost(ip: string | null): Promise<{ fetchHost: string } | {
     }
   }
 
-  const validHost = /^(\d{1,3}\.){3}\d{1,3}$/.test(host) || /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.local$/.test(host)
-  if (!validHost) return { error: 'Invalid host', status: 400 }
+  if (!isLanHost(host)) return { error: 'Invalid host', status: 400 }
 
   let fetchHost = host
-  if (host.endsWith('.local')) {
+  if (host.toLowerCase().endsWith('.local')) {
     try {
-      const { address } = await lookup(host)
+      const { address } = await lookup(host, { family: 4 })
       fetchHost = address
     } catch {
       return { error: 'Could not resolve hostname', status: 503 }
     }
+    if (!isLanHost(fetchHost)) return { error: 'Invalid host', status: 400 }
   }
 
   return { fetchHost }
@@ -43,14 +51,14 @@ export async function GET(request: Request) {
 }
 
 export async function PUT(request: Request) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const ip = new URL(request.url).searchParams.get('ip')
   const resolved = await resolveHost(ip)
   if ('error' in resolved) return Response.json({ error: resolved.error }, { status: resolved.status })
 
-  let body: unknown
-  try {
-    body = await request.json()
-  } catch {
+  const body = await readJson<Record<string, unknown>>(request, 64 * 1024)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return Response.json({ error: 'Invalid request body' }, { status: 400 })
   }
 

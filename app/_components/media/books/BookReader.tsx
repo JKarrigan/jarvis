@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import type { Ebook, NarrationSync } from '../types'
 import { Slider } from '../playerUi'
+import { useEscape, useHotkeys } from '../hooks'
 import { Back5Icon, ChevronLeftIcon, ChevronRightIcon, PauseIcon, PlaySolidIcon } from '../icons'
 import { useAudiobookPlayer, useAudiobookTime } from '../audiobooks/AudiobookPlayer'
 import { clock } from '../audiobooks/format'
@@ -87,7 +88,7 @@ export function BookReader({ book }: { book: Ebook }) {
   useEffect(() => {
     if (!book.audioId || !book.synced) return
     let cancelled = false
-    fetch(`/api/jellyfin/books/${book.id}/sync`)
+    fetch(`/api/jellyfin/books/${encodeURIComponent(book.id)}/sync`)
       .then(r => (r.ok ? (r.json() as Promise<NarrationSync>) : null))
       .then(data => {
         if (cancelled || !data) return
@@ -168,7 +169,7 @@ export function BookReader({ book }: { book: Ebook }) {
   const save = useCallback((keepalive = false) => {
     const { page: p, pages: n, rtl: r } = latest.current
     if (n < 1) return
-    void fetch(`/api/jellyfin/books/${book.id}/progress`, {
+    void fetch(`/api/jellyfin/books/${encodeURIComponent(book.id)}/progress`, {
       method: 'PUT', keepalive,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ page: p, pages: n, rtl: r }),
@@ -205,20 +206,16 @@ export function BookReader({ book }: { book: Ebook }) {
     router.refresh()
   }, [router, save])
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      const forward = latest.current.rtl ? 'ArrowLeft' : 'ArrowRight'
-      const back = latest.current.rtl ? 'ArrowRight' : 'ArrowLeft'
-      if (e.key === forward || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); go(1) }
-      else if (e.key === back || e.key === 'PageUp') { e.preventDefault(); go(-1) }
-      else if (e.key === 'Home') go(-1e6)
-      else if (e.key === 'End') go(1e6)
-      else if (e.key === 'Escape') leave()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [go, leave])
+  const rootRef = useRef<HTMLDivElement>(null)
+  useHotkeys((e) => {
+    const forward = latest.current.rtl ? 'ArrowLeft' : 'ArrowRight'
+    const back = latest.current.rtl ? 'ArrowRight' : 'ArrowLeft'
+    if (e.key === forward || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); go(1) }
+    else if (e.key === back || e.key === 'PageUp') { e.preventDefault(); go(-1) }
+    else if (e.key === 'Home') go(-1e6)
+    else if (e.key === 'End') go(1e6)
+  }, { scope: rootRef })
+  useEscape(leave)
 
   useEffect(() => {
     const prev = document.body.style.overflow
@@ -245,7 +242,9 @@ export function BookReader({ book }: { book: Ebook }) {
 
   return (
     <motion.div
+      ref={rootRef}
       role="dialog"
+      aria-modal="true"
       aria-label={`Reading ${book.title}`}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -327,7 +326,7 @@ export function BookReader({ book }: { book: Ebook }) {
         )}
         {/* The scrubber mirrors for right-to-left books so dragging matches the page order. */}
         <div className="min-w-0 flex-1" style={{ transform: rtl ? 'scaleX(-1)' : undefined }}>
-          <Slider ariaLabel="Page" fraction={fraction} onChange={f => turnTo(Math.round(f * Math.max(0, pages - 1)) + 1)} />
+          <Slider ariaLabel="Page" ariaValueText={pages ? `Page ${page} of ${pages}` : undefined} step={pages > 1 ? 1 / (pages - 1) : 1} fraction={fraction} onChange={f => turnTo(Math.round(f * Math.max(0, pages - 1)) + 1)} />
         </div>
         <div className="w-[58px] shrink-0 text-right md:w-[92px] text-[13px] font-bold tabular-nums text-white/80">
           {pages ? `${page} / ${pages}` : '…'}

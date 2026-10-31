@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { useMedia } from './MediaProvider'
+import { useTitleState } from './MediaProvider'
 import type { ReelTitle, CollectionSummary } from './types'
-import { POSTER_SHEEN, collArt, collColor, resizeImage } from './artwork'
+import { POSTER_SHEEN, POSTER_WIDTHS, collArt, collColor, imageSrcSet, resizeImage } from './artwork'
 import { RECENTLY_ADDED_DAYS } from './selectors'
 import { CheckIcon, HeartIcon } from './icons'
 
@@ -19,10 +19,22 @@ export function detailHref(t: Pick<ReelTitle, 'id' | 'type'>): string {
   return `/media/${t.type === 'tv' ? 'tv' : 'movies'}/${t.id}`
 }
 
-/** Gradient fallback + lazy real image (fades in on load) + glass sheen. */
+/** Touch-safe reveal for hover-only overlay controls: always visible on touch screens
+    (no hover to reveal them), hidden until hover/focus where a pointer can hover. */
+export const HOVER_REVEAL =
+  '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:focus-visible:opacity-100'
+
+/** Gradient fallback + lazy real image (fades in on load) + glass sheen. Pass `srcSet` +
+    `sizes` (see imageSrcSet in artwork.ts) so phones fetch phone-sized art; `width`/
+    `height` give the browser the intrinsic aspect before the bytes arrive. */
 export function Poster({
-  gradient, src, alt, className = '', rounded = 'rounded-xl',
-}: { gradient: string; src?: string; alt: string; className?: string; rounded?: string }) {
+  gradient, src, alt, className = '', rounded = 'rounded-xl', srcSet, sizes, width, height, priority = false,
+}: {
+  gradient: string; src?: string; alt: string; className?: string; rounded?: string
+  srcSet?: string; sizes?: string; width?: number; height?: number
+  /** Above-the-fold hero art: load eagerly instead of lazily. */
+  priority?: boolean
+}) {
   const [loaded, setLoaded] = useState(false)
   // When there's a real image, sit it on the dark base so it fades in from black;
   // the hue gradient stays as the fallback only when there's no image.
@@ -32,8 +44,13 @@ export function Poster({
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={src}
+          srcSet={srcSet}
+          sizes={srcSet ? sizes : undefined}
+          width={width}
+          height={height}
           alt={alt}
-          loading="lazy"
+          loading={priority ? 'eager' : 'lazy'}
+          decoding="async"
           onLoad={() => setLoaded(true)}
           // Catch already-cached images (onLoad may not fire) so they still reveal.
           ref={(node) => { if (node?.complete) setLoaded(true) }}
@@ -43,6 +60,16 @@ export function Poster({
       <div className="absolute inset-0" style={{ background: POSTER_SHEEN }} />
     </div>
   )
+}
+
+/** `sizes` for a poster card from its Tailwind width classes (`w-[150px] md:w-[218px]`),
+    else sized as a library grid cell. */
+function posterSizes(width: string): string {
+  const base = /(?:^|\s)w-\[(\d+)px\]/.exec(width)?.[1]
+  const md = /md:w-\[(\d+)px\]/.exec(width)?.[1]
+  if (base && md) return `(min-width: 768px) ${md}px, ${base}px`
+  if (base) return `${base}px`
+  return '(max-width: 767px) 45vw, 240px'
 }
 
 function metaLine(t: ReelTitle): string {
@@ -60,7 +87,7 @@ function metaLine(t: ReelTitle): string {
 export function PosterCard({
   title, width = 'w-[178px]', overlays = false, showAddedDays = false,
 }: { title: ReelTitle; width?: string; overlays?: boolean; showAddedDays?: boolean }) {
-  const { isWatched, isFavorite, toggleFavorite } = useMedia()
+  const { isWatched, isFavorite, toggleFavorite } = useTitleState()
   const watched = isWatched(title.id, title.watched)
   const favorite = isFavorite(title.id, title.favorite)
   const isNew = title.added != null && title.added <= RECENTLY_ADDED_DAYS
@@ -68,7 +95,16 @@ export function PosterCard({
   return (
     <Link href={detailHref(title)} className={`group flex shrink-0 flex-col gap-2 ${width}`}>
       <div className="relative aspect-[2/3] w-full transition-transform duration-200 group-hover:-translate-y-1">
-        <Poster gradient={title.posterColor} src={title.posterUrl} alt={title.title} className="h-full w-full shadow-[0_16px_34px_rgba(0,0,0,0.5)]" />
+        <Poster
+          gradient={title.posterColor}
+          src={title.posterUrl}
+          srcSet={imageSrcSet(title.posterUrl, POSTER_WIDTHS)}
+          sizes={posterSizes(width)}
+          width={360}
+          height={540}
+          alt={title.title}
+          className="h-full w-full shadow-[0_16px_34px_rgba(0,0,0,0.5)]"
+        />
         <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-inset ring-white/10 transition group-hover:ring-white/20" />
 
         {watched && (
@@ -93,7 +129,7 @@ export function PosterCard({
             type="button"
             aria-label={favorite ? 'Remove favorite' : 'Add favorite'}
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFavorite(title.id, title.favorite) }}
-            className="absolute bottom-2 right-2 grid h-7 w-7 place-items-center rounded-full bg-black/45 text-white opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-black/65"
+            className={`absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded-full bg-black/45 text-white backdrop-blur-sm transition hover:bg-black/65 ${favorite ? '' : HOVER_REVEAL}`}
             style={favorite ? { color: 'var(--fav)' } : undefined}
           >
             <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} />
@@ -124,7 +160,7 @@ export function CollectionCard({
   return (
     <Link href={`/media/collections/${collection.id}`} className={`group flex shrink-0 flex-col gap-2 ${width}`}>
       <div className="relative aspect-video w-full overflow-hidden rounded-xl shadow-[0_16px_34px_rgba(0,0,0,0.5)] transition-transform duration-200 group-hover:-translate-y-1">
-        <Poster gradient={collArt(collection.hue)} src={art} alt={collection.name} className="h-full w-full" />
+        <Poster gradient={collArt(collection.hue)} src={art} width={960} height={540} alt={collection.name} className="h-full w-full" />
         <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, transparent 35%, rgba(8,6,13,0.82))' }} />
         <div className="pointer-events-none absolute inset-0 rounded-xl ring-1 ring-inset ring-white/10 transition group-hover:ring-white/20" />
         <div className="absolute inset-x-3 bottom-2.5">

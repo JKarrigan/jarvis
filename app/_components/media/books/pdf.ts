@@ -22,7 +22,11 @@ export interface OpenBook {
 export async function openBook(id: string): Promise<OpenBook> {
   const pdfjs = await loadPdfjs()
   const task = pdfjs.getDocument({
-    url: `/api/jellyfin/books/${id}/file`,
+    url: `/api/jellyfin/books/${encodeURIComponent(id)}/file`,
+    // Fetch only the byte ranges the rendered pages need — no background download of
+    // the whole PDF (books are tens of MB and the reader may only show page 1).
+    disableAutoFetch: true,
+    disableStream: true,
     cMapUrl: '/api/pdfjs/cmaps/',
     cMapPacked: true,
     standardFontDataUrl: '/api/pdfjs/standard_fonts/',

@@ -23,7 +23,7 @@ export function Cover({
 }) {
   return (
     <div className={`relative aspect-square shrink-0 ${className}`}>
-      <Poster gradient={poster(book.hue)} src={book.coverUrl} alt="" rounded={rounded} className="h-full w-full" />
+      <Poster gradient={poster(book.hue)} src={book.coverUrl} width={640} height={640} alt="" rounded={rounded} className="h-full w-full" />
       {!book.coverUrl && titleClass && (
         <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-[8%]">
           <div className={`font-[family-name:var(--font-schibsted)] font-extrabold leading-[1.05] tracking-[-0.02em] ${titleClass}`}>

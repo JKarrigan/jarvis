@@ -1,13 +1,13 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
-import JellyfinPlayer from './JellyfinPlayer'
-import TrailerModal from './TrailerModal'
 import { EpisodeList } from './EpisodeList'
-import { useMedia } from './MediaProvider'
+import { BackPill } from './BackPill'
+import { useTitleState } from './MediaProvider'
 import { usePlaybackSelection, PlaybackPicker } from './PlaybackPicker'
 import {
   ActionButton, AddToCollectionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
@@ -15,11 +15,15 @@ import {
 import type { ReelDetail, ReelTitle, MediaInfo, ReelSeasonInfo } from './types'
 import { AmbientClip, useAmbientMute } from './AmbientClip'
 import { IconMuted, IconVolume } from './playerUi'
-import { backdropFallback, poster } from './artwork'
+import { BACKDROP_WIDTHS, backdropFallback, imageSrcSet, poster, POSTER_WIDTHS } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
 import {
-  PlayIcon, StarIcon, CheckIcon, HeartIcon, BookmarkIcon, PlusIcon, ChevronLeftIcon, TomatoIcon, TrailerIcon,
+  PlayIcon, StarIcon, CheckIcon, HeartIcon, BookmarkIcon, PlusIcon, TomatoIcon, TrailerIcon,
 } from './icons'
+
+// Heavy overlays load on demand, not with every detail page.
+const JellyfinPlayer = dynamic(() => import('./JellyfinPlayer'), { ssr: false })
+const TrailerModal = dynamic(() => import('./TrailerModal'), { ssr: false })
 
 function runtimeLabel(t: ReelDetail): string {
   const bits: string[] = []
@@ -30,13 +34,24 @@ function runtimeLabel(t: ReelDetail): string {
   return bits.join('  ·  ')
 }
 
-/** First unwatched episode walking seasons in order (falls back to the first). */
-function findNextEpisode(seasons: ReelSeasonInfo[] | undefined, isEpWatched: (id: string) => boolean) {
+/** What to play next: Jellyfin's Next Up when it's known (server truth, uncached), else the
+    first unwatched episode walking seasons in order, else the very first episode. */
+function findNextEpisode(
+  seasons: ReelSeasonInfo[] | undefined,
+  nextUp: ReelDetail['nextUp'],
+  isEpWatched: (id: string, serverDefault?: boolean) => boolean,
+) {
   if (!seasons || seasons.length === 0) return null
+  if (nextUp) {
+    const season = seasons.find(s => s.id === nextUp.seasonId)
+    const episode = season?.episodes.find(e => e.id === nextUp.episodeId)
+    // Unless it has since been marked watched locally.
+    if (season && episode && !isEpWatched(episode.id, episode.played ?? false)) return { season, episode }
+  }
   const ordered = [...seasons].sort((a, b) => a.index - b.index)
   for (const s of ordered) {
     for (const e of [...s.episodes].sort((a, b) => a.index - b.index)) {
-      if (!isEpWatched(e.id)) return { season: s, episode: e }
+      if (!isEpWatched(e.id, e.played ?? false)) return { season: s, episode: e }
     }
   }
   const first = ordered[0]
@@ -47,11 +62,10 @@ export function DetailView({
   detail, media, similar, autoPlay = false, hideBack = false,
 }: { detail: ReelDetail; media: MediaInfo | null; similar: ReelTitle[]; autoPlay?: boolean; hideBack?: boolean }) {
   const router = useRouter()
-  const mediaState = useMedia()
   const {
     isFavorite, isWatched, inWatchlist, inPickList, isEpWatched,
     toggleFavorite, toggleWatched, toggleWatchlist, togglePickList,
-  } = mediaState
+  } = useTitleState()
 
   const selection = usePlaybackSelection(media)
 
@@ -61,8 +75,8 @@ export function DetailView({
   const onWatchlist = inWatchlist(detail.id)
 
   const next = useMemo(
-    () => findNextEpisode(detail.seasonList, (id) => isEpWatched(id, false)),
-    [detail.seasonList, isEpWatched],
+    () => findNextEpisode(detail.seasonList, detail.nextUp, isEpWatched),
+    [detail.seasonList, detail.nextUp, isEpWatched],
   )
 
   // What "Play" launches: the movie itself, or the show's next episode.
@@ -88,20 +102,14 @@ export function DetailView({
   const { muted: ambientMuted, toggle: toggleAmbientMute, forceMute: forceAmbientMute } = useAmbientMute()
   const ambientActive = Boolean(playTarget) && !playing && !trailerPlaying && !trailerOpen
 
-  const resumeLabel = detail.type === 'movie' && detail.progress > 0 && detail.progress < 1 ? 'Resume' : 'Play'
+  // Movies resume from their own position; shows from the next episode's.
+  const playProgress = detail.type === 'movie' ? detail.progress : next?.episode.progress ?? 0
+  const resumeLabel = playProgress > 0 && playProgress < 1 ? 'Resume' : 'Play'
 
   return (
     <div className="relative pb-20">
       {/* Back */}
-      {!hideBack && (
-        <button
-          type="button"
-          onClick={() => router.back()}
-          className="absolute left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
-        >
-          <ChevronLeftIcon className="h-4 w-4" /> Back
-        </button>
-      )}
+      {!hideBack && <BackPill fallbackHref={detail.type === 'tv' ? '/media/tv' : '/media/movies'} />}
 
       <AnimatePresence>
         {ambientActive && (
@@ -125,7 +133,16 @@ export function DetailView({
       <div className="relative flex min-h-svh flex-col justify-end">
         <div className="absolute inset-0 overflow-hidden">
           <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
-            <Poster gradient={detail.backdropUrl ? detail.backdropColor : backdropFallback(detail.hue)} src={detail.backdropUrl} alt={detail.title} rounded="rounded-none" className="h-full w-full" />
+            <Poster
+              gradient={detail.backdropUrl ? detail.backdropColor : backdropFallback(detail.hue)}
+              src={detail.backdropUrl}
+              srcSet={imageSrcSet(detail.backdropUrl, BACKDROP_WIDTHS)}
+              sizes="100vw"
+              priority
+              alt={detail.title}
+              rounded="rounded-none"
+              className="h-full w-full"
+            />
           </div>
           {/* Ambient background clip — plays automatically at random points in the title */}
           {ambientActive && playTarget && (
@@ -141,7 +158,18 @@ export function DetailView({
         <div className="relative flex flex-col gap-5 pb-12 pl-[var(--rail)] pr-[var(--gx)] pt-[30svh] md:flex-row md:items-end md:gap-7 md:pb-16">
           <div className="w-[150px] shrink-0 md:w-[268px]" style={{ animation: 'posterRise 0.5s ease' }}>
             <div className="aspect-[2/3] w-full">
-              <Poster gradient={detail.posterColor} src={detail.posterUrl} alt={detail.title} rounded="rounded-[16px]" className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]" />
+              <Poster
+                gradient={detail.posterColor}
+                src={detail.posterUrl}
+                srcSet={imageSrcSet(detail.posterUrl, POSTER_WIDTHS)}
+                sizes="(min-width: 768px) 268px, 150px"
+                width={360}
+                height={540}
+                priority
+                alt={detail.title}
+                rounded="rounded-[16px]"
+                className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]"
+              />
             </div>
           </div>
 
@@ -240,7 +268,7 @@ export function DetailView({
       {next && (
         <div className="mt-8 pl-[var(--rail)] pr-[var(--gx)]">
           <div className="flex items-center gap-4 rounded-2xl border border-border bg-surface p-3">
-            <button type="button" onClick={() => setPlaying(true)} className="relative h-[90px] w-[150px] shrink-0 overflow-hidden rounded-xl">
+            <button type="button" onClick={() => setPlaying(true)} aria-label={`Play S${next.season.index} E${next.episode.index}: ${next.episode.name}`} className="relative h-[90px] w-[150px] shrink-0 overflow-hidden rounded-xl">
               <Poster gradient={backdropFallback(next.episode.hue)} src={next.episode.imageUrl} alt={next.episode.name} className="h-full w-full" />
               <span className="absolute inset-0 grid place-items-center">
                 <span className="grid h-10 w-10 place-items-center rounded-full bg-black/45 text-white backdrop-blur-sm"><PlayIcon className="h-4 w-4" /></span>
@@ -262,7 +290,7 @@ export function DetailView({
           <SectionHeader title="Seasons" />
           <Row>
             {detail.seasonList.map(s => {
-              const watchedCount = s.episodes.filter(e => isEpWatched(e.id, false)).length
+              const watchedCount = s.episodes.filter(e => isEpWatched(e.id, e.played ?? false)).length
               const pct = (watchedCount / Math.max(1, s.episodeCount)) * 100
               return (
                 <Link key={s.id} href={`/media/tv/${detail.id}/season/${s.id}`} className="group flex w-[160px] shrink-0 flex-col gap-2">
@@ -318,7 +346,8 @@ export function DetailView({
             initialSourceId={selection.versionId || undefined}
             initialAudioIndex={selection.audioIndex}
             initialSubtitleIndex={selection.subtitleIndex}
-            onClose={() => setPlaying(false)}
+            // Refresh so Resume / Up next / progress reflect the session just watched.
+            onClose={() => { setPlaying(false); router.refresh() }}
           />
         )}
         {trailerPlaying && detail.trailer?.localItemId && (

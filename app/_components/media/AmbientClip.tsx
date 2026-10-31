@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { AnimatePresence, motion, usePresence } from 'framer-motion'
+import { ticksToSeconds } from './playback'
 
 export interface PreviewSource {
   url: string
@@ -19,8 +20,10 @@ export interface CachedPlayback {
 
 /** Ambient stream for a backdrop, muted by default. Direct sources start at the
     random point via a #t media fragment; HLS sources go through hls.js (same as the
-    player). Tearing down stops all segment requests — Jellyfin reaps the idle
-    transcode on its own, and the clip never reports playback progress. */
+    player). Source URLs are same-origin (/api/jellyfin/stream/…), so relative URLs
+    are expected. Tearing down stops all segment requests — Jellyfin reaps the idle
+    transcode on its own. The clip deliberately never posts /api/jellyfin/report, so
+    it can't move (or clear) the title's resume position. */
 export function ClipVideo({ source, onPlaying, muted = true, volume = 0.6, onAutoplayBlocked }: {
   source: PreviewSource
   onPlaying?: () => void
@@ -197,7 +200,7 @@ export function AmbientClip({
     }
     const src = sourceRef.current
     if (!src) return
-    const runtime = src.runtimeTicks / 10_000_000
+    const runtime = ticksToSeconds(src.runtimeTicks)
     if (runtime <= 120) return
     clearTimeout(rotateTimer.current)
     rotateTimer.current = setTimeout(() => {
@@ -221,7 +224,7 @@ export function AmbientClip({
     async function begin() {
       if (sourceRef.current === undefined) {
         try {
-          const res = await fetch(`/api/jellyfin/playback?id=${itemId}`)
+          const res = await fetch(`/api/jellyfin/playback?id=${encodeURIComponent(itemId)}`)
           const source = res.ok ? await res.json() : null
           sourceRef.current = source?.url
             ? { url: source.url, method: source.method, runtimeTicks: source.runtimeTicks, playSessionId: source.playSessionId }
@@ -232,7 +235,7 @@ export function AmbientClip({
       }
       const src = sourceRef.current
       if (cancelled || !src) return
-      const runtime = src.runtimeTicks / 10_000_000
+      const runtime = ticksToSeconds(src.runtimeTicks)
       // Rotation is armed by handleClipPlaying once this clip reports playback.
       apply([{ url: src.url, method: src.method, startAt: rollStartAt(runtime) }])
     }

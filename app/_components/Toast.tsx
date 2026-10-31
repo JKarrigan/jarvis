@@ -17,43 +17,54 @@ interface ToastState {
   seq: number
 }
 
+interface QueueState {
+  current: ToastItem | null
+  /** Last shown toast, kept so the message stays rendered while it fades out. */
+  last: ToastItem | null
+  queue: ToastItem[]
+}
+
+/**
+ * One toast at a time; later ones wait in a queue. All queue changes happen in
+ * pure state updaters, so StrictMode's double-invoked updaters can't drop or
+ * duplicate toasts.
+ */
 export function useToast() {
-  const [toast, setToast] = useState<ToastState>({ visible: false, type: 'success', message: '', seq: 0 })
-  const queue = useRef<ToastItem[]>([])
+  const [state, setState] = useState<QueueState>({ current: null, last: null, queue: [] })
   const counter = useRef(0)
 
-  function advance() {
-    const next = queue.current.shift()
-    if (next) {
-      setToast({ visible: true, type: next.type, message: next.message, seq: next.id })
-    } else {
-      setToast(t => ({ ...t, visible: false }))
-    }
-  }
-
   const showToast = useCallback((type: ToastType, message: string) => {
-    const id = ++counter.current
-    queue.current.push({ id, type, message })
-    setToast(t => {
-      if (!t.visible) {
-        queue.current.shift()
-        return { visible: true, type, message, seq: id }
-      }
-      return t
-    })
+    const item: ToastItem = { id: ++counter.current, type, message }
+    setState(s => s.current
+      ? { ...s, queue: [...s.queue, item] }
+      : { current: item, last: item, queue: s.queue })
   }, [])
 
   const dismissToast = useCallback(() => {
-    advance()
+    setState(s => {
+      const [next, ...rest] = s.queue
+      return next
+        ? { current: next, last: next, queue: rest }
+        : { current: null, last: s.last, queue: rest }
+    })
   }, [])
 
+  const shown = state.current ?? state.last
+  const toast: ToastState = {
+    visible: state.current !== null,
+    type: shown?.type ?? 'success',
+    message: shown?.message ?? '',
+    seq: shown?.id ?? 0,
+  }
+
   // Only success/error auto-dismiss — warning and critical require explicit user action
+  const { visible, seq, type } = toast
   useEffect(() => {
-    if (!toast.visible) return
-    if (toast.type === 'warning' || toast.type === 'critical') return
-    const id = setTimeout(advance, 3000)
+    if (!visible) return
+    if (type === 'warning' || type === 'critical') return
+    const id = setTimeout(dismissToast, 3000)
     return () => clearTimeout(id)
-  }, [toast.visible, toast.seq, toast.type])
+  }, [visible, seq, type, dismissToast])
 
   return { toast, showToast, dismissToast }
 }
@@ -66,18 +77,36 @@ const TOAST_STYLES: Record<ToastType, string> = {
 }
 
 export function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss?: () => void }) {
+  const urgent = toast.type === 'error' || toast.type === 'critical'
   return (
+    // The live region stays mounted so screen readers announce each new message.
     <div
+      role="status"
+      aria-live={urgent ? 'assertive' : 'polite'}
+      aria-atomic="true"
       className={`fixed bottom-4 right-4 z-50 transition-opacity duration-300 ${
         toast.visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}
     >
-      <div className={`flex items-center gap-3 rounded-xl border bg-zinc-900 px-4 py-3 shadow-lg text-sm max-w-xs ${TOAST_STYLES[toast.type]}`}>
-        <span className="flex-1">{toast.message}</span>
-        {onDismiss && (
-          <button onClick={onDismiss} className="text-xs opacity-60 hover:opacity-100 transition-opacity ml-1">✕</button>
-        )}
-      </div>
+      {toast.visible || toast.message ? (
+        <div
+          aria-hidden={!toast.visible}
+          className={`flex items-center gap-3 rounded-xl border bg-zinc-900 px-4 py-3 shadow-lg text-sm max-w-xs ${TOAST_STYLES[toast.type]}`}
+        >
+          <span className="flex-1">{toast.message}</span>
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              aria-label="Dismiss notification"
+              tabIndex={toast.visible ? 0 : -1}
+              className="-my-2 -mr-2 ml-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xs opacity-60 hover:opacity-100 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
+            >
+              <span aria-hidden>✕</span>
+            </button>
+          )}
+        </div>
+      ) : null}
     </div>
   )
 }

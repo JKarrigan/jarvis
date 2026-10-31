@@ -3,6 +3,7 @@ import {
   co2Status, pm25Status, pm1Status, pm10Status,
   tempStatus, humidityStatus, tvocStatus, noxStatus,
 } from './thresholds'
+import { STATUS_COLORS } from './statusColors'
 
 export interface RangeRow {
   color: StatusColor
@@ -43,9 +44,9 @@ export const METRICS: MetricConfig[] = [
       significance: 'CO₂ is the primary indicator of ventilation quality. It accumulates from human breathing and rises quickly in closed spaces. Elevated levels reduce cognitive performance, cause drowsiness and headaches, and signal that fresh air is needed.',
       ranges: [
         { color: 'good',         label: 'Good',            range: '≤800 ppm' },
-        { color: 'moderate',     label: 'Moderate',        range: '800–1000 ppm' },
-        { color: 'sensitive',    label: 'Poor',            range: '1000–1500 ppm' },
-        { color: 'unhealthy',    label: 'Unhealthy',       range: '1500–2000 ppm' },
+        { color: 'moderate',     label: 'Moderate',        range: '801–1000 ppm' },
+        { color: 'sensitive',    label: 'Poor',            range: '1001–1500 ppm' },
+        { color: 'unhealthy',    label: 'Unhealthy',       range: '1501–2000 ppm' },
         { color: 'very-unhealthy', label: 'Very Unhealthy', range: '>2000 ppm' },
       ],
     },
@@ -55,6 +56,7 @@ export const METRICS: MetricConfig[] = [
     label: 'PM2.5',
     unit: 'μg/m³',
     key: 'pm02',
+    altKey: 'pm02Compensated',
     statusFn: pm25Status,
     decimals: 1,
     description: {
@@ -62,12 +64,12 @@ export const METRICS: MetricConfig[] = [
       method: 'Measured in micrograms per cubic meter (μg/m³). A micrometer is 1/1000 of a millimeter — PM2.5 particles are roughly 30× smaller than a human hair.',
       significance: 'These particles are small enough to bypass the nose and throat, lodge deep in the lungs, and even enter the bloodstream. They are the main driver of the US EPA Air Quality Index (AQI). Common sources include smoke, cooking, vehicle exhaust, and industrial emissions.',
       ranges: [
-        { color: 'good',           label: 'Good',                          range: '0–9 μg/m³' },
-        { color: 'moderate',       label: 'Moderate',                      range: '9–35.4 μg/m³' },
-        { color: 'sensitive',      label: 'Unhealthy for Sensitive Groups', range: '35.4–55.4 μg/m³' },
-        { color: 'unhealthy',      label: 'Unhealthy',                     range: '55.4–125.4 μg/m³' },
-        { color: 'very-unhealthy', label: 'Very Unhealthy',                range: '125.4–225.4 μg/m³' },
-        { color: 'hazardous',      label: 'Hazardous',                     range: '>225.4 μg/m³' },
+        { color: 'good',           label: 'Good',                          range: '0–9.0 μg/m³' },
+        { color: 'moderate',       label: 'Moderate',                      range: '9.1–35.4 μg/m³' },
+        { color: 'sensitive',      label: 'Unhealthy for Sensitive Groups', range: '35.5–55.4 μg/m³' },
+        { color: 'unhealthy',      label: 'Unhealthy',                     range: '55.5–125.4 μg/m³' },
+        { color: 'very-unhealthy', label: 'Very Unhealthy',                range: '125.5–225.4 μg/m³' },
+        { color: 'hazardous',      label: 'Hazardous',                     range: '≥225.5 μg/m³' },
       ],
     },
   },
@@ -83,11 +85,12 @@ export const METRICS: MetricConfig[] = [
       method: 'Measured in micrograms per cubic meter (μg/m³). PM1 particles are 70× smaller than a human hair and invisible to the naked eye.',
       significance: 'Even smaller than PM2.5, these particles can penetrate more deeply into lung tissue and pass into the bloodstream more readily. Common sources include combustion (candles, gas stoves, tobacco), traffic, and ultrafine industrial dust.',
       ranges: [
-        { color: 'good',           label: 'Good',                          range: '0–9 μg/m³' },
-        { color: 'moderate',       label: 'Moderate',                      range: '9–35.4 μg/m³' },
-        { color: 'sensitive',      label: 'Unhealthy for Sensitive Groups', range: '35.4–55.4 μg/m³' },
-        { color: 'unhealthy',      label: 'Unhealthy',                     range: '55.4–125.4 μg/m³' },
-        { color: 'very-unhealthy', label: 'Very Unhealthy',                range: '>125.4 μg/m³' },
+        { color: 'good',           label: 'Good',                          range: '0–9.0 μg/m³' },
+        { color: 'moderate',       label: 'Moderate',                      range: '9.1–35.4 μg/m³' },
+        { color: 'sensitive',      label: 'Unhealthy for Sensitive Groups', range: '35.5–55.4 μg/m³' },
+        { color: 'unhealthy',      label: 'Unhealthy',                     range: '55.5–125.4 μg/m³' },
+        { color: 'very-unhealthy', label: 'Very Unhealthy',                range: '125.5–225.4 μg/m³' },
+        { color: 'hazardous',      label: 'Hazardous',                     range: '≥225.5 μg/m³' },
       ],
     },
   },
@@ -103,11 +106,12 @@ export const METRICS: MetricConfig[] = [
       method: 'Measured in micrograms per cubic meter (μg/m³). PM10 particles are about 7× smaller than a human hair — inhalable but typically filtered by the nose and upper airways.',
       significance: 'PM10 particles irritate the nose, throat, and upper respiratory tract. They are less likely than PM2.5 to reach the deep lungs but still worsen asthma and allergy symptoms. Common sources include road dust, pollen, mold spores, and construction activity.',
       ranges: [
-        { color: 'good',           label: 'Good',                          range: '0–53 μg/m³' },
-        { color: 'moderate',       label: 'Moderate',                      range: '54–154 μg/m³' },
+        { color: 'good',           label: 'Good',                          range: '0–54 μg/m³' },
+        { color: 'moderate',       label: 'Moderate',                      range: '55–154 μg/m³' },
         { color: 'sensitive',      label: 'Unhealthy for Sensitive Groups', range: '155–254 μg/m³' },
         { color: 'unhealthy',      label: 'Unhealthy',                     range: '255–354 μg/m³' },
-        { color: 'very-unhealthy', label: 'Very Unhealthy',                range: '>354 μg/m³' },
+        { color: 'very-unhealthy', label: 'Very Unhealthy',                range: '355–424 μg/m³' },
+        { color: 'hazardous',      label: 'Hazardous',                     range: '≥425 μg/m³' },
       ],
     },
   },
@@ -191,3 +195,22 @@ export const METRICS: MetricConfig[] = [
     },
   },
 ]
+
+/**
+ * Human label for a metric's status colour, taken from that metric's own
+ * reference ranges (e.g. temperature "good" → "Comfortable"). Falls back to the
+ * generic status label.
+ */
+export function metricStatusLabel(slug: string, color: StatusColor): string {
+  const metric = METRICS.find(m => m.slug === slug)
+  const label = metric?.description.ranges.find(r => r.color === color)?.label ?? STATUS_COLORS[color].label
+  // The EPA wording is too long for a metric card.
+  return label === 'Unhealthy for Sensitive Groups' ? 'Sensitive groups' : label
+}
+
+/** Reads a metric from one history row, preferring the compensated field when that row has it. */
+export function metricValue(measures: Partial<DeviceMeasures>, metric: Pick<MetricConfig, 'key' | 'altKey'>): number | null {
+  const alt = metric.altKey ? measures[metric.altKey] : undefined
+  const v = typeof alt === 'number' && Number.isFinite(alt) ? alt : measures[metric.key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}

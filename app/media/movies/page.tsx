@@ -1,5 +1,8 @@
+import type { Metadata } from 'next'
 import { getCatalog } from '@/lib/jellyfinServer'
 import { LibraryView } from '@/app/_components/media/library'
+
+export const metadata: Metadata = { title: 'Movies' }
 
 export const dynamic = 'force-dynamic'
 

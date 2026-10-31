@@ -1,11 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Link from 'next/link'
-import { METRICS } from '@/lib/metrics'
+import { METRICS, metricValue } from '@/lib/metrics'
+import { STATUS_COLORS } from '@/lib/statusColors'
 import { Chart } from '@/app/_components/Chart'
-import type { HistoryEntry, StatusColor } from '@/lib/types'
+import { usePolling } from '@/app/_components/PollingProvider'
+import type { HistoryEntry } from '@/lib/types'
 
 type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d'
 
@@ -17,15 +19,6 @@ const RANGES: { key: RangeKey; label: string; ms: number }[] = [
   { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
 ]
 
-const STATUS_COLOR: Record<StatusColor, string> = {
-  good:            'bg-emerald-400/20 text-emerald-400 border-emerald-400/30',
-  moderate:        'bg-yellow-400/20 text-yellow-400 border-yellow-400/30',
-  sensitive:       'bg-orange-400/20 text-orange-400 border-orange-400/30',
-  unhealthy:       'bg-red-500/20 text-red-400 border-red-500/30',
-  'very-unhealthy':'bg-purple-500/20 text-purple-400 border-purple-500/30',
-  hazardous:       'bg-rose-900/40 text-rose-400 border-rose-900/50',
-}
-
 function celsiusToF(c: number) {
   return c * 9 / 5 + 32
 }
@@ -33,60 +26,84 @@ function celsiusToF(c: number) {
 export default function MetricDetailPage() {
   const { metric: slug } = useParams<{ metric: string }>()
   const config = METRICS.find(m => m.slug === slug)
+  const { tempUnit, setTempUnit } = usePolling()
 
   const [range, setRange] = useState<RangeKey>('24h')
-  const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [loading, setLoading] = useState(true)
-  const [tempUnit, setTempUnit] = useState<'C' | 'F'>('F')
+  // Result is tagged with the request it answers, so "loading" is derived and a
+  // slow response for an old range can never overwrite a newer one.
+  const reqKey = `${slug}:${range}`
+  const [result, setResult] = useState<{ key: string; rows: HistoryEntry[] } | null>(null)
+  const loading = result?.key !== reqKey
 
   useEffect(() => {
     if (!config) return
-    setLoading(true)
+    const ac = new AbortController()
     const rangeMs = RANGES.find(r => r.key === range)!.ms
     const to = Date.now()
     const from = to - rangeMs
-    fetch(`/api/history?from=${from}&to=${to}`)
+    fetch(`/api/history?from=${from}&to=${to}`, { signal: ac.signal })
       .then(r => r.ok ? r.json() : [])
-      .then(data => { if (Array.isArray(data)) setHistory(data) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
+      .then(data => setResult({ key: `${config.slug}:${range}`, rows: Array.isArray(data) ? data : [] }))
+      .catch(() => { if (!ac.signal.aborted) setResult({ key: `${config.slug}:${range}`, rows: [] }) })
+    return () => ac.abort()
   }, [config, range])
 
-  if (!config) {
+  const isTemp = !!config?.isTempLike && tempUnit === 'F'
+
+  // Value and timestamp kept together; compensated field preferred per row so
+  // older firmware without it still shows data.
+  const { values, timestamps } = useMemo(() => {
+    const values: number[] = []
+    const timestamps: number[] = []
+    if (!config || loading || !result) return { values, timestamps }
+    for (const h of result.rows) {
+      const v = metricValue(h.measures, config)
+      if (v === null) continue
+      values.push(isTemp ? celsiusToF(v) : v)
+      timestamps.push(h.timestamp)
+    }
+    return { values, timestamps }
+  }, [config, result, loading, isTemp])
+
+  const stats = useMemo(() => {
+    if (values.length === 0) return null
+    let min = Infinity
+    let max = -Infinity
+    let sum = 0
+    for (const v of values) {
+      if (v < min) min = v
+      if (v > max) max = v
+      sum += v
+    }
+    return { latest: values[values.length - 1], avg: sum / values.length, min, max }
+  }, [values])
+
+  const statusFn = useMemo(() => {
+    if (!config) return undefined
+    return isTemp ? (v: number) => config.statusFn((v - 32) * 5 / 9) : config.statusFn
+  }, [config, isTemp])
+
+  if (!config || !statusFn) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
         <div className="text-center">
           <p className="text-zinc-400 text-sm">Unknown metric</p>
-          <Link href="/" className="mt-3 inline-block text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← Back to overview</Link>
+          <Link href="/" className="mt-3 inline-block text-xs text-zinc-500 hover:text-zinc-300 transition-colors">← Back to overview</Link>
         </div>
       </div>
     )
   }
 
-  const key = config.altKey ?? config.key
-  const isTemp = config.isTempLike && tempUnit === 'F'
-
-  const rawValues = history.map(h => h.measures[key] as number).filter(Number.isFinite)
-  const values = isTemp ? rawValues.map(celsiusToF) : rawValues
-  const timestamps = history.map(h => h.timestamp)
-
   const unit = config.isTempLike ? `°${tempUnit}` : config.unit
   const { decimals, description } = config
+  const currentStatus = stats ? statusFn(stats.latest) : 'good'
+  const fmtStat = (v: number | undefined) => (v !== undefined ? `${v.toFixed(decimals)} ${unit}` : null)
 
-  const latest = values.length > 0 ? values[values.length - 1] : null
-  const avg    = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null
-  const min    = values.length > 0 ? Math.min(...values) : null
-  const max    = values.length > 0 ? Math.max(...values) : null
-
-  const currentStatus = latest !== null
-    ? config.statusFn(isTemp ? (latest - 32) * 5 / 9 : latest)
-    : 'good'
-
-  const stats: { label: string; value: string | null }[] = [
-    { label: 'Latest',  value: latest !== null ? `${latest.toFixed(decimals)} ${unit}` : null },
-    { label: 'Average', value: avg   !== null ? `${avg.toFixed(decimals)} ${unit}` : null },
-    { label: 'Min',     value: min   !== null ? `${min.toFixed(decimals)} ${unit}` : null },
-    { label: 'Max',     value: max   !== null ? `${max.toFixed(decimals)} ${unit}` : null },
+  const statRows: { label: string; value: string | null }[] = [
+    { label: 'Latest',  value: fmtStat(stats?.latest) },
+    { label: 'Average', value: fmtStat(stats?.avg) },
+    { label: 'Min',     value: fmtStat(stats?.min) },
+    { label: 'Max',     value: fmtStat(stats?.max) },
   ]
 
   return (
@@ -94,13 +111,13 @@ export default function MetricDetailPage() {
       <main className="flex-1 p-6 space-y-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link href="/" className="text-zinc-600 hover:text-zinc-400 transition-colors text-sm">←</Link>
+            <Link href="/" className="text-zinc-500 hover:text-zinc-400 transition-colors text-sm">←</Link>
             <h1 className="text-base font-semibold text-zinc-100 tracking-tight">{config.label}</h1>
-            <span className="text-xs text-zinc-600">{unit}</span>
+            <span className="text-xs text-zinc-500">{unit}</span>
           </div>
           {config.isTempLike && (
             <button
-              onClick={() => setTempUnit(u => u === 'C' ? 'F' : 'C')}
+              onClick={() => setTempUnit(tempUnit === 'C' ? 'F' : 'C')}
               className="px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors font-mono text-xs"
             >
               °C / °F
@@ -115,15 +132,15 @@ export default function MetricDetailPage() {
           </div>
           <p className="text-xs text-zinc-400 leading-relaxed">{description.significance}</p>
           <div>
-            <p className="text-xs uppercase tracking-widest text-zinc-600 mb-2">Reference ranges</p>
+            <p className="text-xs uppercase tracking-widest text-zinc-500 mb-2">Reference ranges</p>
             <div className="flex flex-wrap gap-2">
               {description.ranges.map(r => (
                 <span
                   key={r.label}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium ${STATUS_COLOR[r.color]}`}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium ${STATUS_COLORS[r.color].badgeClass}`}
                 >
                   {r.label}
-                  <span className="opacity-60 font-normal">{r.range}</span>
+                  <span className="opacity-80 font-normal">{r.range}</span>
                 </span>
               ))}
             </div>
@@ -132,11 +149,11 @@ export default function MetricDetailPage() {
 
         {/* Analytics */}
         <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {stats.map(s => (
+          {statRows.map(s => (
             <div key={s.label} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3">
               <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">{s.label}</p>
               <p className="text-lg font-mono font-semibold text-zinc-100">
-                {loading ? <span className="text-zinc-700">—</span> : (s.value ?? '—')}
+                {loading ? <span className="text-zinc-500">—</span> : (s.value ?? '—')}
               </p>
             </div>
           ))}
@@ -144,7 +161,7 @@ export default function MetricDetailPage() {
 
         {/* Date range filter */}
         <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-600 uppercase tracking-widest mr-1">Range</span>
+          <span className="text-xs text-zinc-500 uppercase tracking-widest mr-1">Range</span>
           {RANGES.map(r => (
             <button
               key={r.key}
@@ -168,7 +185,7 @@ export default function MetricDetailPage() {
             </div>
           ) : values.length < 2 ? (
             <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 h-48 flex items-center justify-center">
-              <p className="text-sm text-zinc-600">No data for this period</p>
+              <p className="text-sm text-zinc-500">No data for this period</p>
             </div>
           ) : (
             <Chart
@@ -177,7 +194,7 @@ export default function MetricDetailPage() {
               values={values}
               timestamps={timestamps}
               status={currentStatus}
-              statusFn={isTemp ? (v: number) => config.statusFn((v - 32) * 5 / 9) : config.statusFn}
+              statusFn={statusFn}
             />
           )}
         </section>

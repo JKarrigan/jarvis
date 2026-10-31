@@ -2,13 +2,14 @@
 
 import { useMemo } from 'react'
 import Link from 'next/link'
-import { useMedia } from './MediaProvider'
+import { useTitleState } from './MediaProvider'
 import type { ReelTitle } from './types'
-import { Poster, detailHref } from './ReelCards'
+import { POSTER_WIDTHS, imageSrcSet } from './artwork'
+import { HOVER_REVEAL, Poster, detailHref } from './ReelCards'
 import { CloseIcon, DieIcon } from './icons'
 
 export function PickListView({ catalog }: { catalog: ReelTitle[] }) {
-  const { pickList, removeFromPickList, clearPickList } = useMedia()
+  const { pickList, removeFromPickList, clearPickList } = useTitleState()
   const byId = useMemo(() => new Map(catalog.map(t => [t.id, t])), [catalog])
   const titles = pickList.map(id => byId.get(id)).filter((t): t is ReelTitle => Boolean(t))
 
@@ -35,14 +36,14 @@ export function PickListView({ catalog }: { catalog: ReelTitle[] }) {
             {titles.map(t => (
               <div key={t.id} className="group relative">
                 <Link href={detailHref(t)} className="block">
-                  <div className="aspect-[2/3] w-full"><Poster gradient={t.posterColor} src={t.posterUrl} alt={t.title} className="h-full w-full" /></div>
+                  <div className="aspect-[2/3] w-full"><Poster gradient={t.posterColor} src={t.posterUrl} srcSet={imageSrcSet(t.posterUrl, POSTER_WIDTHS)} sizes="(max-width: 767px) 45vw, 240px" width={360} height={540} alt={t.title} className="h-full w-full" /></div>
                   <p className="mt-2 truncate text-[13.5px] font-semibold text-ink">{t.title}</p>
                 </Link>
                 <button
                   type="button"
-                  aria-label="Remove"
+                  aria-label={`Remove ${t.title} from the picker list`}
                   onClick={() => removeFromPickList(t.id)}
-                  className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-black/55 text-white opacity-0 backdrop-blur-sm transition group-hover:opacity-100 hover:bg-black/75"
+                  className={`absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm transition hover:bg-black/75 ${HOVER_REVEAL}`}
                 >
                   <CloseIcon className="h-4 w-4" />
                 </button>

@@ -45,27 +45,6 @@ body {
   display: none;
 }
 
-/* react-colorful overrides */
-.react-colorful {
-  border-radius: 0.75rem;
-  overflow: hidden;
-}
-.react-colorful__saturation {
-  border-radius: 0.5rem 0.5rem 0 0;
-  border-bottom: none;
-}
-.react-colorful__hue {
-  height: 20px;
-  border-radius: 0 0 0.5rem 0.5rem;
-  margin-top: 8px;
-}
-.react-colorful__pointer {
-  width: 22px;
-  height: 22px;
-  border: 2px solid white;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-}
-
 /* Gradient-track range slider — used for color temp and hue sliders */
 .gradient-slider {
   -webkit-appearance: none;
@@ -215,10 +194,30 @@ body {
    air-gradient app (which uses Geist + plain dark bg) is untouched.
    ============================================================ */
 
-/* Theme CSS variables (--accent, --surface, --border, --bg-gradient, --rail,
-   --grid-min, …) are applied INLINE by MediaThemeRoot for reliable cascade and
-   instant theme switching — see app/_components/media/themeTokens.ts. Only the
-   display-font rule lives here (it needs a descendant selector). */
+/* Theme colour variables (--accent, --surface, --border, --bg-gradient, …) are
+   applied INLINE by MediaThemeRoot for instant theme switching — see
+   app/_components/media/themeTokens.ts.
+
+   Layout tokens live here, in CSS, so the first server-rendered paint already
+   has the right gutters on a phone (setting them from JS after hydration made
+   phones flash the 96px desktop gutter). The breakpoint matches Tailwind's `md`
+   (768px), where MediaRail switches from the bottom tab bar to the side rail. */
+.reel-root {
+  --rail: 96px;      /* left page gutter (clears the icon rail) */
+  --gx: 56px;        /* right page gutter */
+  --navpad: 0px;     /* bottom padding that clears the mobile tab bar */
+  --grid-min: 206px; /* minmax() minimum for auto-fill poster grids */
+}
+@media (max-width: 767px) {
+  .reel-root {
+    --rail: 16px;
+    --gx: 16px;
+    --navpad: 86px;
+    --grid-min: 150px;
+  }
+}
+
+
 [data-reel-theme] h1,
 [data-reel-theme] h2,
 [data-reel-theme] h3 {
@@ -281,4 +280,35 @@ body {
   background: linear-gradient(100deg, rgba(255, 255, 255, 0.04) 30%, rgba(255, 255, 255, 0.10) 50%, rgba(255, 255, 255, 0.04) 70%);
   background-size: 920px 100%;
   animation: reelShimmer 1.25s linear infinite;
+}
+
+/* ===== Reduced motion =====
+   Honour the OS "reduce motion" setting. framer-motion components follow it via
+   <MotionConfig reducedMotion="user"> in the root layout; this covers the CSS
+   keyframes (ken-burns backdrops, poster rise, picker cards, confetti and the
+   infinite skeleton shimmer) and transitions. Most Reel animations are set in inline
+   `style`, hence !important. Animations collapse to their end state; spinners
+   keep turning because they are the only sign that something is loading. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  .reel-shimmer {
+    animation: none !important;
+  }
+  /* Picker confetti is decorative and would otherwise freeze along the top edge. */
+  [style*="confettiFall"] {
+    display: none !important;
+  }
+  .animate-spin {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

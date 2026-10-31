@@ -14,13 +14,14 @@ const TYPES: Record<string, string> = {
 
 export async function GET(_request: Request, { params }: { params: Promise<{ path: string[] }> }) {
   const rel = (await params).path.join('/')
-  if (!ALLOWED.some(re => re.test(rel))) return new Response('Not found', { status: 404 })
+  if (rel.split('/').includes('..') || !ALLOWED.some(re => re.test(rel))) return new Response('Not found', { status: 404 })
   try {
     const data = await readFile(path.join(ROOT, rel))
     return new Response(new Uint8Array(data), {
       headers: {
         'Content-Type': TYPES[path.extname(rel)] ?? 'application/octet-stream',
         'Cache-Control': 'public, max-age=86400',
+        'X-Content-Type-Options': 'nosniff',
       },
     })
   } catch {

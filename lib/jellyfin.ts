@@ -1,10 +1,12 @@
+import { TICKS_PER_MINUTE } from '@/app/_components/media/playback'
+
 export interface JellyfinPerson {
   Id: string
   Name: string
   Role?: string
   Type: 'Actor' | 'Director' | 'Writer' | 'Producer'
   PrimaryImageTag?: string
-  /** Pre-built Jellyfin image URL (set server-side; safe for the browser — image endpoints need no auth). */
+  /** Pre-built image URL (set server-side; a same-origin proxied URL). */
   imageUrl?: string
 }
 
@@ -60,7 +62,7 @@ export interface JellyfinItem {
 }
 
 function mins(m: number): number {
-  return m * 600_000_000
+  return m * TICKS_PER_MINUTE
 }
 
 export const MOCK_JELLYFIN_ITEMS: Record<string, JellyfinItem> = {
@@ -671,13 +673,6 @@ export const MOCK_JELLYFIN_ITEMS: Record<string, JellyfinItem> = {
   },
 }
 
-export function formatRuntime(ticks: number): string {
-  const mins = Math.round(ticks / 600_000_000)
-  const h = Math.floor(mins / 60)
-  const m = mins % 60
-  return h > 0 ? `${h}h ${m}m` : `${m}m`
-}
-
-// NOTE: data-fetching (auth, list/detail/stream, playback reporting) lives in
-// `lib/jellyfinServer.ts` — a `server-only` module so the Jellyfin token never
-// reaches the client. This file holds only client-safe types + pure helpers.
+// NOTE: this file is only the mock library used with MEDIA_MOCK=1 (and its types).
+// Data fetching (auth, lists/detail, the stream proxy, playback reporting) lives in
+// `lib/jellyfinServer.ts` — a `server-only` module so the token never reaches the client.

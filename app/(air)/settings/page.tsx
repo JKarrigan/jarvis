@@ -70,10 +70,10 @@ function FieldRow({ label, description, children }: { label: string; description
   )
 }
 
-function FieldStack({ label, children }: { label: string; children: React.ReactNode }) {
+function FieldStack({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-semibold uppercase tracking-widest text-zinc-500">{label}</label>
+      <label htmlFor={htmlFor} className="text-xs font-semibold uppercase tracking-widest text-zinc-400">{label}</label>
       {children}
     </div>
   )
@@ -81,66 +81,111 @@ function FieldStack({ label, children }: { label: string; children: React.ReactN
 
 const inputCls = 'rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-600 focus:border-emerald-500 focus:outline-none transition-colors disabled:opacity-50'
 
+/** Lat/lon fields that commit on blur/Enter (not on every keystroke); clearing both clears the location. */
+function LocationFields({ initial, onCommit }: {
+  initial: { lat: string; lon: string } | null
+  onCommit: (loc: { lat: string; lon: string } | null) => void
+}) {
+  const [lat, setLat] = useState(initial?.lat ?? '')
+  const [lon, setLon] = useState(initial?.lon ?? '')
+  const [error, setError] = useState<string | null>(null)
+
+  function commit() {
+    const la = lat.trim()
+    const lo = lon.trim()
+    if (!la && !lo) {
+      setError(null)
+      if (initial) onCommit(null)
+      return
+    }
+    if (!la || !lo) return // wait until both are filled in
+    const nLat = Number(la)
+    const nLon = Number(lo)
+    if (!Number.isFinite(nLat) || nLat < -90 || nLat > 90 || !Number.isFinite(nLon) || nLon < -180 || nLon > 180) {
+      setError('Latitude must be −90…90 and longitude −180…180')
+      return
+    }
+    setError(null)
+    if (la !== initial?.lat || lo !== initial?.lon) onCommit({ lat: la, lon: lo })
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter') commit() }
+
+  return (
+    <>
+      <div className="flex gap-3">
+        <FieldStack label="Latitude" htmlFor="outdoor-lat">
+          <input
+            id="outdoor-lat"
+            type="text"
+            inputMode="decimal"
+            value={lat}
+            onChange={e => setLat(e.target.value)}
+            onBlur={commit}
+            onKeyDown={onKeyDown}
+            placeholder="37.7749"
+            className={`w-32 ${inputCls}`}
+          />
+        </FieldStack>
+        <FieldStack label="Longitude" htmlFor="outdoor-lon">
+          <input
+            id="outdoor-lon"
+            type="text"
+            inputMode="decimal"
+            value={lon}
+            onChange={e => setLon(e.target.value)}
+            onBlur={commit}
+            onKeyDown={onKeyDown}
+            placeholder="-122.4194"
+            className={`w-32 ${inputCls}`}
+          />
+        </FieldStack>
+      </div>
+      {error && <p role="alert" className="text-xs text-red-400">{error}</p>}
+      {initial && !error && (
+        <p className="text-xs text-zinc-500 font-mono">Saved: {initial.lat}, {initial.lon}</p>
+      )}
+    </>
+  )
+}
+
+type ConfigState = { ip: string; config: DeviceConfig; draft: DeviceConfig } | { ip: string; error: string }
+
 export default function SettingsPage() {
-  const { setOutdoorLocation } = usePolling()
-  const [deviceIp, setDeviceIp] = useState<string | null>(null)
-  const [draft, setDraft] = useState<DeviceConfig | null>(null)
-  const [config, setConfig] = useState<DeviceConfig | null>(null)
-  const [loading, setLoading] = useState(true)
+  const { ready, deviceIp, measures, pmBatchId, setPmBatchId, outdoorLocation, setOutdoorLocation } = usePolling()
+  const [cfg, setCfg] = useState<ConfigState | null>(null)
   const [saving, setSaving] = useState(false)
-  const [fetchError, setFetchError] = useState<string | null>(null)
-  const { toast, showToast } = useToast()
-  const [pmBatchId, setPmBatchIdLocal] = useState<string | null>(null)
-  const [latestPm003Count, setLatestPm003Count] = useState<number | null>(null)
-  const [outdoorLat, setOutdoorLat] = useState('')
-  const [outdoorLon, setOutdoorLon] = useState('')
+  const { toast, showToast, dismissToast } = useToast()
 
   useEffect(() => {
-    const savedBatch = localStorage.getItem('ag-pm-batch')
-    if (savedBatch) setPmBatchIdLocal(savedBatch)
-
-    const lat = localStorage.getItem('ag-outdoor-lat') ?? ''
-    const lon = localStorage.getItem('ag-outdoor-lon') ?? ''
-    setOutdoorLat(lat)
-    setOutdoorLon(lon)
-
-    const saved = localStorage.getItem('ag-device-ip')
-    const validSaved = saved && !saved.startsWith('http') ? saved : null
-    const ip = validSaved ?? process.env.NEXT_PUBLIC_DEVICE_HOST ?? null
-    if (!ip) { setLoading(false); return }
-    setDeviceIp(ip)
-
-    Promise.all([
-      fetch(`/api/config?ip=${encodeURIComponent(ip)}`)
-        .then(r => r.ok ? r.json() : r.json().then((e: { error?: string }) => Promise.reject(e.error ?? 'Failed to load config'))),
-      fetch('/api/latest')
-        .then(r => r.ok ? r.json() : null)
-        .catch(() => null),
-    ])
-      .then(([configData, latestData]: [DeviceConfig, { measures?: { pm003Count?: number } } | null]) => {
-        setConfig(configData)
-        setDraft(configData)
-        const count = latestData?.measures?.pm003Count
-        if (typeof count === 'number' && Number.isFinite(count)) setLatestPm003Count(count)
+    if (!deviceIp) return
+    const ac = new AbortController()
+    fetch(`/api/config?ip=${encodeURIComponent(deviceIp)}`, { signal: ac.signal })
+      .then(async r => {
+        const body = await r.json().catch(() => null) as (DeviceConfig & { error?: string }) | null
+        if (!r.ok || !body) throw new Error(body?.error ?? 'Failed to load config')
+        setCfg({ ip: deviceIp, config: body, draft: body })
       })
-      .catch((err: unknown) => setFetchError(typeof err === 'string' ? err : 'Could not load config'))
-      .finally(() => setLoading(false))
-  }, [])
+      .catch((err: unknown) => {
+        if (ac.signal.aborted) return
+        setCfg({ ip: deviceIp, error: err instanceof Error ? err.message : 'Could not load config' })
+      })
+    return () => ac.abort()
+  }, [deviceIp])
+
+  const current = cfg && cfg.ip === deviceIp ? cfg : null
+  const loading = !ready || (deviceIp !== null && current === null)
+  const config = current && 'config' in current ? current.config : null
+  const draft = current && 'draft' in current ? current.draft : null
+  const fetchError = current && 'error' in current ? current.error : null
+  const latestPm003Count = typeof measures?.pm003Count === 'number' && Number.isFinite(measures.pm003Count) ? measures.pm003Count : null
+
+  function setDraft(next: DeviceConfig | null) {
+    setCfg(c => c && 'config' in c && next ? { ...c, draft: next } : c)
+  }
 
   function update<K extends keyof DeviceConfig>(key: K, value: DeviceConfig[K]) {
-    setDraft(d => d ? { ...d, [key]: value } : d)
-  }
-
-  function handlePmBatchChange(id: string | null) {
-    if (id) localStorage.setItem('ag-pm-batch', id)
-    else localStorage.removeItem('ag-pm-batch')
-    setPmBatchIdLocal(id)
-  }
-
-  function handleLocationChange(lat: string, lon: string) {
-    setOutdoorLat(lat)
-    setOutdoorLon(lon)
-    if (lat && lon) setOutdoorLocation({ lat, lon })
+    setCfg(c => c && 'draft' in c ? { ...c, draft: { ...c.draft, [key]: value } } : c)
   }
 
   async function handleSave() {
@@ -156,7 +201,7 @@ export default function SettingsPage() {
         const e = await res.json() as { error?: string }
         showToast('error', e.error ?? 'Failed to save')
       } else {
-        setConfig(draft)
+        setCfg(c => c && 'draft' in c ? { ...c, config: draft } : c)
         showToast('success', 'Settings saved')
       }
     } catch {
@@ -374,31 +419,11 @@ export default function SettingsPage() {
             Set your location to compare indoor air quality against outdoor conditions.
             Used for outdoor AQI display only — not sent to the device.
           </p>
-          <div className="flex gap-3">
-            <FieldStack label="Latitude">
-              <input
-                type="text"
-                inputMode="decimal"
-                value={outdoorLat}
-                onChange={e => handleLocationChange(e.target.value, outdoorLon)}
-                placeholder="37.7749"
-                className={`w-32 ${inputCls}`}
-              />
-            </FieldStack>
-            <FieldStack label="Longitude">
-              <input
-                type="text"
-                inputMode="decimal"
-                value={outdoorLon}
-                onChange={e => handleLocationChange(outdoorLat, e.target.value)}
-                placeholder="-122.4194"
-                className={`w-32 ${inputCls}`}
-              />
-            </FieldStack>
-          </div>
-          {outdoorLat && outdoorLon && (
-            <p className="text-xs text-zinc-600 font-mono">{outdoorLat}, {outdoorLon}</p>
-          )}
+          <LocationFields
+            key={`${outdoorLocation?.lat ?? ''}|${outdoorLocation?.lon ?? ''}`}
+            initial={outdoorLocation}
+            onCommit={setOutdoorLocation}
+          />
         </Section>
 
         <Section title="Calibration">
@@ -409,7 +434,7 @@ export default function SettingsPage() {
             </p>
             <select
               value={pmBatchId ?? ''}
-              onChange={e => handlePmBatchChange(e.target.value || null)}
+              onChange={e => setPmBatchId(e.target.value || null)}
               className={`w-full ${inputCls}`}
             >
               <option value="">None — use raw device value</option>
@@ -489,7 +514,7 @@ export default function SettingsPage() {
         </div>
       </main>
 
-      <Toast toast={toast} />
+      <Toast toast={toast} onDismiss={dismissToast} />
     </div>
   )
 }

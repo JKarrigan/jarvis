@@ -24,3 +24,21 @@ export function calibratePm25(pm003Count: number, batch: PmBatch): number {
   return pm003Count * batch.factor + batch.offset
 }
 
+
+export function findPmBatch(id: string | null | undefined): PmBatch | null {
+  return id ? PM_BATCHES.find(b => b.id === id) ?? null : null
+}
+
+/**
+ * The PM2.5 value the dashboard shows and computes AQI from: the batch-
+ * corrected value when a batch is selected, else the firmware-compensated
+ * value when the device reports one, else raw pm02. NaN when missing.
+ */
+export function effectivePm25(
+  m: { pm02?: number; pm02Compensated?: number; pm003Count?: number },
+  batch: PmBatch | null,
+): number {
+  if (batch && typeof m.pm003Count === 'number' && Number.isFinite(m.pm003Count)) return calibratePm25(m.pm003Count, batch)
+  if (typeof m.pm02Compensated === 'number' && Number.isFinite(m.pm02Compensated)) return m.pm02Compensated
+  return typeof m.pm02 === 'number' ? m.pm02 : NaN
+}

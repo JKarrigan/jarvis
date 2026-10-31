@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ReelTitle } from './types'
+import { BACKDROP_WIDTHS, imageSrcSet } from './artwork'
 import { Poster, detailHref } from './ReelCards'
 import { PlayIcon, StarIcon } from './icons'
 
@@ -109,7 +110,7 @@ export function HomeHero({ titles }: { titles: ReelTitle[] }) {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.8, ease: 'easeInOut' }}
         >
-          <Poster gradient={title.backdropColor} src={title.backdropUrl} alt={title.title} rounded="rounded-none" className="h-full w-full" />
+          <Poster gradient={title.backdropColor} src={title.backdropUrl} srcSet={imageSrcSet(title.backdropUrl, BACKDROP_WIDTHS)} sizes="100vw" priority alt={title.title} rounded="rounded-none" className="h-full w-full" />
         </motion.div>
       </AnimatePresence>
 

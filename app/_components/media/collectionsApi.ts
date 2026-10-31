@@ -23,21 +23,21 @@ export async function createCollection(name: string, ids: string[] = []): Promis
 }
 
 export async function addToCollection(collectionId: string, titleId: string): Promise<boolean> {
-  const res = await fetch(`/api/jellyfin/collections/${collectionId}/items?ids=${encodeURIComponent(titleId)}`, {
+  const res = await fetch(`/api/jellyfin/collections/${encodeURIComponent(collectionId)}/items?ids=${encodeURIComponent(titleId)}`, {
     method: 'POST',
   })
   return res.ok
 }
 
 export async function removeFromCollection(collectionId: string, titleId: string): Promise<boolean> {
-  const res = await fetch(`/api/jellyfin/collections/${collectionId}/items?ids=${encodeURIComponent(titleId)}`, {
+  const res = await fetch(`/api/jellyfin/collections/${encodeURIComponent(collectionId)}/items?ids=${encodeURIComponent(titleId)}`, {
     method: 'DELETE',
   })
   return res.ok
 }
 
 export async function renameCollection(collectionId: string, name: string): Promise<boolean> {
-  const res = await fetch(`/api/jellyfin/collections/${collectionId}`, {
+  const res = await fetch(`/api/jellyfin/collections/${encodeURIComponent(collectionId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
@@ -46,6 +46,6 @@ export async function renameCollection(collectionId: string, name: string): Prom
 }
 
 export async function deleteCollection(collectionId: string): Promise<boolean> {
-  const res = await fetch(`/api/jellyfin/collections/${collectionId}`, { method: 'DELETE' })
+  const res = await fetch(`/api/jellyfin/collections/${encodeURIComponent(collectionId)}`, { method: 'DELETE' })
   return res.ok
 }

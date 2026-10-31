@@ -1,30 +1,22 @@
 'use client'
 
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { ReelPerson } from './types'
 import { avatar, backdropFallback } from './artwork'
 import { Poster, PosterCard } from './ReelCards'
-import { ChevronLeftIcon } from './icons'
+import { BackPill } from './BackPill'
 
 export function PersonDetail({ person }: { person: ReelPerson }) {
-  const router = useRouter()
   return (
     <div className="relative pb-20">
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="absolute left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
-      >
-        <ChevronLeftIcon className="h-4 w-4" /> Back
-      </button>
+      <BackPill fallbackHref="/media" />
 
       {/* Header */}
       <div className="pl-[var(--rail)] pr-[var(--gx)] pt-20">
         <div className="flex flex-col gap-6 md:flex-row md:items-end">
           <div className="w-[150px] shrink-0 md:w-[200px]">
             <div className="aspect-[3/4] w-full">
-              <Poster gradient={avatar(person.hue)} src={person.imageUrl} alt={person.name} rounded="rounded-2xl" className="h-full w-full shadow-[0_24px_60px_rgba(0,0,0,0.55)]" />
+              <Poster gradient={avatar(person.hue)} src={person.imageUrl} width={400} height={533} priority alt={person.name} rounded="rounded-2xl" className="h-full w-full shadow-[0_24px_60px_rgba(0,0,0,0.55)]" />
             </div>
           </div>
           <div className="min-w-0 flex-1">

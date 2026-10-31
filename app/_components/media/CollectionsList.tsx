@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
-import { Sheet } from '@/app/_components/HueControls'
+import { Sheet } from './Sheet'
 import type { ReelTitle, CollectionSummary } from './types'
 import { collColor } from './artwork'
 import { PosterCard } from './ReelCards'
@@ -103,11 +103,12 @@ function CreateCollectionSheet({ onClose, onCreated }: { onClose: () => void; on
   }
 
   return (
-    <Sheet onClose={onClose}>
+    <Sheet onClose={onClose} label="New collection">
       <form onSubmit={submit} className="space-y-4 p-5">
         <h3 className="text-lg font-semibold text-zinc-100">New collection</h3>
         <input
-          autoFocus
+          data-autofocus
+          aria-label="Collection name"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="Collection name…"

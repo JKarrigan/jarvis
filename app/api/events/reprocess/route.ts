@@ -1,37 +1,28 @@
-import { getAllReadings, deleteAllEvents, upsertEvent } from '@/lib/db'
-import { detectEvents } from '@/lib/eventDetection'
-import type { AirGradientReading } from '@/lib/eventTypes'
+import { getReadingSpan, iterateDetectorReadings, replaceAllEvents } from '@/lib/db'
+import { runDetector } from '@/lib/eventDetection'
+import { assertSameOrigin } from '@/lib/http'
+import { replaceLiveDetector } from '@/lib/poller'
 
-export async function POST() {
-  const readings = getAllReadings()
+/**
+ * Re-runs event detection over all stored readings. Detection is O(n) and the
+ * rows stream straight from SQLite; the old events are replaced in a single
+ * transaction that keeps acknowledgements. The live poller then continues from
+ * the batch detector's final state, so its ids match the new rows.
+ */
+export async function POST(request: Request) {
+  const rejected = assertSameOrigin(request)
+  if (rejected) return rejected
 
-  const agReadings: AirGradientReading[] = readings.map(r => ({
-    timestamp: new Date(r.timestamp),
-    pm01: r.measures.pm01,
-    pm02: r.measures.pm02,
-    pm10: r.measures.pm10,
-    rco2: r.measures.rco2,
-    tvocIndex: r.measures.tvocIndex,
-    noxIndex: r.measures.noxIndex,
-    atmp: r.measures.atmpCompensated ?? r.measures.atmp,
-    rhum: r.measures.rhumCompensated ?? r.measures.rhum,
-  }))
-
-  const events = detectEvents(agReadings)
-
-  deleteAllEvents()
-  for (const event of events) {
-    upsertEvent(event)
-  }
+  const span = getReadingSpan()
+  const { events, detector, readingsProcessed } = runDetector(iterateDetectorReadings())
+  replaceAllEvents(events)
+  replaceLiveDetector(detector)
 
   return Response.json({
-    readingsProcessed: readings.length,
+    readingsProcessed,
     eventsFound: events.length,
-    span: readings.length > 0
-      ? {
-          from: new Date(readings[0].timestamp).toISOString(),
-          to: new Date(readings[readings.length - 1].timestamp).toISOString(),
-        }
+    span: span
+      ? { from: new Date(span.from).toISOString(), to: new Date(span.to).toISOString() }
       : null,
   })
 }

@@ -1,19 +1,22 @@
 'use client'
 
 import { useState } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter, notFound } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
-import JellyfinPlayer from './JellyfinPlayer'
-import { useMedia } from './MediaProvider'
+import { BackPill } from './BackPill'
+import { useTitleState } from './MediaProvider'
 import { usePlaybackSelection, PlaybackPicker } from './PlaybackPicker'
 import {
   ActionButton, CastRow, CreditsGrid, FileAndRating, TagsRow, criticColor,
 } from './DetailSections'
 import type { ReelDetail, ReelEpisodeDetail, ReelTitle, MediaInfo } from './types'
-import { backdropFallback, poster } from './artwork'
+import { BACKDROP_WIDTHS, backdropFallback, imageSrcSet, poster, POSTER_WIDTHS } from './artwork'
 import { Poster, PosterCard, Row, SectionHeader } from './ReelCards'
-import { PlayIcon, StarIcon, CheckIcon, HeartIcon, TomatoIcon, ChevronLeftIcon } from './icons'
+import { PlayIcon, StarIcon, CheckIcon, HeartIcon, TomatoIcon } from './icons'
+
+const JellyfinPlayer = dynamic(() => import('./JellyfinPlayer'), { ssr: false })
 
 export function EpisodeDetail({
   detail, episode, seasonId, episodeId, media, similar,
@@ -26,7 +29,7 @@ export function EpisodeDetail({
   similar: ReelTitle[]
 }) {
   const router = useRouter()
-  const { isEpWatched, toggleEpWatched, isFavorite, toggleFavorite } = useMedia()
+  const { isEpWatched, toggleEpWatched, isFavorite, toggleFavorite } = useTitleState()
   const selection = usePlaybackSelection(media)
 
   // The season/episode still prove the episode exists even when the rich fetch fails.
@@ -38,7 +41,11 @@ export function EpisodeDetail({
     notFound()
   }
 
-  const watched = isEpWatched(episodeId, false)
+  // Server seed: the rich episode fetch's UserData, else the season list's.
+  const serverPlayed = episode?.watched ?? epBasic.played ?? false
+  const watched = isEpWatched(episodeId, serverPlayed)
+  const progress = episode?.progress ?? epBasic.progress ?? 0
+  const playLabel = progress > 0 && progress < 1 && !watched ? 'Resume' : 'Play'
   const favorite = isFavorite(episodeId, episode?.favorite ?? false)
 
   // Header values: episode-level when the rich fetch succeeded, else the season-list basics.
@@ -72,13 +79,7 @@ export function EpisodeDetail({
 
   return (
     <div className="relative pb-20">
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="absolute left-4 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
-      >
-        <ChevronLeftIcon className="h-4 w-4" /> Back
-      </button>
+      <BackPill fallbackHref={`/media/tv/${detail.id}`} />
 
       {/* Hero: the episode still as a full-viewport backdrop with the title block anchored
           to its lower edge. The section grows past 100svh when the content is taller, so
@@ -86,7 +87,7 @@ export function EpisodeDetail({
       <div className="relative flex min-h-svh flex-col justify-end">
         <div className="absolute inset-0 overflow-hidden">
           <div className="absolute inset-0" style={{ animation: 'kenburns 1.1s ease' }}>
-            <Poster gradient={backdropFallback(heroHue)} src={heroSrc} alt={title} rounded="rounded-none" className="h-full w-full" />
+            <Poster gradient={backdropFallback(heroHue)} src={heroSrc} srcSet={imageSrcSet(heroSrc, BACKDROP_WIDTHS)} sizes="100vw" priority alt={title} rounded="rounded-none" className="h-full w-full" />
           </div>
           {/* Scrim: darkens toward the bottom for text contrast but stays translucent through
               the title/overview zone so the artwork still reads behind the content. */}
@@ -98,7 +99,18 @@ export function EpisodeDetail({
         <div className="relative flex flex-col gap-5 pb-12 pl-[var(--rail)] pr-[var(--gx)] pt-[30svh] md:flex-row md:items-end md:gap-7 md:pb-16">
           <div className="w-[150px] shrink-0 md:w-[268px]" style={{ animation: 'posterRise 0.5s ease' }}>
             <div className="aspect-[2/3] w-full">
-              <Poster gradient={poster(season.hue)} src={season.posterUrl ?? detail.posterUrl} alt={season.name} rounded="rounded-[16px]" className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]" />
+              <Poster
+                gradient={poster(season.hue)}
+                src={season.posterUrl ?? detail.posterUrl}
+                srcSet={imageSrcSet(season.posterUrl ?? detail.posterUrl, POSTER_WIDTHS)}
+                sizes="(min-width: 768px) 268px, 150px"
+                width={360}
+                height={540}
+                priority
+                alt={season.name}
+                rounded="rounded-[16px]"
+                className="h-full w-full shadow-[0_30px_70px_rgba(0,0,0,0.6)]"
+              />
             </div>
           </div>
 
@@ -140,13 +152,13 @@ export function EpisodeDetail({
 
             {/* Actions */}
             <div className="mt-5 flex flex-wrap items-center gap-2.5">
-              <ActionButton accent label="Play" onClick={() => setPlaying(true)}>
-                <PlayIcon className="h-4 w-4" /> Play
+              <ActionButton accent label={playLabel} onClick={() => setPlaying(true)}>
+                <PlayIcon className="h-4 w-4" /> {playLabel}
               </ActionButton>
               <ActionButton active={favorite} label="Favorite" onClick={() => toggleFavorite(episodeId, episode?.favorite ?? false)}>
                 <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} style={favorite ? { color: 'var(--fav)' } : undefined} />
               </ActionButton>
-              <ActionButton active={watched} label="Mark watched" onClick={() => toggleEpWatched(episodeId, false)}>
+              <ActionButton active={watched} label="Mark watched" onClick={() => toggleEpWatched(episodeId, serverPlayed)}>
                 <CheckIcon className="h-4 w-4" /> {watched ? 'Watched' : 'Mark watched'}
               </ActionButton>
             </div>
@@ -178,7 +190,7 @@ export function EpisodeDetail({
             {others.map(e => (
               <Link key={e.id} href={`/media/tv/${detail.id}/season/${season.id}/${e.id}`} className="group flex w-[240px] shrink-0 flex-col gap-2">
                 <div className="relative aspect-video w-full overflow-hidden rounded-xl transition-transform duration-200 group-hover:-translate-y-1">
-                  <Poster gradient={backdropFallback(e.hue)} src={e.imageUrl} alt={e.name} className="h-full w-full" />
+                  <Poster gradient={backdropFallback(e.hue)} src={e.imageUrl} srcSet={imageSrcSet(e.imageUrl, [480, 720])} sizes="240px" alt={e.name} className="h-full w-full" />
                 </div>
                 <div className="min-w-0">
                   <p className="truncate text-[13px] font-semibold text-ink"><span className="text-accent-soft">E{e.index}</span> · {e.name}</p>
@@ -208,7 +220,8 @@ export function EpisodeDetail({
             initialSourceId={selection.versionId || undefined}
             initialAudioIndex={selection.audioIndex}
             initialSubtitleIndex={selection.subtitleIndex}
-            onClose={() => setPlaying(false)}
+            // Refresh so the resume label / watched state reflect the session.
+            onClose={() => { setPlaying(false); router.refresh() }}
           />
         )}
       </AnimatePresence>

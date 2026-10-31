@@ -81,6 +81,7 @@ export function HomeBody({
           </section>
         )}
 
+
         {showRows && listening.length > 0 && (
           <section>
             <SectionHeader title="Continue listening" />

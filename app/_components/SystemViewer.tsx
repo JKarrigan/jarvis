@@ -90,22 +90,32 @@ export function SystemViewer() {
   const [data, setData] = useState<SystemStats | null>(null)
   const [lastFetched, setLastFetched] = useState<Date | null>(null)
 
-  function load() {
-    fetch('/api/system')
-      .then(r => r.ok ? r.json() : null)
-      .then((d: SystemStats | null) => {
-        if (d) {
-          setData(d)
-          setLastFetched(new Date())
-        }
-      })
-      .catch(() => {})
-  }
-
-  useEffect(() => { load() }, [])
+  // setTimeout chain that pauses while the tab is hidden and refreshes on return.
   useEffect(() => {
-    const id = setInterval(load, 10_000)
-    return () => clearInterval(id)
+    const ac = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async () => {
+      clearTimeout(timer)
+      if (!document.hidden) {
+        try {
+          const r = await fetch('/api/system', { signal: ac.signal })
+          const d = r.ok ? await r.json() as SystemStats : null
+          if (d) {
+            setData(d)
+            setLastFetched(new Date())
+          }
+        } catch { /* keep last stats */ }
+      }
+      if (!ac.signal.aborted) timer = setTimeout(tick, 10_000)
+    }
+    const onVisible = () => { if (!document.hidden) void tick() }
+    document.addEventListener('visibilitychange', onVisible)
+    void tick()
+    return () => {
+      ac.abort()
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   return (

@@ -1,16 +1,20 @@
 'use client'
 
 import { useState } from 'react'
+import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { Audiobook, AudiobookDetail } from '../types'
-import { useMedia } from '../MediaProvider'
-import { CheckIcon, ChevronLeftIcon, HeartIcon, PauseIcon, PencilIcon, PlaySolidIcon, RestartIcon } from '../icons'
+import { useTitleState } from '../MediaProvider'
+import { BackPill } from '../BackPill'
+import { CheckIcon, HeartIcon, PauseIcon, PencilIcon, PlaySolidIcon, RestartIcon } from '../icons'
 import { useAudiobookPlayer, useBookPosition } from './AudiobookPlayer'
 import { BookProgress, ChapterList, Cover } from './parts'
 import { chapterAt, length } from './format'
-import { EditAudiobookSheet } from './EditAudiobookSheet'
+
+// The edit form is rarely opened — load it on demand.
+const EditAudiobookSheet = dynamic(() => import('./EditAudiobookSheet').then(m => m.EditAudiobookSheet), { ssr: false })
 
 /** Chapters shown before "Show all" — a window around where you are. */
 const CHAPTER_WINDOW = 9
@@ -20,7 +24,7 @@ const SQUARE = 'grid h-[50px] w-[50px] shrink-0 place-items-center rounded-full 
 
 export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; more: Audiobook[] }) {
   const router = useRouter()
-  const { isFavorite, toggleFavorite } = useMedia()
+  const { isFavorite, toggleFavorite } = useTitleState()
   const { book: loaded, playing, play, toggle, close } = useAudiobookPlayer()
   const position = useBookPosition(book)
   const [showAll, setShowAll] = useState(false)
@@ -39,7 +43,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
   async function setFinished(finished: boolean) {
     setBusy(true)
     try {
-      await fetch(`/api/jellyfin/audiobooks/${book.id}/finished`, { method: finished ? 'POST' : 'DELETE' })
+      await fetch(`/api/jellyfin/audiobooks/${encodeURIComponent(book.id)}/finished`, { method: finished ? 'POST' : 'DELETE' })
       // The loaded player holds the old position; drop it so it can't report it back.
       if (isLoaded) close()
       router.refresh()
@@ -52,7 +56,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
     setBusy(true)
     try {
       if (isLoaded) close()
-      await fetch(`/api/jellyfin/audiobooks/${book.id}/finished`, { method: 'DELETE' })
+      await fetch(`/api/jellyfin/audiobooks/${encodeURIComponent(book.id)}/finished`, { method: 'DELETE' })
       play(book.id, { fromStart: true })
       router.refresh()
     } finally {
@@ -69,13 +73,7 @@ export function AudiobookDetailView({ book, more }: { book: AudiobookDetail; mor
   return (
     <div className="relative pb-16">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-[620px]" style={{ background: `radial-gradient(85% 100% at 30% 0%, hsl(${book.hue} 42% 26% / 0.75) 0%, transparent 72%)` }} />
-      <button
-        type="button"
-        onClick={() => router.back()}
-        className="absolute left-4 top-3 z-30 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/45 px-3.5 py-2 text-sm font-medium text-ink backdrop-blur-xl transition hover:bg-white/10 md:left-[86px]"
-      >
-        <ChevronLeftIcon className="h-4 w-4" /> Back
-      </button>
+      <BackPill fallbackHref="/media/audiobooks" className="z-30" />
 
       <div className="relative flex flex-col gap-10 pl-[var(--rail)] pr-[var(--gx)] pt-20 md:gap-12 md:pt-[104px]">
         <div className="flex flex-col gap-6 md:flex-row md:items-end md:gap-[52px]">

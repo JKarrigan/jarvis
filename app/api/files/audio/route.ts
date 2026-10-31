@@ -1,62 +1,45 @@
-import { spawn } from 'child_process'
-import { statSync } from 'fs'
-import { resolveSafe } from '@/lib/files'
+import fsp from 'fs/promises'
+import { resolveSafe, filesErrorResponse, FilesError } from '@/lib/files'
+import { INPUT_FLAGS, busyResponse, startTranscode, tryAcquireTranscode } from '../_lib/transcode'
 
 export const dynamic = 'force-dynamic'
 
-const FFMPEG = process.env.FFMPEG_PATH ?? 'ffmpeg'
-
+/**
+ * GET ?path=<file> — the first audio stream transcoded to AAC in an ADTS
+ * stream (streamable, no seek table). Chunked body; 503 + Retry-After when the
+ * transcode slots are busy, 504 when ffmpeg produces nothing within 15 s.
+ */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
-  const relPath = searchParams.get('path') ?? ''
 
   let abs: string
   try {
-    abs = resolveSafe(relPath)
-  } catch {
-    return new Response('Forbidden', { status: 403 })
+    abs = resolveSafe(searchParams.get('path') ?? '')
+    if (!(await fsp.stat(abs)).isFile()) throw new FilesError('Not a file', 400)
+  } catch (e) {
+    return filesErrorResponse(e, 'audio')
   }
 
-  try {
-    const stat = statSync(abs)
-    if (!stat.isFile()) return new Response('Not a file', { status: 400 })
-  } catch {
-    return new Response('Not found', { status: 404 })
-  }
+  const release = tryAcquireTranscode()
+  if (!release) return busyResponse()
 
-  let ff: ReturnType<typeof spawn> | null = null
+  const body = await startTranscode([
+    ...INPUT_FLAGS,
+    '-i', `file:${abs}`,
+    '-map', '0:a:0',
+    '-vn', '-sn', '-dn',
+    '-c:a', 'aac',     // transcode to AAC (handles AC3, DTS, TrueHD, etc.)
+    '-b:a', '192k',
+    '-f', 'adts',      // ADTS: streamable AAC container, no seek table needed
+    'pipe:1',
+  ], request.signal, release, 'audio')
+  if (body instanceof Response) return body
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      ff = spawn(FFMPEG, [
-        '-i', abs,
-        '-vn',             // drop video
-        '-acodec', 'aac',  // transcode to AAC (handles AC3, DTS, TrueHD, etc.)
-        '-b:a', '192k',
-        '-f', 'adts',      // ADTS: streamable AAC container, no seek table needed
-        'pipe:1',
-      ])
-
-      ff.stdout!.on('data', (chunk: Buffer) => {
-        controller.enqueue(new Uint8Array(chunk))
-      })
-
-      ff.stdout!.on('end', () => controller.close())
-
-      ff.on('error', (err) => controller.error(err))
-
-      // swallow ffmpeg progress/info logs
-      ff.stderr!.resume()
-    },
-    cancel() {
-      ff?.kill('SIGKILL')
-    },
-  })
-
-  return new Response(stream, {
+  return new Response(body, {
     headers: {
       'Content-Type': 'audio/aac',
       'Cache-Control': 'no-store',
+      'Accept-Ranges': 'none',
       'X-Content-Type-Options': 'nosniff',
     },
   })

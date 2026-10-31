@@ -1,5 +1,8 @@
+import type { Metadata } from 'next'
 import { getCatalog, getBoxSets } from '@/lib/jellyfinServer'
 import { CollectionsList } from '@/app/_components/media/CollectionsList'
+
+export const metadata: Metadata = { title: 'Collections' }
 
 export const dynamic = 'force-dynamic'
 

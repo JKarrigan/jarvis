@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 
 const APPS = [
   { key: 'air', label: 'Air Gradient', desc: 'Air quality & home', href: '/' },
-  { key: 'media', label: 'Media', desc: 'Movies & TV', href: '/media' },
+  { key: 'media', label: 'Media', desc: 'Movies, TV, books & photos', href: '/media' },
 ] as const
 
 function AirIcon({ className = '' }: { className?: string }) {
@@ -84,6 +84,7 @@ export function AppSwitcher() {
                   key={app.key}
                   href={app.href}
                   onClick={() => setOpen(false)}
+                  aria-current={active ? (pathname === app.href ? 'page' : 'true') : undefined}
                   className={`flex items-center gap-3 px-2.5 py-2 rounded-xl transition-colors ${active ? 'bg-white/10' : 'hover:bg-white/5'}`}
                 >
                   <span className={`grid place-items-center h-8 w-8 rounded-lg text-zinc-900 ${app.key === 'media' ? 'bg-amber-300' : 'bg-emerald-400'}`}>

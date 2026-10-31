@@ -1,7 +1,7 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Manrope, Schibsted_Grotesk } from "next/font/google";
+import { MotionConfig } from "framer-motion";
 import "./globals.css";
-import { PollingProvider } from "./_components/PollingProvider";
 import { AppSwitcher } from "./_components/AppSwitcher";
 
 const geistSans = Geist({
@@ -14,21 +14,36 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Reel (media) fonts. Both are variable fonts, so no `weight` list (one file
+// covers every weight), and they are only used under /media, so they are not
+// preloaded on every route.
 const manrope = Manrope({
   variable: "--font-manrope",
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
+  preload: false,
 });
 
 const schibstedGrotesk = Schibsted_Grotesk({
   variable: "--font-schibsted",
   subsets: ["latin"],
-  weight: ["500", "600", "700", "800"],
+  preload: false,
 });
 
 export const metadata: Metadata = {
-  title: "AirGradient Dashboard",
-  description: "Local air quality monitor",
+  title: { default: "Home", template: "%s · Home" },
+  description: "Home server: air quality, lights, files, media and photos",
+  applicationName: "Home",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Home",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0a0a0a",
+  colorScheme: "dark",
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -42,10 +57,10 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} ${manrope.variable} ${schibstedGrotesk.variable} h-full antialiased dark`}
     >
       <body className="h-full">
-        <PollingProvider>
+        <MotionConfig reducedMotion="user">
           <AppSwitcher />
           {children}
-        </PollingProvider>
+        </MotionConfig>
       </body>
     </html>
   );

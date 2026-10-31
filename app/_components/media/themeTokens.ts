@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
-import type { ThemeName } from './MediaProvider'
+
+export type ThemeName = 'ember' | 'aurora' | 'sage' | 'midnight' | 'noir'
 
 interface ThemeTokens {
   accent: string
@@ -44,12 +45,26 @@ export const THEME_TOKENS: Record<ThemeName, ThemeTokens> = {
   },
 }
 
+/** Settings-page metadata per theme. `bg` is the real page gradient, so the theme
+    picker's preview cards show exactly what the app will look like. */
+export const THEMES: { key: ThemeName; name: string; blurb: string; accent: string; bg: string }[] = (
+  [
+    ['ember', 'Ember', 'Warm gold, candlelit darks'],
+    ['aurora', 'Aurora', 'Violet glow, glassy surfaces'],
+    ['sage', 'Sage', 'Soft green, calm and low-key'],
+    ['midnight', 'Midnight', 'Electric blue, deep space'],
+    ['noir', 'Noir', 'Restrained, near monochrome'],
+  ] as const
+).map(([key, name, blurb]) => ({ key, name, blurb, accent: THEME_TOKENS[key].accent, bg: THEME_TOKENS[key].bg }))
+
 /**
- * The full CSS-variable set applied inline to the media root, so every token
+ * The theme's CSS variables, applied inline to the media root so every token
  * reliably cascades (no dependency on attribute-selector matching) and theme
- * switching is instant. Layout tokens flip at the 760px breakpoint via isMobile.
+ * switching is instant. The responsive layout tokens (--rail, --gx, --navpad,
+ * --grid-min) are NOT here: they live in globals.css under `.reel-root` with a
+ * media query, so the very first server-rendered paint has the right gutters.
  */
-export function buildThemeStyle(theme: ThemeName, isMobile: boolean): CSSProperties {
+export function buildThemeStyle(theme: ThemeName): CSSProperties {
   const t = THEME_TOKENS[theme]
   return {
     '--accent': t.accent,
@@ -66,11 +81,6 @@ export function buildThemeStyle(theme: ThemeName, isMobile: boolean): CSSPropert
     '--positive': '#7fd8a8',
     '--fav': '#ff7aa0',
     '--pass': '#ff7a7a',
-    // responsive layout tokens
-    '--rail': isMobile ? '16px' : '96px',
-    '--gx': isMobile ? '16px' : '56px',
-    '--navpad': isMobile ? '86px' : '0px',
-    '--grid-min': isMobile ? '150px' : '206px',
     background: 'var(--bg-gradient)',
     backgroundAttachment: 'fixed',
     color: 'var(--ink)',

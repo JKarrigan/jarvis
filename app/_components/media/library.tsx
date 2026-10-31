@@ -1,11 +1,11 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { useMedia } from './MediaProvider'
+import { useUserView } from './MediaProvider'
 import type { ReelTitle } from './types'
 import {
   allGenres, allTags, applyShow, effectiveGenres, sortTitles,
-  type LibrarySort, type LibraryShow, type UserView,
+  type LibrarySort, type LibraryShow,
 } from './selectors'
 import { FilterDropdown } from './FilterDropdown'
 import { PosterCard } from './ReelCards'
@@ -28,11 +28,7 @@ const SHOW_OPTIONS: { value: LibraryShow; label: string }[] = [
 export type LibraryBase = 'movie' | 'tv' | 'favorites'
 
 export function useFilteredLibrary(catalog: ReelTitle[], base?: LibraryBase, initialGenre?: string, initialTag?: string) {
-  const { isWatched, isFavorite } = useMedia()
-  const view: UserView = useMemo(() => ({
-    watched: (t) => isWatched(t.id, t.watched),
-    favorite: (t) => isFavorite(t.id, t.favorite),
-  }), [isWatched, isFavorite])
+  const view = useUserView()
 
   const genres = useMemo(() => allGenres(catalog), [catalog])
   const tags = useMemo(() => allTags(catalog), [catalog])

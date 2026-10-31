@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { CheckIcon } from './icons'
+import { useEscape } from './hooks'
 
 export interface DropdownOption<T extends string> {
   value: T
@@ -21,19 +22,20 @@ export function FilterDropdown<T extends string>({
   const ref = useRef<HTMLDivElement>(null)
   const active = options.find(o => o.value === value)
 
+  useEscape(() => setOpen(false), open)
   useEffect(() => {
     if (!open) return
     function onDoc(e: MouseEvent) { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
     document.addEventListener('mousedown', onDoc)
-    window.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDoc); window.removeEventListener('keydown', onKey) }
+    return () => document.removeEventListener('mousedown', onDoc)
   }, [open])
 
   return (
     <div ref={ref} className="relative">
       <button
         type="button"
+        aria-haspopup="true"
+        aria-expanded={open}
         onClick={() => setOpen(o => !o)}
         className="flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-border bg-white/5 px-3 py-1.5 text-[13px] text-ink backdrop-blur-md transition hover:bg-white/10"
       >
