@@ -2,11 +2,11 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { motion } from 'framer-motion'
-import type { SearchIndex } from './types'
+import { AnimatePresence, motion } from 'framer-motion'
+import type { SearchIndex, SearchPerson } from './types'
 import { BookCover } from './books/BooksView'
 import { Cover } from './audiobooks/parts'
-import { collArt, poster } from './artwork'
+import { avatar, collArt, hueFromId, poster } from './artwork'
 import { Poster, detailHref } from './ReelCards'
 import { SearchIcon, CloseIcon } from './icons'
 import { useDialog } from './hooks'
@@ -24,6 +24,16 @@ function loadIndex(signal: AbortSignal): Promise<SearchIndex> {
       cached = { at: Date.now(), index }
       return index
     })
+}
+
+function initials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]!.toUpperCase()).join('')
+}
+
+function personBlurb(p: SearchPerson): string {
+  const role = p.directed.length && p.acted.length ? 'Director & actor' : p.directed.length ? 'Director' : 'Actor'
+  const n = p.directed.length + p.acted.length
+  return `${role} · ${n} ${n === 1 ? 'title' : 'titles'} in your library`
 }
 
 interface Result {
@@ -56,7 +66,42 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
     const needle = q.trim().toLowerCase()
     if (!needle || !index) return []
     const has = (...vals: (string | undefined)[]) => vals.some(v => v?.toLowerCase().includes(needle))
+
+    // People match by name; their titles then match too ("Directed by …" / "With …"),
+    // listed after the titles whose own name matches.
+    const people = index.people
+      .filter(p => has(p.name))
+      .sort((a, b) => (b.directed.length + b.acted.length) - (a.directed.length + a.acted.length) || a.name.localeCompare(b.name))
+    const via = new Map<number, string>()
+    for (const p of people) for (const i of p.directed) if (!via.has(i)) via.set(i, `Directed by ${p.name}`)
+    for (const p of people) for (const i of p.acted) if (!via.has(i)) via.set(i, `With ${p.name}`)
+    type TitleHit = { t: SearchIndex['titles'][number]; via?: string }
+    const byTitle: TitleHit[] = []
+    const byCredit: TitleHit[] = []
+    index.titles.forEach((t, i) => {
+      if (has(t.title)) byTitle.push({ t })
+      else if (via.has(i)) byCredit.push({ t, via: via.get(i) })
+    })
+
     return [
+      ...people.slice(0, 4).map(p => ({
+        key: `p-${p.id}`,
+        href: `/media/person/${p.id}`,
+        // Round avatar centred in the poster-width slot so names stay aligned.
+        art: (
+          <span className="grid h-12 w-9 shrink-0 place-items-center">
+            {p.imageUrl
+              ? <Poster gradient={avatar(hueFromId(p.id))} src={p.imageUrl} alt="" rounded="rounded-full" className="h-9 w-9" />
+              : (
+                <span aria-hidden="true" className="grid h-9 w-9 place-items-center rounded-full text-[12px] font-bold text-white/90" style={{ background: avatar(hueFromId(p.id)) }}>
+                  {initials(p.name)}
+                </span>
+              )}
+          </span>
+        ),
+        title: p.name,
+        sub: personBlurb(p),
+      })),
       ...index.collections.filter(c => has(c.name)).slice(0, 4).map(c => ({
         key: `c-${c.id}`,
         href: `/media/collections/${c.id}`,
@@ -80,7 +125,7 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
         title: b.title,
         sub: ['Book', b.author, b.level != null && `Level ${b.level}`].filter(Boolean).join(' · '),
       })),
-      ...index.titles.filter(t => has(t.title)).slice(0, 8).map(t => ({
+      ...[...byTitle, ...byCredit].slice(0, 10).map(({ t, via: credit }) => ({
         key: `t-${t.id}`,
         href: detailHref(t),
         art: (
@@ -89,7 +134,7 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
           </div>
         ),
         title: t.title,
-        sub: [t.year, t.genres.slice(0, 2).join(', ')].filter(Boolean).join(' · '),
+        sub: [t.year, credit ?? t.genres.slice(0, 2).join(', ')].filter(Boolean).join(' · '),
       })),
     ]
   }, [q, index])
@@ -134,52 +179,67 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
         exit={{ opacity: 0, y: -10, scale: 0.98, transition: { duration: 0.16, ease: 'easeIn' } }}
         transition={{ type: 'spring', bounce: 0.18, duration: 0.34 }}
       >
-        <div className="flex items-center gap-3 border-b border-white/10 px-4">
-          <SearchIcon className="h-5 w-5 text-white/40" aria-hidden="true" />
+        <div className="flex items-center gap-3 px-5">
+          <SearchIcon className="h-6 w-6 text-white/40" aria-hidden="true" />
           <input
             data-autofocus
             value={q}
             onChange={(e) => { setQ(e.target.value); setActive(0) }}
             onKeyDown={onInputKey}
             role="combobox"
-            aria-label="Search movies, shows, books and collections"
+            aria-label="Search movies, shows, people, books and collections"
             aria-expanded={results.length > 0}
             aria-controls={listId}
             aria-autocomplete="list"
             aria-activedescendant={results.length ? optionId(activeIndex) : undefined}
-            placeholder="Search movies, shows, books, collections…"
-            className="flex-1 bg-transparent py-4 text-[15px] text-ink placeholder:text-white/35 focus:outline-none"
+            placeholder="Search movies, shows, people, books, collections…"
+            className="flex-1 bg-transparent py-5 text-[18px] text-ink placeholder:text-white/35 focus:outline-none"
           />
-          <button type="button" onClick={onClose} aria-label="Close search" className="grid h-8 w-8 place-items-center rounded-lg text-white/45 hover:bg-white/10 hover:text-white">
+          <button type="button" onClick={onClose} aria-label="Close search" className="grid h-9 w-9 place-items-center rounded-lg text-white/45 hover:bg-white/10 hover:text-white">
             <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
-        <div ref={listRef} id={listId} role="listbox" aria-label="Results" className="max-h-[55vh] overflow-y-auto p-2">
-          {trimmed && !index && !failed && <p className="px-3 py-6 text-center text-sm text-white/45">Loading the library…</p>}
-          {trimmed && failed && !index && <p className="px-3 py-6 text-center text-sm text-white/45">Couldn’t load the library index. Try again in a moment.</p>}
-          {trimmed && index && results.length === 0 && (
-            <p className="px-3 py-6 text-center text-sm text-white/45">No matches for “{q}”.</p>
-          )}
-          {results.map((r, i) => (
-            <div
-              key={r.key}
-              id={optionId(i)}
-              data-index={i}
-              role="option"
-              aria-selected={i === activeIndex}
-              onClick={() => go(r.href)}
-              onMouseMove={() => { if (i !== activeIndex) setActive(i) }}
-              className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition ${i === activeIndex ? 'bg-white/[0.07]' : ''}`}
+        {/* The results panel only exists once there's a query, so the empty modal is just
+            the input — it unfolds beneath as you type. */}
+        <AnimatePresence initial={false}>
+          {trimmed && (
+            <motion.div
+              key="results"
+              className="overflow-hidden"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0, transition: { duration: 0.16 } }}
+              transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
             >
-              {r.art}
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-semibold text-ink">{r.title}</span>
-                <span className="block truncate text-xs text-white/45">{r.sub}</span>
-              </span>
+            <div ref={listRef} id={listId} role="listbox" aria-label="Results" className="max-h-[55vh] overflow-y-auto border-t border-white/10 p-2">
+              {!index && !failed && <p className="px-3 py-6 text-center text-sm text-white/45">Loading the library…</p>}
+              {failed && !index && <p className="px-3 py-6 text-center text-sm text-white/45">Couldn’t load the library index. Try again in a moment.</p>}
+              {index && results.length === 0 && (
+                <p className="px-3 py-6 text-center text-sm text-white/45">No matches for “{q}”.</p>
+              )}
+              {results.map((r, i) => (
+                <div
+                  key={r.key}
+                  id={optionId(i)}
+                  data-index={i}
+                  role="option"
+                  aria-selected={i === activeIndex}
+                  onClick={() => go(r.href)}
+                  onMouseMove={() => { if (i !== activeIndex) setActive(i) }}
+                  className={`flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-left transition ${i === activeIndex ? 'bg-white/[0.07]' : ''}`}
+                >
+                  {r.art}
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold text-ink">{r.title}</span>
+                    <span className="block truncate text-xs text-white/45">{r.sub}</span>
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <p className="sr-only" aria-live="polite">
           {trimmed && index ? `${results.length} result${results.length === 1 ? '' : 's'}` : ''}
         </p>

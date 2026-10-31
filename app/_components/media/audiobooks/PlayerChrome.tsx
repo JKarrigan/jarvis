@@ -9,7 +9,7 @@ import {
   Back15Icon, Forward30Icon, PlaySolidIcon, PauseIcon, PrevChapterIcon, NextChapterIcon,
   MoonIcon, ListIcon, ChevronDownIcon, ChevronUpIcon, CloseIcon, VolumeIcon, CheckIcon,
 } from '../icons'
-import { SPEEDS, SLEEP_MINUTES, useAudiobookPlayer, useAudiobookTime, type SleepMode } from './AudiobookPlayer'
+import { MIN_RATE, MAX_RATE, RATE_STEP, RATE_PRESETS, SLEEP_MINUTES, useAudiobookPlayer, useAudiobookTime, type SleepMode } from './AudiobookPlayer'
 import { Cover, ChapterList, ChapterSegments } from './parts'
 import { chapterAt, clock, timeLeft } from './format'
 
@@ -81,6 +81,44 @@ function ChapterScrubber({ showTimes = true }: { showTimes?: boolean }) {
   )
 }
 
+/** Stepper + slider over 0.5–2.5× in 0.05 steps; stays open so the speed can be nudged while listening. */
+function SpeedControls({ rate, setRate }: { rate: number; setRate: (r: number) => void }) {
+  const step = (dir: 1 | -1) => setRate(rate + dir * RATE_STEP)
+  const stepBtn = 'grid h-12 w-12 shrink-0 place-items-center rounded-full bg-white/5 text-2xl font-semibold text-zinc-100 transition-colors hover:bg-white/10 disabled:opacity-30'
+  return (
+    <div className="space-y-5 pt-2">
+      <div className="flex items-center justify-between gap-4">
+        <button type="button" aria-label="Slower" disabled={rate <= MIN_RATE} onClick={() => step(-1)} className={stepBtn}>−</button>
+        <span className="text-4xl font-extrabold tabular-nums text-accent-soft">{rate.toFixed(2)}×</span>
+        <button type="button" aria-label="Faster" disabled={rate >= MAX_RATE} onClick={() => step(1)} className={stepBtn}>+</button>
+      </div>
+      <div className="space-y-1.5">
+        <Slider
+          ariaLabel="Playback speed"
+          fraction={(rate - MIN_RATE) / (MAX_RATE - MIN_RATE)}
+          onChange={f => setRate(MIN_RATE + f * (MAX_RATE - MIN_RATE))}
+        />
+        <div className="flex justify-between text-[12px] font-semibold tabular-nums text-white/50">
+          <span>{MIN_RATE}×</span>
+          <span>{MAX_RATE}×</span>
+        </div>
+      </div>
+      <div className="grid grid-cols-6 gap-1.5">
+        {RATE_PRESETS.map(p => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => setRate(p)}
+            className={`h-10 rounded-xl text-[13.5px] font-bold tabular-nums transition-colors ${p === rate ? 'bg-white/10 text-accent-soft' : 'text-zinc-200 hover:bg-white/5'}`}
+          >
+            {p}×
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClose: () => void }) {
   const { book, rate, setRate, sleep, setSleep, goToChapter } = useAudiobookPlayer()
   const time = useAudiobookTime()
@@ -101,7 +139,7 @@ function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClos
         <h3 className="text-lg font-semibold text-zinc-100">
           {kind === 'speed' ? 'Playback speed' : kind === 'sleep' ? 'Sleep timer' : 'Chapters'}
         </h3>
-        {kind === 'speed' && SPEEDS.map(s => option(`${s}×`, s === rate, () => setRate(s)))}
+        {kind === 'speed' && <SpeedControls rate={rate} setRate={setRate} />}
         {kind === 'sleep' && (
           <>
             {option('Off', sleep.kind === 'off', () => setSleep({ kind: 'off' }))}
@@ -113,6 +151,7 @@ function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClos
           <ChapterList
             chapters={book.chapters}
             position={time}
+            rate={rate}
             started
             followCurrent
             onSelect={i => { goToChapter(i); onClose() }}
@@ -123,8 +162,27 @@ function PlayerSheet({ kind, onClose }: { kind: Exclude<SheetKind, null>; onClos
   )
 }
 
+/** − [speed] + : nudges by 0.05× in place; tapping the speed itself opens the full speed sheet. */
+function SpeedStepper({ onOpen, className, stepClass, labelClass, label }: {
+  onOpen: () => void
+  className: string
+  stepClass: string
+  /** Fixed width so the − / + buttons don't shift as the value changes. */
+  labelClass: string
+  label: (rate: number) => string
+}) {
+  const { rate, setRate } = useAudiobookPlayer()
+  return (
+    <div className={`flex shrink-0 items-center ${className}`}>
+      <button type="button" aria-label="Slower" disabled={rate <= MIN_RATE} onClick={() => setRate(rate - RATE_STEP)} className={`${stepClass} grid place-items-center font-bold transition-colors hover:bg-white/10 disabled:opacity-30`}>−</button>
+      <button type="button" aria-label="Playback speed" onClick={onOpen} className={`h-full shrink-0 rounded-lg text-center tabular-nums transition-colors hover:bg-white/10 ${labelClass}`}>{label(rate)}</button>
+      <button type="button" aria-label="Faster" disabled={rate >= MAX_RATE} onClick={() => setRate(rate + RATE_STEP)} className={`${stepClass} grid place-items-center font-bold transition-colors hover:bg-white/10 disabled:opacity-30`}>+</button>
+    </div>
+  )
+}
+
 function MiniPlayer({ onSheet }: { onSheet: (k: SheetKind) => void }) {
-  const { book, status, error, rate, sleep, skip, setExpanded, close } = useAudiobookPlayer()
+  const { book, status, error, sleep, skip, setExpanded, close } = useAudiobookPlayer()
   const time = useAudiobookTime()
   const playBtn = usePlayButton()
   if (!book) return null
@@ -177,9 +235,13 @@ function MiniPlayer({ onSheet }: { onSheet: (k: SheetKind) => void }) {
       </div>
 
       <div className="hidden shrink-0 items-center gap-0.5 md:flex">
-        <button type="button" aria-label="Playback speed" onClick={() => onSheet('speed')} className="h-11 rounded-xl px-3 text-[13.5px] font-extrabold text-accent-soft transition-colors hover:bg-white/10">
-          {rate}×
-        </button>
+        <SpeedStepper
+          onOpen={() => onSheet('speed')}
+          label={r => `${r.toFixed(2)}×`}
+          labelClass="w-[4.25rem]"
+          className="h-11 text-[13.5px] font-extrabold text-accent-soft"
+          stepClass="h-9 w-8 rounded-lg text-[17px]"
+        />
         <button type="button" aria-label={sleepLabel(sleep)} title={sleepLabel(sleep)} onClick={() => onSheet('sleep')} className={`${ROUND_BTN} h-11 w-11 ${sleep.kind === 'off' ? 'text-white/80' : 'text-accent'}`}>
           <MoonIcon className="h-[21px] w-[21px]" />
         </button>
@@ -340,7 +402,13 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
             </div>
 
             <div className="flex items-center gap-2.5">
-              <button type="button" onClick={() => onSheet('speed')} className={`${pill} bg-black/30 text-white/85 backdrop-blur-xl hover:bg-white/10`}>{rate}× speed</button>
+              <SpeedStepper
+                onOpen={() => onSheet('speed')}
+                label={r => `${r.toFixed(2)}× speed`}
+                labelClass="w-[6.75rem]"
+                className={`${pill} gap-0.5 bg-black/30 px-1 py-1 text-white/85 backdrop-blur-xl`}
+                stepClass="h-full w-9 rounded-[10px] text-[18px]"
+              />
               <button type="button" onClick={() => onSheet('sleep')} className={`${pill} backdrop-blur-xl ${sleep.kind === 'off' ? 'bg-black/30 text-white/85 hover:bg-white/10' : 'bg-white/10 text-accent-soft'}`}>
                 <MoonIcon className="h-[18px] w-[18px]" />{sleepLabel(sleep)}
               </button>
@@ -356,7 +424,7 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
             <section className="hidden h-full min-h-0 flex-col gap-3.5 xl:flex">
               <h2 className="shrink-0 text-[20px] font-bold tracking-[-0.01em] text-ink">Chapters</h2>
               <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-white/10 bg-black/35 p-2 backdrop-blur-2xl">
-                <ChapterList chapters={book.chapters} position={time} started followCurrent rowClass="h-[52px] px-3" onSelect={goToChapter} />
+                <ChapterList chapters={book.chapters} position={time} rate={rate} started followCurrent rowClass="h-[52px] px-3" onSelect={goToChapter} />
               </div>
             </section>
           )}
@@ -366,7 +434,7 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
         <footer className={`flex shrink-0 flex-col gap-2.5 pb-[max(22px,env(safe-area-inset-bottom))] md:pb-[max(30px,env(safe-area-inset-bottom))] ${gutter}`}>
           <div className="flex items-baseline justify-between text-[12.5px] text-white/55 md:text-[13.5px]">
             <span>Whole book</span>
-            <span className="font-bold text-accent-soft">{timeLeft(book.duration - time)}</span>
+            <span className="font-bold text-accent-soft">{timeLeft(book.duration - time, rate)}</span>
           </div>
           <ChapterSegments chapters={book.chapters} position={time} className="h-2 md:h-2.5" onSeek={multi ? goToChapter : undefined} />
         </footer>

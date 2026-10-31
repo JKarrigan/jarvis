@@ -39,6 +39,19 @@ export interface ReelTitle {
   tagline?: string
   /** Free-form tags (Jellyfin Tags). */
   tags?: string[]
+  /** Every director plus the top-billed cast — lets Search find titles by person. */
+  people?: ReelCredit[]
+}
+
+/** A compact credit on a title (who, and whether they directed it). */
+export interface ReelCredit {
+  /** Jellyfin person id — links to /media/person/[id]. */
+  id: string
+  name: string
+  /** True for a directing credit; absent for an acting credit. */
+  director?: true
+  /** Small headshot (Jellyfin Primary image), when the person has one. */
+  imageUrl?: string
 }
 
 /** A Continue-watching entry (movie in progress, or a show's next/in-progress episode). */
@@ -372,4 +385,16 @@ export interface SearchIndex {
   collections: { id: string; name: string; hue: number; count: number }[]
   audiobooks: { id: string; title: string; author?: string; narrator?: string; hue: number; coverUrl?: string }[]
   ebooks: { id: string; title: string; author?: string; level?: number; hue: number; coverUrl?: string }[]
+  /** Everyone credited on a title (directors + top-billed cast). `directed` / `acted`
+      are indexes into `titles`, so a name search can also surface their titles. */
+  people: SearchPerson[]
+}
+
+export interface SearchPerson {
+  id: string
+  name: string
+  /** Small headshot (proxied Jellyfin Primary image), when the person has one. */
+  imageUrl?: string
+  directed: number[]
+  acted: number[]
 }

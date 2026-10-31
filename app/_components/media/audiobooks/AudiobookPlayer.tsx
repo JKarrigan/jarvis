@@ -19,7 +19,13 @@ const REPORT_INTERVAL_MS = 10_000
 /** Automatic reloads after a stream error before the player gives up and shows Retry. */
 const MAX_AUTO_RECOVERIES = 2
 const RECOVERY_WINDOW_MS = 60_000
-export const SPEEDS = [0.6, 0.8, 1, 1.2, 1.5, 1.75, 2]
+export const MIN_RATE = 0.5
+export const MAX_RATE = 2.5
+export const RATE_STEP = 0.05
+export const RATE_PRESETS = [0.6, 0.8, 1, 1.25, 1.5, 2]
+/** Clamp to the supported range and snap to the 0.05 grid (also tidies float noise like 1.1500000000000001). */
+export const clampRate = (r: number) =>
+  Number.isFinite(r) ? Math.min(MAX_RATE, Math.max(MIN_RATE, Math.round(r * 20) / 20)) : 1
 export const SLEEP_MINUTES = [15, 30, 60]
 
 export type SleepMode =
@@ -36,6 +42,8 @@ interface PlayerValue {
   error: string | null
   playing: boolean
   rate: number
+  /** Saved per-book speeds (filled after mount, so SSR and first render agree). */
+  rates: Record<string, number>
   volume: number
   sleep: SleepMode
   expanded: boolean
@@ -73,6 +81,12 @@ export function useAudiobookTime(): number {
   return useContext(TimeContext)
 }
 
+/** Speed a book plays at: the live rate when it's the loaded book, else its saved one. */
+export function useBookRate(id: string): number {
+  const { book, rate, rates } = useAudiobookPlayer()
+  return book?.id === id ? rate : clampRate(rates[id] ?? 1)
+}
+
 /** Live position for a book: the player's clock when it's the loaded book, else the server's. */
 export function useBookPosition(book: { id: string; position: number; finished: boolean }): number {
   const { book: loaded } = useAudiobookPlayer()
@@ -94,7 +108,7 @@ function readPrefs(): Prefs {
     return {}
   }
 }
-const rateFor = (id?: string) => (id ? readPrefs().rates?.[id] : undefined) ?? 1
+const rateFor = (id?: string) => clampRate((id ? readPrefs().rates?.[id] : undefined) ?? 1)
 
 function writePrefs(patch: Omit<Prefs, 'bookId'> & { bookId?: string | null }) {
   try {
@@ -112,6 +126,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [rate, setRateState] = useState(1)
+  const [rates, setRates] = useState<Record<string, number>>({})
   const [volume, setVolumeState] = useState(1)
   const [sleep, setSleepState] = useState<SleepMode>({ kind: 'off' })
   const [expanded, setExpanded] = useState(false)
@@ -270,10 +285,14 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     if (c) goToChapter(c.index + 1)
   }, [currentChapter, goToChapter])
 
-  const setRate = useCallback((r: number) => {
+  const setRate = useCallback((next: number) => {
+    const r = clampRate(next)
     setRateState(r)
     const id = bookRef.current?.id
-    if (id) writePrefs({ rates: { ...readPrefs().rates, [id]: r } })
+    if (id) {
+      writePrefs({ rates: { ...readPrefs().rates, [id]: r } })
+      setRates(prev => ({ ...prev, [id]: r }))
+    }
     if (audioRef.current) audioRef.current.playbackRate = r
   }, [])
 
@@ -324,6 +343,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   useEffect(() => {
     const prefs = readPrefs()
     if (typeof prefs.volume === 'number') setVolumeState(prefs.volume)
+    if (prefs.rates) setRates(prefs.rates)
     if (prefs.bookId) void load(prefs.bookId, { autoplay: false })
   }, [load])
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -473,11 +493,11 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   }, [book, skip, prevChapter, nextChapter])
 
   const value = useMemo<PlayerValue>(() => ({
-    book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
+    book, status, error, playing, rate, rates, volume, sleep, expanded, playMethodLabel,
     play, toggle, retry, seek, skip, goToChapter, prevChapter, nextChapter,
     setRate, setVolume, setSleep, setExpanded, refreshBook, close,
   }), [
-    book, status, error, playing, rate, volume, sleep, expanded, playMethodLabel,
+    book, status, error, playing, rate, rates, volume, sleep, expanded, playMethodLabel,
     play, toggle, retry, seek, skip, goToChapter, prevChapter, nextChapter,
     setRate, setVolume, setSleep, refreshBook, close,
   ])

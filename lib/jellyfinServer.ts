@@ -2,7 +2,7 @@ import 'server-only'
 import { cache } from 'react'
 import { revalidateTag, unstable_cache } from 'next/cache'
 import type {
-  ReelTitle, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson,
+  ReelTitle, ReelCredit, ContinueItem, ReelDetail, ReelEpisodeDetail, ReelCastMember, CollectionSummary, ReelPerson,
   ReelPersonEpisode, ReelSeasonInfo, MediaInfo, MediaVersion, TrailerInfo, PlaybackSource,
 } from '@/app/_components/media/types'
 import { hueFromId, poster as posterArt, backdrop as backdropArt } from '@/app/_components/media/artwork'
@@ -528,6 +528,41 @@ function withArt<T extends BareTitle>(t: T): T & Pick<ReelTitle, 'posterColor' |
   return { ...t, posterColor: posterArt(t.hue), backdropColor: backdropArt(t.hue) }
 }
 
+/** Compact credits for a title: every director, then the top-billed cast. Someone who
+    both directs and stars gets one credit of each kind. */
+function creditsFromRaw(
+  people: ReadonlyArray<{ Id: string; Name: string; Type?: string; PrimaryImageTag?: string }> | undefined,
+  maxActors = 8,
+): ReelCredit[] | undefined {
+  if (!people?.length) return undefined
+  const seenDirectors = new Set<string>()
+  const seenActors = new Set<string>()
+  const out: ReelCredit[] = []
+  const credit = (p: { Id: string; Name: string; PrimaryImageTag?: string }, director?: true): ReelCredit => ({
+    id: p.Id,
+    name: p.Name,
+    ...(director && { director }),
+    // Search rows show a 36 px avatar, so a small image is plenty.
+    ...(p.PrimaryImageTag && { imageUrl: imageUrl(p.Id, 'Primary', { tag: p.PrimaryImageTag, maxWidth: 96 }) }),
+  })
+  for (const p of people) {
+    if (p.Type === 'Director' && p.Id && p.Name && !seenDirectors.has(p.Id)) {
+      seenDirectors.add(p.Id)
+      out.push(credit(p, true))
+    }
+  }
+  let actors = 0
+  for (const p of people) {
+    if (actors >= maxActors) break
+    if (p.Type === 'Actor' && p.Id && p.Name && !seenActors.has(p.Id)) {
+      seenActors.add(p.Id)
+      out.push(credit(p))
+      actors++
+    }
+  }
+  return out.length ? out : undefined
+}
+
 function toBareTitle(it: RawItem, kind: 'movies' | 'tv'): BareTitle {
   return {
     id: it.Id,
@@ -589,6 +624,7 @@ function mockToReel(item: JellyfinItem): ReelTitle {
     watched: false,
     favorite: false,
     synopsis: item.Overview,
+    people: slimCredits(creditsFromRaw(item.People)),
   })
 }
 
@@ -665,6 +701,103 @@ async function reelList(kind: 'movies' | 'tv'): Promise<BareTitle[]> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Credits index — directors + top-billed cast per title, for search by person and
+// the library's Director / Actor filters.
+// ---------------------------------------------------------------------------
+
+type CreditsIndex = Map<string, ReelCredit[]>
+
+/** Jellyfin takes several seconds to attach People to the whole library, and adding
+    them to the catalog query pushes it past Next's 2 MB cache limit (so nothing would
+    be cached). The compact index is fetched on its own and memoized in-process
+    instead: a stale copy is served while a refresh runs in the background, so only the
+    first request after a server start waits for Jellyfin. */
+const CREDITS_TTL_MS = 5 * 60_000
+const creditsG = globalThis as unknown as {
+  __reelCredits?: { at: number; index: CreditsIndex }
+  __reelCreditsLoad?: Promise<CreditsIndex>
+}
+
+async function fetchCreditsIndex(): Promise<CreditsIndex> {
+  const { userId } = await getSession()
+  const index: CreditsIndex = new Map()
+  for (let start = 0, seen = 0; start < MAX_TITLES; start += PAGE_SIZE) {
+    const data = await jfJson<{ Items: RawItem[]; TotalRecordCount?: number }>('/Items', {
+      params: {
+        userId,
+        IncludeItemTypes: 'Movie,Series',
+        Recursive: true,
+        SortBy: 'SortName',
+        SortOrder: 'Ascending',
+        Fields: 'People',
+        EnableImages: false,
+        EnableUserData: false,
+        StartIndex: start,
+        Limit: PAGE_SIZE,
+        EnableTotalRecordCount: true,
+      },
+      // ~6 s for 200 movies; the default timeout is too tight as the library grows.
+      timeoutMs: 30_000,
+    })
+    for (const it of data.Items) {
+      const credits = creditsFromRaw(it.People)
+      if (credits) index.set(it.Id, credits)
+    }
+    seen += data.Items.length
+    if (data.Items.length < PAGE_SIZE || seen >= (data.TotalRecordCount ?? 0)) break
+  }
+  return index
+}
+
+/** One refresh in flight at a time; on failure a stale copy keeps being served and the
+    next request after another TTL tries again. */
+function loadCreditsIndex(): Promise<CreditsIndex> {
+  creditsG.__reelCreditsLoad ??= fetchCreditsIndex()
+    .then(index => {
+      creditsG.__reelCredits = { at: Date.now(), index }
+      return index
+    })
+    .catch(err => {
+      if (creditsG.__reelCredits) creditsG.__reelCredits.at = Date.now()
+      throw err
+    })
+    .finally(() => { creditsG.__reelCreditsLoad = undefined })
+  return creditsG.__reelCreditsLoad
+}
+
+async function getCreditsIndex(): Promise<CreditsIndex> {
+  const cached = creditsG.__reelCredits
+  if (cached && Date.now() - cached.at < CREDITS_TTL_MS) return cached.index
+  const load = loadCreditsIndex()
+  if (cached) {
+    load.catch(() => {})
+    return cached.index
+  }
+  // Credits are an enhancement: without them the catalog still renders, just without
+  // person search / filters until the next refresh succeeds.
+  return load.catch(() => new Map())
+}
+
+/** Credits with headshots, keyed by title id — for the search index (person rows). */
+export async function getTitleCredits(): Promise<CreditsIndex> {
+  if (isMockMode()) {
+    const index: CreditsIndex = new Map()
+    for (const item of Object.values(MOCK_JELLYFIN_ITEMS)) {
+      const credits = creditsFromRaw(item.People)
+      if (credits) index.set(item.Id, credits)
+    }
+    return index
+  }
+  return getCreditsIndex()
+}
+
+/** The catalog ships to library pages, so its credits carry no headshot URLs (those
+    are only needed by Search, which reads them from getTitleCredits). */
+function slimCredits(credits: ReelCredit[] | undefined): ReelCredit[] | undefined {
+  return credits?.map(c => ({ id: c.id, name: c.name, ...(c.director && { director: c.director }) }))
+}
+
 /**
  * The whole library as ReelTitles — drives Home, Library, Picker, Search, Stats.
  * Throws JellyfinError when the server is unreachable (the media error page shows
@@ -672,8 +805,11 @@ async function reelList(kind: 'movies' | 'tv'): Promise<BareTitle[]> {
  */
 export const getCatalog = cache(async (): Promise<ReelTitle[]> => {
   if (isMockMode()) return mockCatalog()
-  const [movies, series] = await Promise.all([reelList('movies'), reelList('tv')])
-  return [...movies, ...series].map(withArt)
+  const [movies, series, credits] = await Promise.all([reelList('movies'), reelList('tv'), getCreditsIndex()])
+  return [...movies, ...series].map(t => {
+    const people = slimCredits(credits.get(t.id))
+    return withArt(people ? { ...t, people } : t)
+  })
 })
 
 /** Top titles (with artwork) for the rotating home hero, best-rated first. */

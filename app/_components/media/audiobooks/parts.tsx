@@ -84,11 +84,13 @@ export function ChapterSegments({
 
 /** "Chapter 14 of 30 · 11 min left in chapter" + whole-book time left, over the segment bar. */
 export function BookProgress({
-  chapters, position, duration, barClass, onSeek,
+  chapters, position, duration, rate = 1, barClass, onSeek,
 }: {
   chapters: AudiobookChapter[]
   position: number
   duration: number
+  /** Playback speed; time-left labels are in listening time. */
+  rate?: number
   barClass?: string
   onSeek?: (chapterIndex: number) => void
 }) {
@@ -101,13 +103,13 @@ export function BookProgress({
           {multi && current ? (
             <>
               <span className="font-bold text-white/80">{current.title}</span>
-              <span className="text-white/50"> · {timeLeft(current.start + current.duration - position)} in chapter</span>
+              <span className="text-white/50"> · {timeLeft(current.start + current.duration - position, rate)} in chapter</span>
             </>
           ) : (
             <span className="font-bold text-white/80">{clock(position)}</span>
           )}
         </div>
-        <div className="shrink-0 font-bold text-accent-soft">{timeLeft(duration - position)}</div>
+        <div className="shrink-0 font-bold text-accent-soft">{timeLeft(duration - position, rate)}</div>
       </div>
       <ChapterSegments chapters={chapters} position={position} className={barClass} onSeek={onSeek} />
     </div>
@@ -116,11 +118,13 @@ export function BookProgress({
 
 /** Chapter rows: finished ✓, current (speaker + time left), upcoming (number). */
 export function ChapterList({
-  chapters, position, started, onSelect, rowClass = 'h-[54px] px-3.5', followCurrent = false,
+  chapters, position, rate = 1, started, onSelect, rowClass = 'h-[54px] px-3.5', followCurrent = false,
 }: {
   chapters: AudiobookChapter[]
   /** Book position in seconds. */
   position: number
+  /** Playback speed for the current chapter's time left. */
+  rate?: number
   /** False for a never-started book: no row is marked current. */
   started: boolean
   onSelect: (index: number) => void
@@ -160,7 +164,7 @@ export function ChapterList({
             <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{c.title}</span>
             {isCurrent && (
               <span className="shrink-0 text-[12.5px] font-bold text-accent-soft">
-                {timeLeft(c.start + c.duration - position)}
+                {timeLeft(c.start + c.duration - position, rate)}
               </span>
             )}
             <span className="w-14 shrink-0 text-right text-[13px] tabular-nums text-white/50">{clock(c.duration)}</span>

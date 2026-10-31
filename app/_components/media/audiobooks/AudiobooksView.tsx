@@ -7,7 +7,7 @@ import type { Audiobook } from '../types'
 import { FilterDropdown } from '../FilterDropdown'
 import { SectionHeader } from '../ReelCards'
 import { CheckIcon, ListIcon, PlaySolidIcon } from '../icons'
-import { useAudiobookPlayer, useBookPosition } from './AudiobookPlayer'
+import { useAudiobookPlayer, useBookPosition, useBookRate } from './AudiobookPlayer'
 import { Cover } from './parts'
 import { length, timeLeft } from './format'
 import { BooksSwitch } from '../books/BooksSwitch'
@@ -27,6 +27,7 @@ const inProgress = (b: Audiobook, position: number) => !b.finished && position >
 
 function BookCard({ book }: { book: Audiobook }) {
   const position = useBookPosition(book)
+  const rate = useBookRate(book.id)
   const started = inProgress(book, position)
   return (
     <Link href={bookHref(book.id)} className="group flex min-w-0 flex-col gap-2.5">
@@ -47,7 +48,7 @@ function BookCard({ book }: { book: Audiobook }) {
         <div className="truncate text-[14px] font-semibold text-ink">{book.title}</div>
         {book.author && <div className="truncate text-[12.5px] text-white/50">{book.author}</div>}
         <div className={`text-[12.5px] font-semibold ${started ? 'text-accent-soft' : 'text-white/50'}`}>
-          {book.finished ? 'Finished' : started ? timeLeft(book.duration - position) : length(book.duration)}
+          {book.finished ? 'Finished' : started ? timeLeft(book.duration - position, rate) : length(book.duration)}
         </div>
       </div>
     </Link>
@@ -70,6 +71,7 @@ function ContinueListening({ books }: { books: Audiobook[] }) {
   const { play, book: loaded, playing, toggle } = useAudiobookPlayer()
   const [lead, ...rest] = books
   const position = useBookPosition(lead)
+  const rate = useBookRate(lead.id)
   const isLoaded = loaded?.id === lead.id
   return (
     <section aria-label="Continue listening" className="mx-[var(--gx)] ml-[var(--rail)] mb-9 flex flex-col gap-6 overflow-hidden rounded-[22px] border border-border p-4 md:flex-row md:gap-9 md:p-[26px]"
@@ -89,7 +91,7 @@ function ContinueListening({ books }: { books: Audiobook[] }) {
           </div>
           <div className="flex-1" />
           <div className="flex items-center justify-between gap-3 text-[13.5px]">
-            <span className="font-bold text-accent-soft">{timeLeft(lead.duration - position)}</span>
+            <span className="font-bold text-accent-soft">{timeLeft(lead.duration - position, rate)}</span>
             <span className="text-white/50">{length(lead.duration)}</span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-white/15">
@@ -121,6 +123,7 @@ function ContinueListening({ books }: { books: Audiobook[] }) {
 
 function AlsoRow({ book }: { book: Audiobook }) {
   const position = useBookPosition(book)
+  const rate = useBookRate(book.id)
   return (
     <Link href={bookHref(book.id)} className="group flex items-center gap-4">
       <Cover book={book} rounded="rounded-[11px]" titleClass="text-[11px]" showAuthor={false} className="w-[76px] shadow-[0_10px_24px_rgba(0,0,0,0.5)]" />
@@ -130,7 +133,7 @@ function AlsoRow({ book }: { book: Audiobook }) {
         <div className="h-1 overflow-hidden rounded-full bg-white/15">
           <div className="h-full bg-accent" style={{ width: `${(position / (book.duration || 1)) * 100}%` }} />
         </div>
-        <div className="text-[12.5px] font-semibold text-accent-soft">{timeLeft(book.duration - position)}</div>
+        <div className="text-[12.5px] font-semibold text-accent-soft">{timeLeft(book.duration - position, rate)}</div>
       </div>
     </Link>
   )

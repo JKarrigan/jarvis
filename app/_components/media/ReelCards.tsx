@@ -2,11 +2,12 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import { AnimatePresence, motion } from 'framer-motion'
 import { useTitleState } from './MediaProvider'
 import type { ReelTitle, CollectionSummary } from './types'
 import { POSTER_SHEEN, POSTER_WIDTHS, collArt, collColor, imageSrcSet, resizeImage } from './artwork'
 import { RECENTLY_ADDED_DAYS } from './selectors'
-import { CheckIcon, HeartIcon } from './icons'
+import { CheckIcon, HeartIcon, ListIcon, PlusIcon } from './icons'
 
 /** Compact "added" label for the card corner: Today / Yesterday / "5d ago". */
 function daysAgoLabel(days: number): string {
@@ -87,9 +88,10 @@ function metaLine(t: ReelTitle): string {
 export function PosterCard({
   title, width = 'w-[178px]', overlays = false, showAddedDays = false,
 }: { title: ReelTitle; width?: string; overlays?: boolean; showAddedDays?: boolean }) {
-  const { isWatched, isFavorite, toggleFavorite } = useTitleState()
+  const { isWatched, isFavorite, toggleFavorite, inPickList, togglePickList } = useTitleState()
   const watched = isWatched(title.id, title.watched)
   const favorite = isFavorite(title.id, title.favorite)
+  const picked = inPickList(title.id)
   const isNew = title.added != null && title.added <= RECENTLY_ADDED_DAYS
 
   return (
@@ -125,15 +127,43 @@ export function PosterCard({
         ) : null}
 
         {overlays && (
-          <button
-            type="button"
-            aria-label={favorite ? 'Remove favorite' : 'Add favorite'}
-            onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFavorite(title.id, title.favorite) }}
-            className={`absolute bottom-2 right-2 grid h-8 w-8 place-items-center rounded-full bg-black/45 text-white backdrop-blur-sm transition hover:bg-black/65 ${favorite ? '' : HOVER_REVEAL}`}
-            style={favorite ? { color: 'var(--fav)' } : undefined}
-          >
-            <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} />
-          </button>
+          <div className="absolute bottom-2 right-2 flex items-center gap-1.5">
+            {/* Picker list: revealed on hover like the heart (always shown on touch
+                screens), but stays visible once the title is on the list so the grid
+                shows what's queued up. */}
+            <button
+              type="button"
+              aria-label={picked ? 'Remove from picker list' : 'Add to picker list'}
+              title={picked ? 'In picker list' : 'Add to picker list'}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePickList(title.id) }}
+              className={`grid h-8 w-8 place-items-center rounded-full backdrop-blur-sm transition ${picked
+                ? 'text-ink-on-accent'
+                : `bg-black/45 text-white hover:bg-black/65 ${HOVER_REVEAL}`}`}
+              style={picked ? { background: 'var(--accent)' } : undefined}
+            >
+              <AnimatePresence initial={false} mode="wait">
+                <motion.span
+                  key={picked ? 'in' : 'out'}
+                  initial={{ scale: 0.5, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.5, opacity: 0, transition: { duration: 0.1 } }}
+                  transition={{ type: 'spring', bounce: 0.4, duration: 0.3 }}
+                  className="grid place-items-center"
+                >
+                  {picked ? <ListIcon className="h-4 w-4" /> : <PlusIcon className="h-4 w-4" />}
+                </motion.span>
+              </AnimatePresence>
+            </button>
+            <button
+              type="button"
+              aria-label={favorite ? 'Remove favorite' : 'Add favorite'}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleFavorite(title.id, title.favorite) }}
+              className={`grid h-8 w-8 place-items-center rounded-full bg-black/45 text-white backdrop-blur-sm transition hover:bg-black/65 ${favorite ? '' : HOVER_REVEAL}`}
+              style={favorite ? { color: 'var(--fav)' } : undefined}
+            >
+              <HeartIcon className="h-4 w-4" fill={favorite ? 'currentColor' : 'none'} />
+            </button>
+          </div>
         )}
 
         {title.progress > 0 && title.progress < 1 && (

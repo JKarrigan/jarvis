@@ -20,7 +20,7 @@ export function PickListView({ catalog }: { catalog: ReelTitle[] }) {
 
       {titles.length === 0 ? (
         <div className="mt-12 rounded-2xl border border-border bg-surface p-8 text-center">
-          <p className="text-white/55">Your list is empty. Add titles with “Add to picker list” on any detail page.</p>
+          <p className="text-white/55">Your list is empty. Add titles with the + button on any poster in the library, or “Add to picker list” on a detail page.</p>
           <Link href="/media" className="mt-4 inline-block rounded-xl px-5 py-2.5 text-sm font-semibold text-ink-on-accent" style={{ background: 'var(--accent)' }}>Browse the library</Link>
         </div>
       ) : (
