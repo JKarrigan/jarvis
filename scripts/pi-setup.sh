@@ -9,7 +9,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$REPO_DIR"
 
 # 1. Allow git pushes into this working directory (updates the checked-out tree)
-git config receive.denyCurrentBranch updateInsteadOf
+git config receive.denyCurrentBranch updateInstead
 
 # 2. Install PM2 if not already installed
 if ! command -v pm2 &>/dev/null; then
