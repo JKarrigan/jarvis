@@ -155,7 +155,7 @@ type GridProps = {
   selected: Set<string>
   onOpen: (id: string) => void
   onToggle: (id: string, range: boolean) => void
-  /** Month sections with sticky headers (timeline); flat grid otherwise (trash). */
+  /** Month sections with plain headings (timeline); flat grid otherwise (trash). */
   sections?: boolean
   badge?: (item: PhotoItem) => React.ReactNode
 }
@@ -174,7 +174,7 @@ function groupByMonth(items: PhotoItem[]): Section[] {
   return out
 }
 
-/** The square grid, optionally split into month sections with sticky headers. */
+/** The square grid, optionally split into month sections with plain headings (no sticky bar). */
 export function PhotoGrid({ items, selecting, selected, onOpen, onToggle, sections = true, badge }: GridProps) {
   const groups = useMemo<Section[]>(
     () => (sections ? groupByMonth(items) : [{ key: 'all', label: '', items }]),
@@ -205,7 +205,7 @@ export function PhotoGrid({ items, selecting, selected, onOpen, onToggle, sectio
     <div>
       {groups.map(g => (
         <section key={g.key} aria-label={g.label} className="pb-5">
-          <h2 className="sticky top-[60px] z-10 md:top-0 -mx-2 mb-2 flex items-baseline justify-between rounded-b-[12px] bg-[rgba(10,8,14,0.72)] px-2 py-2.5 text-[17px] font-bold tracking-[-0.01em] text-ink backdrop-blur-xl backdrop-saturate-150">
+          <h2 className="mb-2.5 flex items-baseline justify-between px-0.5 pt-1 text-[17px] font-bold tracking-[-0.01em] text-ink">
             <span>{g.label}</span>
             <span className="text-[12px] font-semibold text-white/45" style={{ fontFamily: 'var(--font-manrope), system-ui, sans-serif' }}>
               {g.items.length.toLocaleString('en-GB')}
