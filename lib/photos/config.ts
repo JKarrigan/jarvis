@@ -76,6 +76,21 @@ export function ensureCacheDir(): void {
   cacheReady = true
 }
 
+const MARKER_TEXT = 'Photos library marker — do not delete. The server refuses to scan when it is missing.\n'
+
+/**
+ * Writes the mount-guard marker when it is absent. Called once the library has
+ * provably got a file in it (first scan with files, or a successful upload), so an
+ * empty mount point is never marked. Errors are ignored: a read-only or vanished
+ * share just leaves the guard as it was.
+ */
+export async function ensureLibraryMarker(): Promise<void> {
+  if (await libraryMarkerPresent()) return
+  try {
+    await fs.promises.writeFile(path.join(PHOTOS_ROOT, LIBRARY_MARKER), MARKER_TEXT, { flag: 'wx' })
+  } catch { /* exists already, or the share is not writable right now */ }
+}
+
 /** Mount guard: the marker exists only on the real library (NAS share), never on an empty mount point. */
 export async function libraryMarkerPresent(): Promise<boolean> {
   try {

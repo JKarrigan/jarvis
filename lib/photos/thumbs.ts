@@ -3,7 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import { execFile } from 'child_process'
 import sharp, { type Sharp } from 'sharp'
-import { FFMPEG, cacheDirFor, ensureCacheDir, extOf, isSharpReadable, photoAbs } from './config'
+import { FFMPEG, FFPROBE, cacheDirFor, ensureCacheDir, extOf, isSharpReadable, photoAbs } from './config'
 import { getPhotoRow, MISSING_PREFIX, type PhotoRow } from './db'
 import type { ThumbSize } from './types'
 
@@ -67,8 +67,102 @@ function ffmpegFrame(args: string[]): Promise<Buffer> {
 // Downscale inside ffmpeg (never upscale) so the PNG pipe stays small on a Pi.
 const FRAME_SCALE = `scale=w='min(${P_EDGE},iw)':h='min(${P_EDGE},ih)':force_original_aspect_ratio=decrease`
 
-// HEIF tile grids are assembled by an internal complex filtergraph in ffmpeg ≥ 7.1, which
-// cannot be combined with -vf; those frames are resized by sharp instead.
+// ── HEIC / HEIF ──────────────────────────────────────────────────────────────
+//
+// iPhone HEIC files hold the picture as a grid of 512×512 HEVC tiles plus
+// auxiliary images (depth map, portrait matte). ffmpeg's HEIF demuxer exposes the
+// grid as a "Tile Grid" stream group; ffmpeg 7.x does not assemble it on its own
+// (`-map 0:g:0` or default selection yields one tile, or the matte), so we read
+// the grid geometry with ffprobe and stitch the tiles ourselves with
+// concat → tile → crop. Non-grid HEIFs decode as a plain single stream.
+
+interface TileGrid {
+  streams: number[]       // tile stream indexes in raster order
+  cols: number
+  rows: number
+  width: number           // final (cropped) size
+  height: number
+  hOff: number
+  vOff: number
+}
+
+interface ProbeGroups {
+  stream_groups?: {
+    type?: string
+    components?: {
+      nb_tiles?: number; coded_width?: number; coded_height?: number
+      horizontal_offset?: number; vertical_offset?: number; width?: number; height?: number
+      subcomponents?: { stream_index: number; tile_horizontal_offset: number; tile_vertical_offset: number }[]
+    }[]
+  }[]
+  streams?: { index: number; width?: number; height?: number }[]
+}
+
+function ffprobeJson(args: string[]): Promise<ProbeGroups> {
+  return new Promise((resolve, reject) => {
+    execFile(FFPROBE, ['-v', 'error', '-of', 'json', ...args], { timeout: FF_TIMEOUT, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err) return reject(err)
+        try { resolve(JSON.parse(String(stdout)) as ProbeGroups) } catch (e) { reject(e) }
+      })
+  })
+}
+
+/** The primary tile grid of a HEIF, or null when the file is a plain single image. */
+async function heifTileGrid(abs: string): Promise<TileGrid | null> {
+  const probe = await ffprobeJson(['-show_stream_groups', '-show_streams', abs])
+  const grid = probe.stream_groups?.find(g => g.type === 'Tile Grid')
+  const c = grid?.components?.[0]
+  if (!c?.subcomponents?.length || !c.coded_width || !c.coded_height || !c.width || !c.height) return null
+  const tiles = [...c.subcomponents].sort((a, b) =>
+    a.tile_vertical_offset - b.tile_vertical_offset || a.tile_horizontal_offset - b.tile_horizontal_offset)
+  const first = probe.streams?.find(st => st.index === tiles[0].stream_index)
+  const tileW = first?.width ?? 0
+  const tileH = first?.height ?? 0
+  if (!tileW || !tileH) return null
+  const cols = Math.round(c.coded_width / tileW)
+  const rows = Math.round(c.coded_height / tileH)
+  if (cols * rows !== tiles.length) return null
+  return {
+    streams: tiles.map(t => t.stream_index), cols, rows,
+    width: c.width, height: c.height, hOff: c.horizontal_offset ?? 0, vOff: c.vertical_offset ?? 0,
+  }
+}
+
+/** Decode a HEIF to one PNG frame (long edge ≤ P_EDGE), stitching tile grids. */
+async function heifFrame(abs: string): Promise<Buffer> {
+  let grid: TileGrid | null = null
+  try { grid = await heifTileGrid(abs) } catch { /* fall through to single-stream decode */ }
+  if (!grid) {
+    // Plain HEIF: the primary picture is the first (and usually only) video stream.
+    return ffmpegFrame([
+      '-hide_banner', '-loglevel', 'error', '-nostdin', '-i', abs, '-map', '0:v:0',
+      '-frames:v', '1', '-vf', FRAME_SCALE, '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
+    ])
+  }
+  const inputs = grid.streams.map(i => `[0:${i}]`).join('')
+  const filter = `${inputs}concat=n=${grid.streams.length}:v=1:a=0,` +
+    `tile=${grid.cols}x${grid.rows},crop=${grid.width}:${grid.height}:${grid.hOff}:${grid.vOff},${FRAME_SCALE}`
+  return ffmpegFrame([
+    '-hide_banner', '-loglevel', 'error', '-nostdin', '-i', abs,
+    '-filter_complex', filter, '-frames:v', '1', '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
+  ])
+}
+
+/** Apply an EXIF orientation (1–8) to a decoded frame, when sharp reports one. */
+function orient(img: Sharp, orientation: number | undefined): Sharp {
+  switch (orientation) {
+    case 2: return img.flop()
+    case 3: return img.rotate(180)
+    case 4: return img.flip()
+    case 5: return img.rotate(90).flop()
+    case 6: return img.rotate(90)
+    case 7: return img.rotate(270).flop()
+    case 8: return img.rotate(270)
+    default: return img
+  }
+}
+
 function frameArgs(abs: string, seek: number | null, scale: boolean): string[] {
   return [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
@@ -131,10 +225,13 @@ async function generate(row: PhotoRow, size: ThumbSize): Promise<void> {
     return
   }
 
-  // HEIC/HEIF: one ffmpeg decode produces both sizes.
-  const frame = await ffmpegFrame(frameArgs(abs, null, false))
-  if (!(await exists(pPath))) await writeWebp(sharp(frame), P_EDGE, 82, pPath)
-  if (!(await exists(tPath))) await writeWebp(sharp(frame), T_EDGE, 70, tPath)
+  // HEIC/HEIF: one stitched ffmpeg decode produces both sizes. sharp can read the
+  // container's EXIF (not its pixels), which gives us the orientation to apply.
+  let orientation: number | undefined
+  try { orientation = (await sharp(abs).metadata()).orientation } catch { /* no EXIF */ }
+  const frame = await heifFrame(abs)
+  if (!(await exists(pPath))) await writeWebp(orient(sharp(frame), orientation), P_EDGE, 82, pPath)
+  if (!(await exists(tPath))) await writeWebp(orient(sharp(frame), orientation), T_EDGE, 70, tPath)
 }
 
 function derivedPath(row: PhotoRow, size: ThumbSize): string {

@@ -1,7 +1,7 @@
 import 'server-only'
 import fs from 'fs'
 import path from 'path'
-import { LIBRARY_MARKER, PHOTOS_ROOT, extOf, kindForExt, libraryMarkerPresent, toRel } from './config'
+import { LIBRARY_MARKER, PHOTOS_ROOT, ensureLibraryMarker, extOf, kindForExt, libraryMarkerPresent, toRel } from './config'
 import {
   countLiveRows, getLastScan, getLiveFileRows, getMissingRowsByHash, getThumbCandidates,
   insertPhoto, markMissing, newId, relinkPhoto, setLastScan, updatePhotoFile,
@@ -97,11 +97,19 @@ async function doScan(st: ScanStatus): Promise<void> {
     st.error = `Library offline: ${(e as Error).message}`
     return
   }
-  const marked = await libraryMarkerPresent()
+  let marked = await libraryMarkerPresent()
   if (!marked && countLiveRows() > 0) {
-    st.libraryOnline = false
-    st.error = `Library offline: ${LIBRARY_MARKER} not found in ${PHOTOS_ROOT} (share not mounted?)`
-    return
+    // The index has files but the marker is missing: either the share is not mounted
+    // (an empty directory is masking it) or the marker was never written (files were
+    // uploaded before any scan ran). Settle it by looking for indexed files on disk.
+    if (await indexedFilesPresent()) {
+      await ensureLibraryMarker()
+      marked = await libraryMarkerPresent()
+    } else {
+      st.libraryOnline = false
+      st.error = `Library offline: ${LIBRARY_MARKER} not found in ${PHOTOS_ROOT} (share not mounted?)`
+      return
+    }
   }
   st.libraryOnline = true
 
@@ -176,10 +184,7 @@ async function doScan(st: ScanStatus): Promise<void> {
   }
 
   // 5. First successful scan of a non-empty library: drop the mount-guard marker.
-  if (!marked && files.length > 0) {
-    await fs.promises.writeFile(path.join(PHOTOS_ROOT, LIBRARY_MARKER),
-      'Photos library marker — do not delete. The server refuses to scan when it is missing.\n')
-  }
+  if (!marked && files.length > 0) await ensureLibraryMarker()
 
   // 6. Fresh index (new Pi / restored SD card): restore favorites + albums from the NAS.
   st.catalogImported = await importCatalogIfEmpty()
@@ -265,13 +270,32 @@ export function startPhotoScheduler(): void {
 
 
 /** Live mount-guard check (cheap): PHOTOS_ROOT readable and, once the index has rows, the marker present. */
+/** True when at least one of (up to 8) indexed, non-trashed files exists under PHOTOS_ROOT. */
+async function indexedFilesPresent(): Promise<boolean> {
+  const rows = getLiveFileRows().slice(0, 8)
+  for (const r of rows) {
+    try {
+      await fs.promises.access(path.join(PHOTOS_ROOT, r.rel_path), fs.constants.R_OK)
+      return true
+    } catch { /* keep looking */ }
+  }
+  return false
+}
+
 export async function checkLibraryOnline(): Promise<boolean> {
   try {
     await fs.promises.access(PHOTOS_ROOT, fs.constants.R_OK)
   } catch {
     return false
   }
-  return (await libraryMarkerPresent()) || countLiveRows() === 0
+  if (await libraryMarkerPresent()) return true
+  if (countLiveRows() === 0) return true
+  // Marker missing but the index has files: online iff those files are really there.
+  if (await indexedFilesPresent()) {
+    await ensureLibraryMarker()
+    return true
+  }
+  return false
 }
 
 /** Scan status with `libraryOnline` re-checked now (unless a scan is running and owns it). */

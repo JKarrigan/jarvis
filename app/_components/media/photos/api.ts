@@ -48,8 +48,11 @@ function sendJson<T>(url: string, method: string, body?: unknown): Promise<T> {
 // --- URLs -------------------------------------------------------------------
 
 /** Derived webp. Thumbs are served immutable, so `v` busts the cache when the file changes. */
+/** Bump when the thumbnail pipeline changes, so immutable-cached thumbs are refetched. */
+const THUMB_GEN = '-2'
+
 export function thumbUrl(item: Pick<PhotoItem, 'id' | 'size'>, size: ThumbSize = 't'): string {
-  return `/api/photos/${item.id}/thumb?size=${size}&v=${item.size.toString(36)}`
+  return `/api/photos/${item.id}/thumb?size=${size}&v=${item.size.toString(36)}${THUMB_GEN}`
 }
 export function fileUrl(id: string, download = false): string {
   return `/api/photos/${id}/file${download ? '?download=1' : ''}`

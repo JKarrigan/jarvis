@@ -62,9 +62,10 @@ If you want the Files app to browse the whole NAS, mount more shares under
 ## 3. ffmpeg 7.1 or newer
 
 Checked 2026-10-31: the Pi runs Debian 13 (trixie) with ffmpeg 7.1.3 and Node
-22, so nothing to do here. For reference, Raspberry Pi OS bookworm ships ffmpeg
-5.1, which cannot decode iPhone HEIC photos (tiled HEVC grids); on such a system
-the options are, easiest first:
+22, so nothing to do here. The app stitches iPhone HEIC tile grids itself (ffmpeg
+7.x alone returns a single tile or the portrait matte), so 7.1 is enough. For
+reference, Raspberry Pi OS bookworm ships ffmpeg 5.1, which cannot read HEIC at
+all; on such a system the options are, easiest first:
 
 ```bash
 # a) static build (arm64), no system changes

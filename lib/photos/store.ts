@@ -1,7 +1,7 @@
 import 'server-only'
 import fs from 'fs'
 import path from 'path'
-import { PHOTOS_ROOT, TRASH_DIR, UPLOAD_TMP_DIR, extOf, kindForExt, photoAbs } from './config'
+import { PHOTOS_ROOT, TRASH_DIR, UPLOAD_TMP_DIR, extOf, kindForExt, photoAbs, ensureLibraryMarker } from './config'
 import {
   MISSING_PREFIX, deletePhotoRow, findLiveByHash, getPhotoRow, getPhotoRowByRel, getTrashedRows,
   insertPhoto, newId, relPathTaken, setTrashed,
@@ -123,6 +123,9 @@ export async function ingestUpload(tmpAbs: string, originalName: string): Promis
         if (!row) throw e
         return { ...result, status: 'created' as const, id: row.id, relPath: rel }
       }
+      // The library now provably holds a file: make sure the mount-guard marker exists
+      // (uploads can precede the first scan, which is what used to write it).
+      await ensureLibraryMarker()
       return { ...result, status: 'created' as const, id, relPath: rel }
     }, 'high')
   } catch (e) {
