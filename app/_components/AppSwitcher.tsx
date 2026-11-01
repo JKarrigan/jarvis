@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 
 const APPS = [
   { key: 'air', label: 'Air Gradient', desc: 'Air quality & home', href: '/' },
-  { key: 'media', label: 'Media', desc: 'Movies, TV, books & photos', href: '/media' },
+  { key: 'media', label: 'Media', desc: 'Movies, TV, books, photos & documents', href: '/media' },
 ] as const
 
 function AirIcon({ className = '' }: { className?: string }) {

@@ -19,10 +19,15 @@ export interface OpenBook {
 }
 
 /** Open a book through the range-capable file proxy. Always `close()` it when done. */
-export async function openBook(id: string): Promise<OpenBook> {
+export function openBook(id: string): Promise<OpenBook> {
+  return openPdf(`/api/jellyfin/books/${encodeURIComponent(id)}/file`)
+}
+
+/** Open any same-origin, range-capable PDF URL (books, Documents). Always `close()` it. */
+export async function openPdf(url: string): Promise<OpenBook> {
   const pdfjs = await loadPdfjs()
   const task = pdfjs.getDocument({
-    url: `/api/jellyfin/books/${encodeURIComponent(id)}/file`,
+    url,
     // Fetch only the byte ranges the rendered pages need — no background download of
     // the whole PDF (books are tens of MB and the reader may only show page 1).
     disableAutoFetch: true,

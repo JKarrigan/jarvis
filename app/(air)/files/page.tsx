@@ -1,8 +1,6 @@
-import type { Metadata } from 'next'
-import { FileBrowser } from '@/app/_components/FileBrowser'
+import { redirect } from 'next/navigation'
 
-export const metadata: Metadata = { title: 'Files' }
-
+/** The old Air-side file browser moved to the media app's Documents section. */
 export default function FilesPage() {
-  return <FileBrowser />
+  redirect('/media/documents')
 }

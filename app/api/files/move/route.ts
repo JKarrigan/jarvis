@@ -1,5 +1,5 @@
 import { assertSameOrigin } from '@/lib/http'
-import { moveEntry, filesErrorResponse } from '@/lib/files'
+import { assertStorageOnline, moveEntry, filesErrorResponse } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
 
@@ -7,6 +7,8 @@ export const dynamic = 'force-dynamic'
 export async function POST(request: Request) {
   const denied = assertSameOrigin(request)
   if (denied) return denied
+  const offline = await assertStorageOnline()
+  if (offline) return offline
   const { searchParams } = new URL(request.url)
   try {
     await moveEntry(searchParams.get('from'), searchParams.get('to'))

@@ -17,6 +17,21 @@ export type ApiEntry = ApiFileEntry | ApiDirEntry
 
 export type SearchResult = ApiEntry & { relPath: string }
 
+/** Disk usage of the documents share (`list`, `status`). */
+export type DiskInfo = { usedBytes: number; totalBytes: number }
+
+/** `GET /api/files/stat?path=` — recursive totals (bounded at 20k entries → `truncated`). */
+export type FolderStats = { files: number; folders: number; bytes: number; truncated: boolean }
+
+/** `GET /api/files/status` — `disk` is null while offline. */
+export type FilesStatus = { online: boolean; root: 'documents'; disk: DiskInfo | null }
+
+/** Body of every 503 from `/api/files/*` while the share is not mounted. */
+export type FilesOfflineError = { error: 'Storage offline'; offline: true }
+
+/** `GET /api/files/thumb?size=` — `t` 320 px, `p` 1280 px (long edge, WebP). */
+export type FileThumbSize = 't' | 'p'
+
 export type SortKey = 'name' | 'size' | 'modified'
 
 const KB = 1024

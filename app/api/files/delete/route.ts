@@ -1,5 +1,5 @@
 import { assertSameOrigin } from '@/lib/http'
-import { deleteEntry, filesErrorResponse } from '@/lib/files'
+import { assertStorageOnline, deleteEntry, filesErrorResponse } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +11,8 @@ export const dynamic = 'force-dynamic'
 export async function DELETE(request: Request) {
   const denied = assertSameOrigin(request)
   if (denied) return denied
+  const offline = await assertStorageOnline()
+  if (offline) return offline
   const { searchParams } = new URL(request.url)
   const recursive = searchParams.get('recursive') !== '0'
   try {

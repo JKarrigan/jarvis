@@ -2,6 +2,7 @@ import 'server-only'
 import fs from 'fs'
 import path from 'path'
 import { FILES_ROOT } from '@/lib/files'
+import { isMountPoint, mountRequired } from '@/lib/mount'
 import { PHOTO_IMAGE_EXTS, PHOTO_VIDEO_EXTS, type PhotoKind } from './types'
 
 /** The photo library (on the Pi: a mounted NAS share). */
@@ -89,6 +90,15 @@ export async function ensureLibraryMarker(): Promise<void> {
   try {
     await fs.promises.writeFile(path.join(PHOTOS_ROOT, LIBRARY_MARKER), MARKER_TEXT, { flag: 'wx' })
   } catch { /* exists already, or the share is not writable right now */ }
+}
+
+/**
+ * With NAS_REQUIRE_MOUNT=1 (the Pi) PHOTOS_ROOT must be a mount point; an empty
+ * mount point on the SD card is offline even before the marker check. Always
+ * true when the flag is unset.
+ */
+export async function photosRootMounted(): Promise<boolean> {
+  return !mountRequired() || isMountPoint(PHOTOS_ROOT)
 }
 
 /** Mount guard: the marker exists only on the real library (NAS share), never on an empty mount point. */

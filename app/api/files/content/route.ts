@@ -3,7 +3,7 @@ import fsp from 'fs/promises'
 import { Readable } from 'stream'
 import path from 'path'
 import { parseRange, rangeNotSatisfiable } from '@/lib/http'
-import { resolveSafe, filesErrorResponse, FilesError } from '@/lib/files'
+import { assertStorageOnline, resolveSafe, filesErrorResponse, FilesError } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
 
@@ -43,8 +43,11 @@ function contentDisposition(kind: 'inline' | 'attachment', filename: string): st
 }
 
 export async function GET(request: Request) {
+  const offline = await assertStorageOnline()
+  if (offline) return offline
   const { searchParams } = new URL(request.url)
-  const download = searchParams.get('download') === 'true'
+  const dl = searchParams.get('download')
+  const download = dl === '1' || dl === 'true'
 
   let abs: string
   let total: number

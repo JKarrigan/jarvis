@@ -2,11 +2,20 @@ import 'server-only'
 import fs from 'fs'
 import fsp from 'fs/promises'
 import path from 'path'
-import { randomUUID } from 'crypto'
-import type { ApiEntry, SearchResult } from '@/lib/fileTypes'
+import { createHash, randomUUID } from 'crypto'
+import type { ApiEntry, DiskInfo, FileThumbSize, FolderStats, SearchResult } from '@/lib/fileTypes'
+import { isMountPoint, rootOnline } from '@/lib/mount'
 
-/** Absolute, normalised storage root (a trailing slash in the env var is fine). */
+export { isMountPoint } from '@/lib/mount'
+
+/**
+ * Absolute, normalised storage root (a trailing slash in the env var is fine).
+ * This is the Documents share (`/mnt/nas/documents` on the Pi).
+ */
 export const FILES_ROOT = path.resolve(process.env.FILES_ROOT ?? '/mnt/storage')
+
+/** Disposable thumbnail cache on local disk (never on the share). */
+export const FILES_CACHE = path.resolve(process.env.FILES_CACHE ?? path.join(process.cwd(), '.files-cache'))
 
 /** An error with an HTTP status and a message that is safe to show the client. */
 export class FilesError extends Error {
@@ -14,6 +23,42 @@ export class FilesError extends Error {
     super(message)
     this.name = 'FilesError'
   }
+}
+
+// ── Mount guard ──────────────────────────────────────────────────────────────
+
+/**
+ * False when the documents root is missing, not a directory, or — with
+ * `NAS_REQUIRE_MOUNT=1` — not a mount point (an empty mount point on the SD
+ * card must never be listed or written to).
+ */
+export function storageOnline(): Promise<boolean> {
+  return rootOnline(FILES_ROOT)
+}
+
+/** True when FILES_ROOT is itself a mount point (diagnostics; the guard is storageOnline). */
+export function filesRootMounted(): Promise<boolean> {
+  return isMountPoint(FILES_ROOT)
+}
+
+/** `{ error: 'Storage offline', offline: true }` with 503. */
+export function offlineResponse(): Response {
+  return Response.json({ error: 'Storage offline', offline: true }, { status: 503, headers: { 'Retry-After': '30' } })
+}
+
+/** Null when storage is online, else the 503 offline Response. Call after assertSameOrigin. */
+export async function assertStorageOnline(): Promise<Response | null> {
+  return (await storageOnline()) ? null : offlineResponse()
+}
+
+// ── Hidden entries ───────────────────────────────────────────────────────────
+
+/** Synology housekeeping folders that are not dot-entries. */
+const HIDDEN_NAMES = new Set(['#recycle', '#snapshot', '@eaDir'])
+
+/** Entries never shown in listings, search or folder stats: dot-entries, NAS housekeeping, `*.part` upload temps. */
+export function isHiddenName(name: string): boolean {
+  return name.startsWith('.') || HIDDEN_NAMES.has(name) || name.toLowerCase().endsWith('.part')
 }
 
 /** True when `abs` is `root` itself or below it (separator-aware: /mnt/storage2 is not inside /mnt/storage). */
@@ -130,7 +175,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
 
 async function countChildren(abs: string): Promise<number> {
   try {
-    return (await fsp.readdir(abs)).filter(n => !n.startsWith('.')).length
+    return (await fsp.readdir(abs)).filter(n => !isHiddenName(n)).length
   } catch {
     return 0
   }
@@ -154,12 +199,12 @@ async function toApiEntry(dirent: fs.Dirent, abs: string): Promise<ApiEntry | nu
 
 export async function listDirectory(relPath: string): Promise<ApiEntry[]> {
   const abs = resolveSafe(relPath)
-  const dirents = (await fsp.readdir(abs, { withFileTypes: true })).filter(d => !d.name.startsWith('.'))
+  const dirents = (await fsp.readdir(abs, { withFileTypes: true })).filter(d => !isHiddenName(d.name))
   const entries = await mapLimit(dirents, 16, d => toApiEntry(d, path.join(abs, d.name)))
   return entries.filter((e): e is ApiEntry => e !== null)
 }
 
-export async function getDiskInfo(mountPath: string): Promise<{ usedBytes: number; totalBytes: number }> {
+export async function getDiskInfo(mountPath: string): Promise<DiskInfo> {
   try {
     const s = await fsp.statfs(mountPath)
     return { totalBytes: s.blocks * s.bsize, usedBytes: (s.blocks - s.bfree) * s.bsize }
@@ -252,7 +297,7 @@ export async function searchEntries(
       let dirents: fs.Dirent[]
       try { dirents = await fsp.readdir(dir, { withFileTypes: true }) } catch { continue }
       for (const dirent of dirents) {
-        if (dirent.name.startsWith('.')) continue
+        if (isHiddenName(dirent.name)) continue
         if (++visited > SEARCH_MAX_VISITED) return { results, truncated: true }
         const entAbs = path.join(dir, dirent.name)
         if (dirent.name.toLowerCase().includes(lowerQ)) {
@@ -269,6 +314,72 @@ export async function searchEntries(
     level = nextLevel
   }
   return { results, truncated }
+}
+
+// ── Folder stats ─────────────────────────────────────────────────────────────
+
+const STATS_MAX_ENTRIES = 20_000
+
+/**
+ * Recursive totals for a folder (the folder itself not counted), for the delete
+ * confirm. Bounded: stops after 20k entries or when `signal` aborts, reporting
+ * `truncated`. Hidden entries are skipped (as in listings) and symlinks are not
+ * followed. A file path yields `{ files: 1, folders: 0, bytes: size }`.
+ */
+export async function folderStats(relPath: string, signal?: AbortSignal): Promise<FolderStats> {
+  const root = resolveSafe(relPath)
+  const rootStat = await fsp.stat(root)
+  if (!rootStat.isDirectory()) return { files: 1, folders: 0, bytes: rootStat.size, truncated: false }
+
+  const out: FolderStats = { files: 0, folders: 0, bytes: 0, truncated: false }
+  let visited = 0
+  const queue: string[] = [root]
+  for (let qi = 0; qi < queue.length; qi++) {
+    if (signal?.aborted) return { ...out, truncated: true }
+    const dir = queue[qi]
+    let dirents: fs.Dirent[]
+    try { dirents = await fsp.readdir(dir, { withFileTypes: true }) } catch { continue }
+    const files: string[] = []
+    for (const d of dirents) {
+      if (isHiddenName(d.name)) continue
+      if (++visited > STATS_MAX_ENTRIES) {
+        out.truncated = true
+        break
+      }
+      const abs = path.join(dir, d.name)
+      if (d.isDirectory()) {
+        out.folders++
+        queue.push(abs)
+      } else {
+        out.files++
+        if (d.isFile()) files.push(abs)
+      }
+    }
+    const sizes = await mapLimit(files, 16, async f => {
+      try { return (await fsp.lstat(f)).size } catch { return 0 }
+    })
+    for (const n of sizes) out.bytes += n
+    if (out.truncated) return out
+  }
+  return out
+}
+
+// ── Thumbnail cache key ─────────────────────────────────────────────────────
+
+/**
+ * Cache file name (sha1 hex) for a thumbnail of `relPath` at `size` for the file
+ * version with `mtimeMs`. The path is normalised the way resolveSafe sees it, so
+ * `a/b.pdf`, `/a/b.pdf` and `a//b.pdf` share one entry; an edit (new mtime)
+ * gets a new key.
+ */
+export function thumbCacheKey(relPath: string, size: FileThumbSize, mtimeMs: number): string {
+  const norm = path.posix.normalize('/' + relPath).replace(/\/+$/, '') || '/'
+  return createHash('sha1').update(`${norm}\0${size}\0${Math.floor(mtimeMs)}`).digest('hex')
+}
+
+/** Absolute cache path for a thumbnail key (sharded by the first two hex chars). */
+export function thumbCachePath(key: string): string {
+  return path.join(FILES_CACHE, key.slice(0, 2), `${key}.webp`)
 }
 
 // ── Uploads ────────────────────────────────────────────────────────────────

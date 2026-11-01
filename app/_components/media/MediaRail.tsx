@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useMediaProfile, useTitleState } from './MediaProvider'
 import {
   HomeIcon, FilmIcon, TvIcon, HeartIcon, CollectionsIcon, DieIcon,
-  ListIcon, GearIcon, SearchIcon, HeadphonesIcon, PhotoIcon,
+  ListIcon, GearIcon, SearchIcon, HeadphonesIcon, PhotoIcon, FolderIcon,
 } from './icons'
 
 interface NavItem {
@@ -29,10 +29,12 @@ const NAV: NavItem[] = [
   { href: '/media/movies', label: 'Movies', Icon: FilmIcon },
   { href: '/media/tv', label: 'TV Shows', Icon: TvIcon },
   { href: '/media/photos', label: 'Photos', Icon: PhotoIcon, mobile: true },
+  { href: '/media/documents', label: 'Documents', Icon: FolderIcon, mobile: true },
   { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon, also: ['/media/books'], mobile: true },
   { href: '/media/favorites', label: 'Favorites', Icon: HeartIcon },
   { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
-  { href: '/media/picker', label: 'Movie Picker', short: 'Picker', Icon: DieIcon, mobile: true },
+  // Desktop rail and the Home page only: the phone tab bar has no room for a sixth tab.
+  { href: '/media/picker', label: 'Movie Picker', short: 'Picker', Icon: DieIcon },
 ]
 
 const SETTINGS: NavItem = { href: '/media/settings', label: 'Settings', Icon: GearIcon }

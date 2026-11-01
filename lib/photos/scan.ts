@@ -1,7 +1,9 @@
 import 'server-only'
 import fs from 'fs'
 import path from 'path'
-import { LIBRARY_MARKER, PHOTOS_ROOT, ensureLibraryMarker, extOf, kindForExt, libraryMarkerPresent, toRel } from './config'
+import {
+  LIBRARY_MARKER, PHOTOS_ROOT, ensureLibraryMarker, extOf, kindForExt, libraryMarkerPresent, photosRootMounted, toRel,
+} from './config'
 import {
   countLiveRows, getLastScan, getLiveFileRows, getMissingRowsByHash, getThumbCandidates,
   insertPhoto, markMissing, newId, relinkPhoto, setLastScan, updatePhotoFile,
@@ -95,6 +97,11 @@ async function doScan(st: ScanStatus): Promise<void> {
   } catch (e) {
     st.libraryOnline = false
     st.error = `Library offline: ${(e as Error).message}`
+    return
+  }
+  if (!(await photosRootMounted())) {
+    st.libraryOnline = false
+    st.error = `Library offline: ${PHOTOS_ROOT} is not a mount point (NAS_REQUIRE_MOUNT=1)`
     return
   }
   let marked = await libraryMarkerPresent()
@@ -288,6 +295,7 @@ export async function checkLibraryOnline(): Promise<boolean> {
   } catch {
     return false
   }
+  if (!(await photosRootMounted())) return false
   if (await libraryMarkerPresent()) return true
   if (countLiveRows() === 0) return true
   // Marker missing but the index has files: online iff those files are really there.

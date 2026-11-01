@@ -1,15 +1,16 @@
 # Running on the Pi with the NAS as storage
 
 Target layout: the Synology NAS owns every file (Jellyfin libraries, the photo
-share, anything the Files app browses). The Pi mounts the share, runs the app,
+share, the documents share). The Pi mounts the share, runs the app,
 and keeps only disposable state (thumbnail cache, SQLite index).
 
 ```
 NAS (192.168.1.58)                 Pi (192.168.1.17, wired)
-  /volume1/photo  ──NFS/SMB──▶  /mnt/nas/photo   = PHOTOS_ROOT
-  /volume1/…      ──NFS/SMB──▶  /mnt/nas         = FILES_ROOT
-  Jellyfin :8096  ──HTTP────▶  JELLYFIN_URL
+  /volume1/photo      ──NFS──▶  /mnt/nas/photo      = PHOTOS_ROOT
+  /volume1/documents  ──NFS──▶  /mnt/nas/documents  = FILES_ROOT
+  Jellyfin :8096      ──HTTP─▶  JELLYFIN_URL
                                  ~/.cache/home-photos = PHOTOS_CACHE (local)
+                                 ~/.cache/home-files  = FILES_CACHE (local)
                                  ~/data/airgradient.db = DB_PATH (local)
 ```
 
@@ -56,8 +57,50 @@ ls /mnt/nas/photo        # should list your photo folders
 touch /mnt/nas/photo/.write-test && rm /mnt/nas/photo/.write-test
 ```
 
-If you want the Files app to browse the whole NAS, mount more shares under
-`/mnt/nas/<name>` the same way and point `FILES_ROOT` at `/mnt/nas`.
+## 2b. Documents share
+
+The Documents section (`/media/documents`, `docs/documents-spec.md`) stores its
+folders on a dedicated share, set up exactly like `photo`:
+
+1. On the Synology, **Control Panel → Shared Folder → Create**: name
+   `documents` (enable the Recycle Bin if you want deleted documents to be
+   recoverable from `#recycle`). Then **Edit → NFS Permissions → Create**:
+   hostname `192.168.1.17`, privilege Read/Write, squash "Map all users to
+   admin", enable asynchronous. The mount path is `/volume1/documents`.
+2. On the Pi:
+
+   ```bash
+   sudo mkdir -p /mnt/nas/documents
+   ```
+
+   Add to `/etc/fstab` (one line):
+
+   ```
+   192.168.1.58:/volume1/documents  /mnt/nas/documents  nfs  defaults,_netdev,soft,timeo=30,retrans=2,noatime,nofail  0  0
+   ```
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo mount -a
+   touch /mnt/nas/documents/.write-test && rm /mnt/nas/documents/.write-test
+   ```
+
+3. PDF thumbnails need `pdftoppm` (without it PDFs just show their type icon):
+
+   ```bash
+   sudo apt install -y poppler-utils
+   ```
+
+4. In `.env.local` (step 4): `FILES_ROOT=/mnt/nas/documents` and
+   `NAS_REQUIRE_MOUNT=1`. With the flag set, a share that is not mounted (the
+   bare `/mnt/nas/documents` directory on the SD card) is reported offline —
+   Documents shows a banner and refuses every write, and Photos reports
+   "Library offline" for an unmounted `/mnt/nas/photo` — instead of filling the
+   SD card.
+
+The old Files browser pointed `FILES_ROOT` at `/mnt/nas`; anything you kept
+there that belongs in Documents can be moved into the new share from Finder
+(SMB) or with `mv` on the NAS.
 
 ## 3. ffmpeg 7.1 or newer
 
@@ -84,7 +127,9 @@ DEVICE_HOST=airgradient_XXXXXXXXXXXX.local     # or the device's IP
 OUTDOOR_LAT=…
 OUTDOOR_LON=…
 DB_PATH=/home/joey/data/airgradient.db          # outside the checkout
-FILES_ROOT=/mnt/nas
+FILES_ROOT=/mnt/nas/documents
+NAS_REQUIRE_MOUNT=1                             # roots must be mounted NAS shares
+FILES_CACHE=/home/joey/.cache/home-files
 PHOTOS_ROOT=/mnt/nas/photo
 PHOTOS_CACHE=/home/joey/.cache/home-photos
 FFMPEG_PATH=/home/joey/opt/ffmpeg-7.1-arm64-static/ffmpeg     # if you did 3a
@@ -95,7 +140,7 @@ JELLYFIN_PASSWORD=…
 ```
 
 ```bash
-mkdir -p ~/data ~/.cache/home-photos
+mkdir -p ~/data ~/.cache/home-photos ~/.cache/home-files
 # move the existing database out of the checkout once:
 mv ~/air-gradient/airgradient.db* ~/data/ 2>/dev/null || true
 ```
@@ -143,9 +188,11 @@ started …` and `[photos] scan … added N`. Then open `http://<pi>:3000/media/
 | Favorite / watched sync | toggle in Reel, confirm in the Jellyfin web UI |
 | Hue live updates survive a bridge reboot | lights page after power-cycling the bridge |
 | NAS outage behaviour | unmount the share: Photos shows "Library offline", nothing is marked deleted |
+| Documents offline guard | `sudo umount /mnt/nas/documents`: Documents shows the offline banner, uploads are refused (503); `sudo mount -a` brings it back |
+| PDF thumbnails (needs poppler-utils) | any PDF tile in Documents |
 
 ## Recovery
 
-Losing the Pi loses nothing: on a fresh Pi, repeat steps 2–5. The first scan
+Losing the Pi loses nothing: on a fresh Pi, repeat steps 2–5 (including 2b). The first scan
 rebuilds the index from the share and restores favorites and albums from
 `.library/catalog.json`. Thumbnails regenerate on demand.

@@ -136,3 +136,6 @@ export const RestartIcon = (p: IconProps) => (
 export const PhotoIcon = (p: IconProps) => (
   <svg {...base(p)}><rect x="2.8" y="5.6" width="14.4" height="10.6" rx="2" /><path d="m7.3 5.6 1.1-1.8a1 1 0 0 1 .85-.5h1.5a1 1 0 0 1 .85.5l1.1 1.8" /><circle cx="10" cy="10.9" r="2.7" /></svg>
 )
+export const FolderIcon = (p: IconProps) => (
+  <svg {...base(p)}><path d="M2.8 6.2A1.6 1.6 0 0 1 4.4 4.6h3.3l1.7 1.8h6.2a1.6 1.6 0 0 1 1.6 1.6v6.8a1.6 1.6 0 0 1-1.6 1.6H4.4a1.6 1.6 0 0 1-1.6-1.6V6.2Z" /></svg>
+)

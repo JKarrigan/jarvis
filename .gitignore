@@ -49,3 +49,6 @@ next-env.d.ts
 # photos thumbnail cache (derived, rebuilt from the NAS)
 /.photos-cache
 /.claude/launch.json
+
+# documents thumbnail cache (derived, rebuilt from the NAS)
+/.files-cache

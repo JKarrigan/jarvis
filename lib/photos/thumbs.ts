@@ -163,6 +163,20 @@ function orient(img: Sharp, orientation: number | undefined): Sharp {
   }
 }
 
+/**
+ * Decode a HEIC/HEIF (tile grids stitched, long edge ≤ 1600 px) and return a
+ * factory for oriented sharp pipelines over the one decoded frame, so several
+ * sizes can be derived from a single ffmpeg run. sharp can read the container's
+ * EXIF (not its pixels), which gives the orientation to apply. Also used by the
+ * Documents thumbnails (`/api/files/thumb`).
+ */
+export async function decodeHeifFrame(abs: string): Promise<() => Sharp> {
+  let orientation: number | undefined
+  try { orientation = (await sharp(abs).metadata()).orientation } catch { /* no EXIF */ }
+  const frame = await heifFrame(abs)
+  return () => orient(sharp(frame), orientation)
+}
+
 function frameArgs(abs: string, seek: number | null, scale: boolean): string[] {
   return [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
@@ -225,13 +239,10 @@ async function generate(row: PhotoRow, size: ThumbSize): Promise<void> {
     return
   }
 
-  // HEIC/HEIF: one stitched ffmpeg decode produces both sizes. sharp can read the
-  // container's EXIF (not its pixels), which gives us the orientation to apply.
-  let orientation: number | undefined
-  try { orientation = (await sharp(abs).metadata()).orientation } catch { /* no EXIF */ }
-  const frame = await heifFrame(abs)
-  if (!(await exists(pPath))) await writeWebp(orient(sharp(frame), orientation), P_EDGE, 82, pPath)
-  if (!(await exists(tPath))) await writeWebp(orient(sharp(frame), orientation), T_EDGE, 70, tPath)
+  // HEIC/HEIF: one stitched ffmpeg decode produces both sizes.
+  const frame = await decodeHeifFrame(abs)
+  if (!(await exists(pPath))) await writeWebp(frame(), P_EDGE, 82, pPath)
+  if (!(await exists(tPath))) await writeWebp(frame(), T_EDGE, 70, tPath)
 }
 
 function derivedPath(row: PhotoRow, size: ThumbSize): string {

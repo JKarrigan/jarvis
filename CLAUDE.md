@@ -18,7 +18,7 @@ CI (`.github/workflows/ci.yml`) runs lint, typecheck, test and build on Node 22 
 
 ## Architecture
 
-This is a Next.js 16 App Router app for the home: **Air** (`app/(air)/**`: air quality, Hue lights, file browser, system) and **Media / "Reel"** (`app/media/**`: Jellyfin movies, TV, audiobooks, books, and the family **Photos** library). It runs on a Raspberry Pi; everything irreplaceable lives on the Synology NAS (Jellyfin libraries, the photo share), the Pi only indexes, serves and caches.
+This is a Next.js 16 App Router app for the home: **Air** (`app/(air)/**`: air quality, Hue lights, system) and **Media / "Reel"** (`app/media/**`: Jellyfin movies, TV, audiobooks, books, the family **Photos** library and **Documents**). It runs on a Raspberry Pi; everything irreplaceable lives on the Synology NAS (Jellyfin libraries, the photo and documents shares), the Pi only indexes, serves and caches.
 
 ### App shell
 
@@ -42,7 +42,8 @@ The root layout owns metadata (title template `%s · Home`), the `viewport` expo
 | `lib/thresholds.ts` | Per-metric `StatusColor` functions (`co2Status`, `pm25Status`, …) |
 | `lib/statusColors.ts` | The single `StatusColor` → hex / Tailwind class / label map (don't copy colours into components) |
 | `lib/http.ts` | Request helpers for API routes (same-origin check, param parsing, Range, LAN host validation) |
-| `lib/files.ts` | Storage-root-safe path resolution for the file browser (`resolveSafe`, `resolveEntry` refuses the root; realpath checks) |
+| `lib/files.ts` | Documents storage: root-safe path resolution (`resolveSafe`, `resolveEntry` refuses the root; realpath checks), hidden-entry filter, mount guard (`storageOnline`), `folderStats`, thumbnail cache keys |
+| `lib/mount.ts` | `isMountPoint` / `NAS_REQUIRE_MOUNT` check shared by Documents and Photos |
 | `lib/pmCalibration.ts` | Batch-specific PMS5003 correction factors (client-side only) |
 
 ### Env vars
@@ -52,9 +53,12 @@ The root layout owns metadata (title template `%s · Home`), the `viewport` expo
 | `DEVICE_HOST` / `NEXT_PUBLIC_DEVICE_HOST` | Fallback AirGradient host when none is saved in `settings` (`POST /api/device` saves it); must pass `isLanHost` |
 | `DB_PATH` | Override SQLite file location (default: `airgradient.db` in cwd) |
 | `OUTDOOR_LAT` / `OUTDOOR_LON` | Server-side fallback coordinates for `/api/outdoor-aqi` |
-| `FILES_ROOT` | Root dir for the file browser / local media transcoding (default: `/mnt/storage`) — `lib/files.ts` |
-| `FFMPEG_PATH` / `FFPROBE_PATH` | ffmpeg/ffprobe binaries for local file streaming (default: on `PATH`; ≥ 7.1 for HEIC) |
-| `MAX_UPLOAD_BYTES` / `MAX_TRANSCODES` | Per-file upload limit (default 8 GiB) and concurrent ffmpeg transcodes (default 2; extra requests get 503 + Retry-After) |
+| `FILES_ROOT` | Root of the Documents section, the NAS `documents` share (on the Pi `/mnt/nas/documents`; default `/mnt/storage`) — `lib/files.ts` |
+| `NAS_REQUIRE_MOUNT` | `1` on the Pi: `FILES_ROOT` and `PHOTOS_ROOT` must be mount points, else they are offline (503, writes refused) — `lib/mount.ts` |
+| `FILES_CACHE` | Local cache for document thumbnails (default: `.files-cache` in cwd; disposable) |
+| `PDFTOPPM_PATH` | `pdftoppm` (poppler-utils) for PDF thumbnails (default: on `PATH`; missing → no PDF previews) |
+| `FFMPEG_PATH` / `FFPROBE_PATH` | ffmpeg/ffprobe binaries for Photos, HEIC thumbnails and audiobook chapters (default: on `PATH`; ≥ 7.1 for HEIC) |
+| `MAX_UPLOAD_BYTES` | Per-file upload limit for `/api/files/upload` (default 8 GiB) |
 | `HUE_SSE_IDLE_MS` | Idle watchdog for the bridge event stream (default 60000) — `lib/hueSse.ts` |
 | `DEV_ORIGINS` | Comma-separated `allowedDevOrigins` for `next dev` on the LAN |
 | `JELLYFIN_URL` | Jellyfin server base URL, e.g. `http://NAS_IP:8096` — `lib/jellyfinServer.ts` |
@@ -88,6 +92,10 @@ The Books rail entry has two halves: **Listen** (`/media/audiobooks`, above) and
 Family photos/videos (`docs/photos-spec.md`) are plain files under `PHOTOS_ROOT` — a NAS share the Pi only mounts — indexed into the `photos` / `albums` / `album_items` tables of the same SQLite db (`lib/photos/db.ts`; `getDb()` from `lib/db.ts`). `lib/photos/scan.ts` is a `globalThis` single-flight scanner (started from `lib/startup.ts`, then every 6 h, after uploads, and on `POST /api/photos/scan`): it walks the share (skipping dot-entries, `@eaDir`, `#recycle`), only re-reads files whose size/mtime changed, re-links moved files by a cheap hash (sha1 of size + first 1 MiB + last 64 KiB), and marks vanished files `.missing/…`. **Mount guard:** the first scan of a non-empty library writes `PHOTOS_ROOT/.photos-library`; if that marker is gone (or the root is unreadable) while the index has rows, scans abort with `libraryOnline: false` instead of treating everything as deleted. Favorites, albums and tags are mirrored, keyed by `rel_path`, to `PHOTOS_ROOT/.library/catalog.json` (debounced 5 s, `lib/photos/catalog.ts`) and imported when those tables are empty (fresh Pi). **Tags** are free-form (`photo_tags`, keyed by photo id so they follow trash/restore/moves): stored as typed but matched through a lower-cased `tag_key` (normalisation in client-safe `lib/photos/tags.ts`, unit-tested), edited per item via `PATCH /api/photos/[id] { tags }` and in bulk via `POST /api/photos/tags`, and filtered with `GET /api/photos?tag=` (the timeline keeps it in `?tag=`). Metadata: sharp + `exif-reader` (HEIC containers too), ffprobe for videos (`lib/photos/meta.ts`). Thumbnails (`t` 400 px, `p` 1600 px, video `poster`) are made lazily into `PHOTOS_CACHE/<id>/` by `lib/photos/thumbs.ts` through a 2-slot priority queue (requests before background fill); HEIC is decoded with ffmpeg: iPhone files are a grid of 512 px HEVC tiles plus auxiliary images (depth map, portrait matte), and ffmpeg 7.x picks one tile or the matte on its own, so `heifFrame()` reads the grid geometry with `ffprobe -show_stream_groups` and stitches it (concat → tile → crop), then applies the EXIF orientation sharp reads from the container. Upload also writes the mount-guard marker, and a missing marker self-heals when indexed files are present on disk. Uploads/trash/restore live in `lib/photos/store.ts` (uploads go to `YYYY/MM/` by capture date, trash is `PHOTOS_ROOT/.trash/<original path>`). Routes are under `app/api/photos/**`; `/[id]/stream` is a capped (2) live H.264 720p transcode killed on disconnect. Thumb URLs are `immutable`, so the UI appends `&v=` when an item changes; a decode failure leaves a `failed` marker in the item's cache folder until the file's mtime changes.
 
 **Photos UI** (`app/media/photos/**`, components in `app/_components/media/photos/**`): the timeline (month sections, keyset infinite scroll, filter chips, year/month jump list, select mode with long-press / shift-click), the lightbox `PhotoViewer` (opened with `?v=<id>` through the History API so Back closes it — passing `history.state` back to `pushState` silently skips Next's `useSearchParams` sync, always pass a fresh object; images show the `p` preview and load the original only on zoom; videos fall back from `/file` to `/stream?t=` when `canPlayType` rejects the codec), the batch `Uploader` (XHR per 10 files, cancel, `beforeunload`), albums, Recently deleted, and `MemoriesRow` on the media Home ("on this day" from earlier years, else the newest). A "Library offline" banner appears whenever the mount guard reports the share missing.
+
+### Documents
+
+The family file store (`docs/documents-spec.md`): a Finder-style browser at `/media/documents` (the old `/files` redirects there) over real folders on the NAS `documents` share, mounted at `FILES_ROOT`. The API is `app/api/files/**` on top of `lib/files.ts`: `list`, `search`, `content` (Range), `upload` (never overwrites, 409), `mkdir`, `rename`, `move`, `delete`, plus `thumb` (WebP `t` 320 / `p` 1280 px: sharp for images, the Photos HEIC decoder `decodeHeifFrame`, PDFs page 1 via `pdftoppm`; cached in `FILES_CACHE` keyed by sha1(path + size + mtime), generated through the Photos 2-slot `runLimited` queue, a `.fail` marker remembers undecodable files, a missing `pdftoppm` is remembered for the process lifetime → 404 `No preview`), `stat` (bounded recursive totals for the delete confirm) and `status` (`{ online, root, disk }`). Dot-entries, `#recycle`, `#snapshot`, `@eaDir` and `*.part` are hidden everywhere (`isHiddenName`). **Mount guard:** with `NAS_REQUIRE_MOUNT=1` a root that is not a mount point (`lib/mount.ts`: same `st_dev` as its parent) is offline — every `/api/files` route answers 503 `{ error: 'Storage offline', offline: true }` (mutating routes after `assertSameOrigin`), and Photos' `checkLibraryOnline()` / scan treat `PHOTOS_ROOT` the same way. A missing root is offline even without the flag.
 
 ### Color system
 

@@ -7,7 +7,7 @@ import type { ReadableStream as NodeWebReadableStream } from 'stream/web'
 import busboy from 'busboy'
 import { assertSameOrigin, intParam } from '@/lib/http'
 import {
-  resolveSafe, safeUploadName, uploadTempPath, commitNoClobber, filesErrorResponse, FilesError,
+  assertStorageOnline, resolveSafe, safeUploadName, uploadTempPath, commitNoClobber, filesErrorResponse, FilesError,
 } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
@@ -33,6 +33,8 @@ function gib(bytes: number): string {
 export async function POST(request: Request) {
   const denied = assertSameOrigin(request)
   if (denied) return denied
+  const offline = await assertStorageOnline()
+  if (offline) return offline
 
   const { searchParams } = new URL(request.url)
   let dirAbs: string

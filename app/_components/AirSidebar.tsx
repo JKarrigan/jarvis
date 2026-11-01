@@ -33,7 +33,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
       {link('/air-quality', 'Air Quality')}
       {link('/events', 'AQ Events', true)}
       {link('/lights', 'Lights')}
-      {link('/files', 'Files')}
+      {link('/media/documents', 'Documents')}
       {link('/logs', 'Logs')}
       {link('/settings', 'Settings')}
       {link('/system', 'System')}
