@@ -1,5 +1,6 @@
 import 'server-only'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { execFile } from 'child_process'
 import sharp, { type Sharp } from 'sharp'
@@ -37,17 +38,30 @@ export function thumbSource(ext: string): Source | null {
 
 class PdftoppmMissing extends Error {}
 
-function pdfFirstPage(abs: string, edge: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    execFile(PDFTOPPM, ['-f', '1', '-l', '1', '-scale-to', String(edge), '-png', '-singlefile', abs, '-'],
-      { encoding: 'buffer', timeout: PDF_TIMEOUT_MS, maxBuffer: PDF_MAX_BUFFER, killSignal: 'SIGKILL' },
-      (err, stdout, stderr) => {
-        if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return reject(new PdftoppmMissing())
-        if (err) return reject(new Error(`pdftoppm failed: ${stderr.toString('utf8').trim().slice(-300) || err.message}`))
-        if (!stdout.length) return reject(new Error('pdftoppm produced no image'))
-        resolve(stdout)
-      })
-  })
+/**
+ * Renders page 1 of a PDF to PNG. pdftoppm's "-" output root is not stdout with
+ * `-singlefile` (poppler 25 writes a file literally named "-.png" in the cwd), so
+ * render into a private temp directory and read the file back.
+ */
+async function pdfFirstPage(abs: string, edge: number): Promise<Buffer> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pdfthumb-'))
+  const root = path.join(dir, 'page')
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile(PDFTOPPM, ['-f', '1', '-l', '1', '-scale-to', String(edge), '-png', '-singlefile', abs, root],
+        { encoding: 'buffer', timeout: PDF_TIMEOUT_MS, maxBuffer: PDF_MAX_BUFFER, killSignal: 'SIGKILL' },
+        (err, _stdout, stderr) => {
+          if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return reject(new PdftoppmMissing())
+          if (err) return reject(new Error(`pdftoppm failed: ${stderr.toString('utf8').trim().slice(-300) || err.message}`))
+          resolve()
+        })
+    })
+    const png = await fs.promises.readFile(`${root}.png`).catch(() => null)
+    if (!png?.length) throw new Error('pdftoppm produced no image')
+    return png
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true })
+  }
 }
 
 async function source(abs: string, kind: Source, edge: number): Promise<Sharp> {
