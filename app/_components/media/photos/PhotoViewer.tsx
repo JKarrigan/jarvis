@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import {
-  deleteForever, errorText, fetchJson, fileUrl, formatTaken, isAbort, restorePhoto, setFavorite, thumbUrl, trashPhoto,
+  deleteForever, errorText, fetchJson, fileUrl, formatTaken, isAbort, restorePhoto, setFavorite, setTags, thumbUrl, trashPhoto,
   type PhotoDetail, type PhotoItem,
 } from './api'
 import { useBodyScrollLock, useIsDesktop } from './hooks'
@@ -26,7 +26,7 @@ type Props = {
   /** Move to another item (replaces the `?v=` history entry). */
   onGo: (id: string) => void
   onClose: () => void
-  /** Local update of an item (optimistic favorite). */
+  /** Local update of an item (optimistic favorite / tags). */
   onItemChange: (id: string, patch: Partial<PhotoItem>) => void
   /** The item left this list (trashed / restored / deleted forever). */
   onRemoved: (id: string) => void
@@ -81,6 +81,11 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
   const [confirm, setConfirm] = useState<null | 'trash' | 'forever'>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  /** Bumped by the T key: the info panel focuses its tag input. */
+  const [tagFocus, setTagFocus] = useState(0)
+  const tagSeq = useRef(0)
+  /** Open/close info by hand; forgets a pending T focus so reopening doesn't pop the keyboard. */
+  const showInfo = useCallback((open: boolean) => { setInfo(open); setTagFocus(0) }, [])
   const zoomRef = useRef<ZoomHandle>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const closeBtn = useRef<HTMLButtonElement>(null)
@@ -136,6 +141,26 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
     }
   }, [item, mode, onItemChange, soloHere, flash])
 
+  /** Optimistic tag edit from the info panel; the newest request wins, errors revert. */
+  const updateTags = useCallback(async (next: string[]) => {
+    if (!item || mode === 'trash') return
+    const id = item.id
+    const before = item.tags
+    const seq = ++tagSeq.current
+    const patch = (tags: string[]) => {
+      onItemChange(id, { tags })
+      setSolo(s => (s && s.item && s.item.id === id ? { ...s, item: { ...s.item, tags } } : s))
+    }
+    patch(next)
+    try {
+      const saved = await setTags(id, next)
+      if (seq === tagSeq.current) patch(saved.tags)
+    } catch (e) {
+      if (seq === tagSeq.current) patch(before)
+      flash(errorText(e))
+    }
+  }, [item, mode, onItemChange, flash])
+
   /** After the current item leaves the list: show the next (or previous), else close. */
   const leave = useCallback((removedId: string) => {
     const target = next ?? prev
@@ -166,7 +191,8 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
     }
   }, [item, leave, flash])
 
-  // Keyboard: Esc close (info first), ←/→, F favorite, I info, Space play/pause.
+  // Keyboard: Esc close (info first), ←/→, F favorite, I info, T tag (opens info, focuses the
+  // tag input), Space play/pause.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (confirm || e.metaKey || e.ctrlKey || e.altKey) return
@@ -175,13 +201,19 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
       switch (e.key) {
         case 'Escape':
           e.preventDefault()
-          if (info) setInfo(false)
+          if (info) showInfo(false)
           else onClose()
           break
         case 'ArrowRight': e.preventDefault(); go(1); break
         case 'ArrowLeft': e.preventDefault(); go(-1); break
         case 'f': case 'F': e.preventDefault(); void toggleFavorite(); break
-        case 'i': case 'I': e.preventDefault(); setInfo(v => !v); break
+        case 'i': case 'I': e.preventDefault(); showInfo(!info); break
+        case 't': case 'T':
+          if (!item || mode !== 'library') return
+          e.preventDefault()
+          setInfo(true)
+          setTagFocus(n => n + 1)
+          break
         case ' ': {
           const v = videoRef.current
           if (!v || item?.kind !== 'video' || t?.tagName === 'VIDEO') return
@@ -194,7 +226,7 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [confirm, info, go, onClose, toggleFavorite, item?.kind])
+  }, [confirm, info, go, onClose, toggleFavorite, item, mode, showInfo])
 
   const onTap = useCallback((fx: number) => {
     if (fx < 0.2 && prev) go(-1)
@@ -219,6 +251,15 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2) go(dx < 0 ? 1 : -1)
     else if (dy > 110 && dy > Math.abs(dx) * 1.2) onClose()
   }
+
+  const infoPanel = (it: PhotoItem) => (
+    <InfoPanel
+      item={it}
+      onClose={() => showInfo(false)}
+      onTagsChange={mode === 'library' ? tags => void updateTags(tags) : undefined}
+      tagFocusSignal={tagFocus}
+    />
+  )
 
   const slide = reduce ? 0 : 56
   const taken = item ? formatTaken(item.takenAt).split(' · ') : []
@@ -315,7 +356,7 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
                   </TopButton>
                 </span>
               )}
-              <TopButton label="Info (I)" onClick={() => setInfo(v => !v)} active={info}>
+              <TopButton label="Info (I)" onClick={() => showInfo(!info)} active={info}>
                 <InfoIcon className="h-5 w-5" />
               </TopButton>
               <a
@@ -334,7 +375,7 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
           )}
           {item && mode === 'trash' && (
             <>
-              <TopButton label="Info (I)" onClick={() => setInfo(v => !v)} active={info}>
+              <TopButton label="Info (I)" onClick={() => showInfo(!info)} active={info}>
                 <InfoIcon className="h-5 w-5" />
               </TopButton>
               <button
@@ -383,10 +424,10 @@ export function PhotoViewer({ id, items, mode = 'library', hasMore, onNeedMore, 
           </div>
         )}
 
-        {info && item && !desktop && <InfoPanel item={item} onClose={() => setInfo(false)} />}
+        {info && item && !desktop && infoPanel(item)}
       </div>
 
-      {info && item && desktop && <InfoPanel item={item} onClose={() => setInfo(false)} />}
+      {info && item && desktop && infoPanel(item)}
 
       {confirm === 'trash' && item && (
         <ConfirmDialog

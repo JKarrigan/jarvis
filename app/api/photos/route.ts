@@ -1,10 +1,11 @@
 import { listPhotos, parseCursor, type PhotoQuery } from '@/lib/photos/db'
 import { clampInt, isId, jsonError } from '@/lib/photos/http'
+import { normalizeTag } from '@/lib/photos/tags'
 import '@/lib/photos/scan' // starts the background scheduler on first import
 
 export const dynamic = 'force-dynamic'
 
-// GET /api/photos?cursor&limit&kind&favorite&album&year&month — timeline page, newest first.
+// GET /api/photos?cursor&limit&kind&favorite&album&tag&year&month — timeline page, newest first.
 export async function GET(request: Request) {
   const sp = new URL(request.url).searchParams
   const q: PhotoQuery = { limit: clampInt(sp.get('limit'), 100, 1, 500) }
@@ -28,6 +29,12 @@ export async function GET(request: Request) {
   if (album) {
     if (!isId(album)) return jsonError(400, 'Invalid album id')
     q.album = album
+  }
+  const tag = sp.get('tag')
+  if (tag !== null) {
+    const t = normalizeTag(tag)
+    if (!t) return jsonError(400, 'Invalid tag')
+    q.tag = t
   }
   const year = sp.get('year')
   const month = sp.get('month')

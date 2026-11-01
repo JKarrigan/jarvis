@@ -1,3 +1,4 @@
+import { assertSameOrigin } from '@/lib/http'
 import { createAlbum, getAlbum, listAlbums } from '@/lib/photos/db'
 import { jsonError, parseIdList, parseName, readJsonObject } from '@/lib/photos/http'
 import { markCatalogDirty } from '@/lib/photos/catalog'
@@ -11,6 +12,8 @@ export async function GET() {
 
 // POST /api/photos/albums — { name, photoIds? } → 201 Album
 export async function POST(request: Request) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const body = await readJsonObject(request)
   if (!body) return jsonError(400, 'Invalid JSON body')
   const name = parseName(body.name)

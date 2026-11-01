@@ -2,10 +2,11 @@ import 'server-only'
 import fs from 'fs'
 import path from 'path'
 import { CATALOG_REL, PHOTOS_ROOT, libraryMarkerPresent } from './config'
-import { catalogTablesEmpty, getCatalogSnapshot, importCatalogSnapshot, type CatalogSnapshot } from './db'
+import { catalogTablesEmpty, getCatalogSnapshot, importCatalogSnapshot, tagTableEmpty, type CatalogSnapshot } from './db'
 
-// Favorites and albums are the only state that cannot be rebuilt from the files,
+// Favorites, albums and tags are the only state that cannot be rebuilt from the files,
 // so a copy lives on the NAS next to the photos: PHOTOS_ROOT/.library/catalog.json.
+// `tags` (rel_path → tags) was added later; catalogs without it simply carry no tags.
 
 const DEBOUNCE_MS = 5_000
 const CATALOG_VERSION = 1
@@ -16,7 +17,7 @@ const state: CatalogState = (g.__photos_catalog ??= { timer: null, lastBody: nul
 
 const catalogAbs = () => path.join(PHOTOS_ROOT, CATALOG_REL)
 
-/** Call after any change to favorites, albums or the paths of favorited/album items. */
+/** Call after any change to favorites, albums, tags or the paths of items carrying them. */
 export function markCatalogDirty(): void {
   if (state.timer) clearTimeout(state.timer)
   state.timer = setTimeout(() => {
@@ -31,7 +32,7 @@ export async function writeCatalogNow(): Promise<boolean> {
   while (state.writing) await state.writing
   if (!(await libraryMarkerPresent())) return false
   const snap = getCatalogSnapshot()
-  const body = JSON.stringify({ favorites: snap.favorites, albums: snap.albums }, null, 2)
+  const body = snapshotBody(snap)
   if (body === state.lastBody) return false
   const run = (async () => {
     const dest = catalogAbs()
@@ -45,6 +46,11 @@ export async function writeCatalogNow(): Promise<boolean> {
   state.writing = run
   try { await run } finally { state.writing = null }
   return true
+}
+
+/** What decides whether the file needs rewriting (the snapshot without timestamps). */
+function snapshotBody(snap: CatalogSnapshot): string {
+  return JSON.stringify({ favorites: snap.favorites, albums: snap.albums, tags: snap.tags }, null, 2)
 }
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length < 4096
@@ -67,16 +73,24 @@ function parseCatalog(raw: unknown): CatalogSnapshot | null {
       items: r.items,
     })
   }
-  return { favorites: o.favorites, albums }
+  const tags: CatalogSnapshot['tags'] = {}
+  if (o.tags && typeof o.tags === 'object' && !Array.isArray(o.tags)) {
+    for (const [rel, list] of Object.entries(o.tags as Record<string, unknown>)) {
+      if (isStr(rel) && isStrArr(list)) tags[rel] = list
+    }
+  }
+  return { favorites: o.favorites, albums, tags }
 }
 
 /**
- * Restore favorites + albums from the NAS when the local tables hold none
- * (fresh Pi, restored SD card). Call after indexing so rel_paths can be matched.
- * Returns the number of rows touched (0 when nothing was imported).
+ * Restore favorites + albums from the NAS when the local tables hold none, and tags when
+ * no item has any (fresh Pi, restored SD card, or the first scan after tags shipped).
+ * Call after indexing so rel_paths can be matched. Returns the number of rows touched
+ * (0 when nothing was imported).
  */
 export async function importCatalogIfEmpty(): Promise<number> {
-  if (!catalogTablesEmpty()) return 0
+  const parts = { library: catalogTablesEmpty(), tags: tagTableEmpty() }
+  if (!parts.library && !parts.tags) return 0
   let text: string
   try { text = await fs.promises.readFile(catalogAbs(), 'utf8') } catch { return 0 }
   let snap: CatalogSnapshot | null = null
@@ -85,9 +99,9 @@ export async function importCatalogIfEmpty(): Promise<number> {
     console.warn('[photos] ignoring unreadable catalog', catalogAbs())
     return 0
   }
-  const n = importCatalogSnapshot(snap)
-  // What we just imported is what's on disk; don't rewrite it.
-  const now = getCatalogSnapshot()
-  state.lastBody = JSON.stringify({ favorites: now.favorites, albums: now.albums }, null, 2)
+  const n = importCatalogSnapshot(snap, parts)
+  // After a full import, what we hold is what's on disk; don't rewrite it. (A partial
+  // import merged with local state, so the next change should write the file.)
+  if (parts.library && parts.tags) state.lastBody = snapshotBody(getCatalogSnapshot())
   return n
 }

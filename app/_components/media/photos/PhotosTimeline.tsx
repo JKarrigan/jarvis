@@ -7,16 +7,17 @@ import {
   errorText, fetchJson, formatBytes, formatCount, monthLabel, relativeTime, runPool, startScan, trashPhoto, MONTHS,
   type PhotoSummary, type ScanStatus,
 } from './api'
-import { useSummary, useToast } from './hooks'
+import { useSummary, useTagParam, useToast } from './hooks'
 import {
   ActionButton, AlbumPickerSheet, BrowserBody, bulkFavorite, OfflineBanner, SelectionBar, Toast, usePhotoBrowser, ViewerHost,
 } from './PhotoBrowser'
 import { ConfirmDialog } from './Dialog'
 import { Menu, menuItemClass, toolbarBtn } from './Menu'
 import { MemoriesRow } from './MemoriesRow'
+import { TagFilterChip, TagFilterMenu, TagSheet } from './Tags'
 import { UploadSheet, useUploader } from './Uploader'
 import {
-  AlbumIcon, CameraIcon, CheckboxIcon, CloseIcon, HeartIcon, MoreIcon, ScanIcon, TrashIcon, UploadIcon,
+  AlbumIcon, CameraIcon, CheckboxIcon, CloseIcon, HeartIcon, MoreIcon, ScanIcon, TagIcon, TrashIcon, UploadIcon,
 } from './icons'
 
 type KindFilter = 'all' | 'image' | 'video' | 'favorites'
@@ -29,8 +30,9 @@ const CHIPS: { value: KindFilter; label: string }[] = [
   { value: 'favorites', label: 'Favorites' },
 ]
 
-function buildQuery(kind: KindFilter, period: Period): string {
+function buildQuery(kind: KindFilter, period: Period, tag: string | null): string {
   const q = new URLSearchParams()
+  if (tag) q.set('tag', tag)
   if (kind === 'image' || kind === 'video') q.set('kind', kind)
   if (kind === 'favorites') q.set('favorite', '1')
   if (period) {
@@ -44,11 +46,14 @@ function buildQuery(kind: KindFilter, period: Period): string {
 export function PhotosTimeline() {
   const [kind, setKind] = useState<KindFilter>('all')
   const [period, setPeriod] = useState<Period>(null)
-  const query = useMemo(() => buildQuery(kind, period), [kind, period])
+  // The tag filter is in the URL (?tag=) so it survives reload and Back.
+  const { tag, setTag } = useTagParam()
+  const query = useMemo(() => buildQuery(kind, period, tag), [kind, period, tag])
   const b = usePhotoBrowser('/api/photos', query)
   const { summary, reload: reloadSummary } = useSummary()
   const { toast, show } = useToast()
   const [picker, setPicker] = useState(false)
+  const [tagSheet, setTagSheet] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -137,8 +142,8 @@ export function PhotosTimeline() {
   }
 
   const offline = summary?.libraryOnline === false || b.offline
-  const emptyLibrary = summary?.total === 0 && kind === 'all' && !period
-  const filtered = kind !== 'all' || period != null
+  const emptyLibrary = summary?.total === 0 && kind === 'all' && !period && !tag
+  const filtered = kind !== 'all' || period != null || tag != null
 
   return (
     <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8">
@@ -230,6 +235,7 @@ export function PhotosTimeline() {
             </button>
           )
         })}
+        <TagFilterMenu current={tag} onPick={setTag} />
         {summary && summary.years.length > 1 && (
           <YearSelect summary={summary} period={period} onPick={setPeriod} />
         )}
@@ -244,10 +250,11 @@ export function PhotosTimeline() {
             <CloseIcon className="h-3.5 w-3.5" />
           </button>
         )}
+        {tag && <TagFilterChip tag={tag} onClear={() => setTag(null)} />}
       </div>
 
       {/* Row/SectionHeader carry the page gutters themselves; undo this page's. */}
-      {!offline && kind === 'all' && !period && (
+      {!offline && kind === 'all' && !period && !tag && (
         <div className="ml-[calc(var(--rail)*-1)] mr-[calc(var(--gx)*-1)]">
           <MemoriesRow onThisDayOnly />
         </div>
@@ -261,7 +268,7 @@ export function PhotosTimeline() {
               <EmptyLibrary onUpload={() => fileInput.current?.click()} offline={offline} />
             ) : (
               <div className="rounded-[16px] border border-border bg-surface px-5 py-10 text-center">
-                <p className="text-[15px] font-semibold text-ink">{kind === 'favorites' ? 'No favourites here yet' : 'Nothing here'}</p>
+                <p className="text-[15px] font-semibold text-ink">{kind === 'favorites' ? 'No favourites here yet' : tag ? `Nothing tagged “${tag}”` : 'Nothing here'}</p>
                 <p className="mt-1 text-[13px] text-white/50">
                   {kind === 'favorites' ? 'Tap the heart on a photo to keep it here.' : filtered ? 'Try another filter.' : ''}
                 </p>
@@ -277,6 +284,7 @@ export function PhotosTimeline() {
       <SelectionBar b={b} viewerOpen={Boolean(b.viewer.viewerId)}>
         <ActionButton label="Favorite" icon={<HeartIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => void bulkFavorite(b, show)} />
         <ActionButton label="Add to album" icon={<AlbumIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => setPicker(true)} />
+        <ActionButton label="Tag" icon={<TagIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => setTagSheet(true)} />
         <ActionButton label="Delete" danger icon={<TrashIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => setConfirmDelete(true)} />
       </SelectionBar>
 
@@ -287,6 +295,7 @@ export function PhotosTimeline() {
           onDone={(t, tone) => { show(t, tone); if (tone !== 'error') b.sel.clear() }}
         />
       )}
+      {tagSheet && <TagSheet b={b} filterTag={tag} onClose={() => setTagSheet(false)} onDone={show} />}
       {confirmDelete && (
         <ConfirmDialog
           title={`Delete ${formatCount(ids.length, 'item')}?`}

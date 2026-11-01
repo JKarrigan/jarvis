@@ -52,6 +52,20 @@ export const CheckboxIcon = ({ checked, ...p }: IconProps & { checked?: boolean 
     {checked && <path d="m6.6 10.2 2.3 2.3 4.6-5" stroke="var(--ink-on-accent, #15101f)" strokeWidth={2} />}
   </svg>
 )
+/** Tri-state: `checked` true / false / 'mixed' (a dash, for "some of the selection"). */
+export const TriCheckIcon = ({ state, ...p }: IconProps & { state: boolean | 'mixed' }) => (
+  <svg {...base(p)}>
+    <rect x="3.5" y="3.5" width="13" height="13" rx="3.2" fill={state ? 'currentColor' : 'none'} />
+    {state === true && <path d="m6.6 10.2 2.3 2.3 4.6-5" stroke="var(--ink-on-accent, #15101f)" strokeWidth={2} />}
+    {state === 'mixed' && <path d="M6.8 10h6.4" stroke="var(--ink-on-accent, #15101f)" strokeWidth={2} />}
+  </svg>
+)
+export const TagIcon = (p: IconProps) => (
+  <svg {...base(p)}><path d="M3 4.6v4.6c0 .42.17.83.47 1.13l6.2 6.2a1.6 1.6 0 0 0 2.26 0l4.6-4.6a1.6 1.6 0 0 0 0-2.26l-6.2-6.2A1.6 1.6 0 0 0 9.2 3H4.6A1.6 1.6 0 0 0 3 4.6Z" /><circle cx="6.8" cy="6.8" r="1.1" /></svg>
+)
+export const ChevronDownIcon = (p: IconProps) => (
+  <svg {...base(p)}><path d="m5.5 8 4.5 4.5L14.5 8" /></svg>
+)
 export const MoreIcon = (p: IconProps) => (
   <svg {...base({ fill: 'currentColor', stroke: 'none', ...p })}><circle cx="4.5" cy="10" r="1.5" /><circle cx="10" cy="10" r="1.5" /><circle cx="15.5" cy="10" r="1.5" /></svg>
 )

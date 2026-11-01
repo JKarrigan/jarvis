@@ -1,3 +1,4 @@
+import { assertSameOrigin } from '@/lib/http'
 import fs from 'fs'
 import path from 'path'
 import { Readable, type Writable } from 'stream'
@@ -18,6 +19,8 @@ const MAX_FILE_BYTES = 20 * 1024 ** 3
 // POST /api/photos/upload — multipart, many files. Each file is written to PHOTOS_ROOT/.uploading,
 // deduplicated by hash and moved to YYYY/MM/<name>. Returns { results: UploadResult[] } in file order.
 export async function POST(request: Request) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const contentType = request.headers.get('content-type')
   if (!contentType?.startsWith('multipart/form-data')) return jsonError(415, 'Expected multipart/form-data')
   if (!request.body) return jsonError(400, 'Empty body')

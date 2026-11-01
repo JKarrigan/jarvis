@@ -1,3 +1,4 @@
+import { assertSameOrigin } from '@/lib/http'
 import { deleteAlbum, getAlbum, getPhotoRow, photoInAlbum, updateAlbum } from '@/lib/photos/db'
 import { isId, jsonError, parseName, readJsonObject } from '@/lib/photos/http'
 import { markCatalogDirty } from '@/lib/photos/catalog'
@@ -17,6 +18,8 @@ export async function GET(_request: Request, { params }: Ctx) {
 
 // PATCH /api/photos/albums/[id] — { name?, coverId?: id | null }
 export async function PATCH(request: Request, { params }: Ctx) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const { id } = await params
   if (!isId(id)) return jsonError(400, 'Invalid id')
   const body = await readJsonObject(request)
@@ -50,7 +53,9 @@ export async function PATCH(request: Request, { params }: Ctx) {
 }
 
 // DELETE /api/photos/albums/[id] — removes the album only; photos stay in the library.
-export async function DELETE(_request: Request, { params }: Ctx) {
+export async function DELETE(request: Request, { params }: Ctx) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const { id } = await params
   if (!isId(id)) return jsonError(400, 'Invalid id')
   if (!deleteAlbum(id)) return jsonError(404, 'Not found')

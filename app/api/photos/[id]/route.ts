@@ -1,5 +1,7 @@
-import { getPhotoDetail, setFavorite } from '@/lib/photos/db'
+import { getPhotoDetail, setFavorite, setPhotoTags } from '@/lib/photos/db'
 import { isId, jsonError, readJsonObject } from '@/lib/photos/http'
+import { assertSameOrigin } from '@/lib/http'
+import { MAX_TAGS_PER_ITEM, parseTagList } from '@/lib/photos/tags'
 import { markCatalogDirty } from '@/lib/photos/catalog'
 import { StoreError, deletePermanently, restorePhoto, trashPhoto } from '@/lib/photos/store'
 
@@ -16,15 +18,22 @@ export async function GET(_request: Request, { params }: Ctx) {
   return Response.json(item, { headers: { 'Cache-Control': 'no-store' } })
 }
 
-// PATCH /api/photos/[id] — { favorite: boolean }
+// PATCH /api/photos/[id] — { favorite?: boolean, tags?: string[] } (at least one; tags replace the item's tags)
 export async function PATCH(request: Request, { params }: Ctx) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const { id } = await params
   if (!isId(id)) return jsonError(400, 'Invalid id')
   const body = await readJsonObject(request)
-  if (!body || typeof body.favorite !== 'boolean' || Object.keys(body).length !== 1) {
-    return jsonError(400, 'Body must be { "favorite": boolean }')
-  }
-  if (!setFavorite(id, body.favorite)) return jsonError(404, 'Not found')
+  const usage = `Body must be { "favorite"?: boolean, "tags"?: string[] } (tags: 1–40 characters, max ${MAX_TAGS_PER_ITEM})`
+  if (!body || Object.keys(body).some(k => k !== 'favorite' && k !== 'tags')) return jsonError(400, usage)
+  const { favorite } = body
+  if (favorite !== undefined && typeof favorite !== 'boolean') return jsonError(400, usage)
+  const tags = body.tags === undefined ? undefined : parseTagList(body.tags, MAX_TAGS_PER_ITEM)
+  if (tags === null || (favorite === undefined && tags === undefined)) return jsonError(400, usage)
+
+  if (favorite !== undefined && !setFavorite(id, favorite)) return jsonError(404, 'Not found')
+  if (tags !== undefined && !setPhotoTags(id, tags)) return jsonError(404, 'Not found')
   markCatalogDirty()
   return Response.json(getPhotoDetail(id))
 }

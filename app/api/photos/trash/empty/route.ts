@@ -1,9 +1,12 @@
+import { assertSameOrigin } from '@/lib/http'
 import { emptyTrash } from '@/lib/photos/store'
 
 export const dynamic = 'force-dynamic'
 
 // POST /api/photos/trash/empty — permanently removes every trashed item and its file.
-export async function POST() {
+export async function POST(request: Request) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   const deleted = await emptyTrash()
   return Response.json({ ok: true, deleted })
 }

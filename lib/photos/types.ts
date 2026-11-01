@@ -27,6 +27,8 @@ export interface PhotoItem {
   /** Relative to PHOTOS_ROOT, '/' separated. `.trash/…` or `.missing/…` while trashed. */
   relPath: string
   albumIds?: string[]
+  /** Free-form tags as typed (matched case-insensitively), sorted case-insensitively. */
+  tags: string[]
   /** Set only for items in Recently deleted. */
   trashedAt?: number
   /** True when the row is trashed because the file disappeared (cannot be restored). */
@@ -42,6 +44,12 @@ export interface PhotoDetail extends PhotoItem {
   indexedAt: number
   albumIds: string[]
   albums: { id: string; name: string }[]
+}
+
+/** `GET /api/photos/tags` — one entry per tag on live items. */
+export interface PhotoTagCount {
+  tag: string
+  count: number
 }
 
 export interface PhotoPage {
@@ -117,7 +125,7 @@ export interface ScanStatus {
   updated: number
   moved: number
   missing: number
-  /** Rows restored from the NAS catalog (favorites + album memberships). */
+  /** Rows restored from the NAS catalog (favorites + album memberships + tags). */
   catalogImported: number
   thumbsPending: number
   thumbsDone: number

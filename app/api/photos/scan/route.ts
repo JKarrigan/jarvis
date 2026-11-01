@@ -1,3 +1,4 @@
+import { assertSameOrigin } from '@/lib/http'
 import { getScanStatusLive, requestScan } from '@/lib/photos/scan'
 
 export const dynamic = 'force-dynamic'
@@ -8,7 +9,9 @@ export async function GET() {
 }
 
 // POST /api/photos/scan — start a scan (or queue one follow-up if running). Returns 202 + status.
-export async function POST() {
+export async function POST(request: Request) {
+  const denied = assertSameOrigin(request)
+  if (denied) return denied
   requestScan()
   return Response.json(await getScanStatusLive(), { status: 202 })
 }

@@ -3,18 +3,23 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 
+const PANEL_W = 280
+const EDGE = 16
+
 /**
  * Glass popover menu (role=menu). Opens from a trigger; Esc / outside click close and
- * return focus to the trigger; ↑/↓ move between items.
+ * return focus to the trigger; ↑/↓ move between items. `align="auto"` (for triggers whose
+ * position varies, e.g. in a wrapping chip row) keeps the panel inside the viewport.
  */
 export function Menu({ label, trigger, children, align = 'right', triggerClassName = '' }: {
   label: string
   trigger: React.ReactNode
   children: (close: () => void) => React.ReactNode
-  align?: 'left' | 'right'
+  align?: 'left' | 'right' | 'auto'
   triggerClassName?: string
 }) {
   const [open, setOpen] = useState(false)
+  const [autoPos, setAutoPos] = useState<{ left: number; width: number } | null>(null)
   const root = useRef<HTMLDivElement>(null)
   const btn = useRef<HTMLButtonElement>(null)
   const id = useId()
@@ -48,7 +53,17 @@ export function Menu({ label, trigger, children, align = 'right', triggerClassNa
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? id : undefined}
-        onClick={() => setOpen(o => !o)}
+        onClick={() => {
+          if (align === 'auto' && !open && btn.current) {
+            // Measured on open: left edge under the trigger, clamped to the viewport gutters.
+            const r = btn.current.getBoundingClientRect()
+            const vw = document.documentElement.clientWidth
+            const width = Math.min(PANEL_W, vw - EDGE * 2)
+            const left = Math.min(Math.max(r.left, EDGE), vw - EDGE - width)
+            setAutoPos({ left: left - r.left, width })
+          }
+          setOpen(o => !o)
+        }}
         className={triggerClassName}
       >
         {trigger}
@@ -64,6 +79,7 @@ export function Menu({ label, trigger, children, align = 'right', triggerClassNa
             exit={{ opacity: 0, y: -6, scale: 0.98 }}
             transition={{ duration: 0.14 }}
             className={`absolute top-[calc(100%+8px)] z-50 w-[280px] overflow-hidden rounded-[16px] border border-white/10 bg-[#141119]/95 p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.55)] backdrop-blur-xl ${align === 'right' ? 'right-0' : 'left-0'}`}
+            style={align === 'auto' && autoPos ? { left: autoPos.left, width: autoPos.width } : undefined}
           >
             {children(() => setOpen(false))}
           </motion.div>

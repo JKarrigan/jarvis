@@ -6,9 +6,10 @@ import { deleteAlbum, errorText, fetchJson, formatCount, isAbort, PhotosApiError
 import { useToast } from './hooks'
 import { ActionButton, AlbumPickerSheet, BrowserBody, bulkFavorite, SelectionBar, Toast, usePhotoBrowser, ViewerHost } from './PhotoBrowser'
 import { ConfirmDialog, NameDialog } from './Dialog'
+import { TagSheet } from './Tags'
 import { BackPill } from './AlbumsView'
 import { toolbarBtn } from './Menu'
-import { AlbumIcon, CheckboxIcon, CoverIcon, HeartIcon, PencilIcon, RemoveIcon, TrashIcon } from './icons'
+import { AlbumIcon, CheckboxIcon, CoverIcon, HeartIcon, PencilIcon, RemoveIcon, TagIcon, TrashIcon } from './icons'
 
 /** /media/photos/albums/[id] — the timeline grid filtered to one album. */
 export function AlbumDetail({ id }: { id: string }) {
@@ -17,7 +18,7 @@ export function AlbumDetail({ id }: { id: string }) {
   const { toast, show } = useToast()
   const [album, setAlbum] = useState<{ id: string; data: Album | null; error: string | null; status?: number } | null>(null)
   const [seq, setSeq] = useState(0)
-  const [dialog, setDialog] = useState<null | 'rename' | 'delete' | 'picker'>(null)
+  const [dialog, setDialog] = useState<null | 'rename' | 'delete' | 'picker' | 'tags'>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -117,6 +118,7 @@ export function AlbumDetail({ id }: { id: string }) {
       <SelectionBar b={b} viewerOpen={Boolean(b.viewer.viewerId)}>
         <ActionButton label="Favorite" icon={<HeartIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => void bulkFavorite(b, show)} />
         <ActionButton label="Add to album" icon={<AlbumIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => setDialog('picker')} />
+        <ActionButton label="Tag" icon={<TagIcon className="h-5 w-5" />} disabled={ids.length === 0} onClick={() => setDialog('tags')} />
         <ActionButton label="Set cover" icon={<CoverIcon className="h-5 w-5" />} disabled={ids.length !== 1} onClick={() => void setCover()} />
         <ActionButton label="Remove" danger icon={<RemoveIcon className="h-5 w-5" />} disabled={ids.length === 0 || busy} onClick={() => void removeSelected()} />
       </SelectionBar>
@@ -129,6 +131,7 @@ export function AlbumDetail({ id }: { id: string }) {
           onDone={(t, tone) => { show(t, tone); if (tone !== 'error') b.sel.clear() }}
         />
       )}
+      {dialog === 'tags' && <TagSheet b={b} onClose={() => setDialog(null)} onDone={show} />}
       {dialog === 'rename' && a?.data && (
         <NameDialog
           title="Rename album"

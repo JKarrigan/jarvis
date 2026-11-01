@@ -1,9 +1,9 @@
 // Client helpers for the Photos API (app/api/photos/**). Client-safe: no server imports.
 
-import type { Album, PhotoDetail, PhotoItem, PhotoPage, PhotoSummary, ScanStatus, ThumbSize } from '@/lib/photos/types'
+import type { Album, PhotoDetail, PhotoItem, PhotoPage, PhotoSummary, PhotoTagCount, ScanStatus, ThumbSize } from '@/lib/photos/types'
 import { PHOTO_IMAGE_EXTS, PHOTO_VIDEO_EXTS } from '@/lib/photos/types'
 
-export type { Album, PhotoDetail, PhotoItem, PhotoPage, PhotoSummary, ScanStatus }
+export type { Album, PhotoDetail, PhotoItem, PhotoPage, PhotoSummary, PhotoTagCount, ScanStatus }
 
 /** Error carrying the HTTP status (503 = library offline). */
 export class PhotosApiError extends Error {
@@ -65,6 +65,12 @@ export function streamUrl(id: string, t = 0): string {
 
 export const setFavorite = (id: string, favorite: boolean) =>
   sendJson<PhotoDetail>(`/api/photos/${id}`, 'PATCH', { favorite })
+/** Replace one item's tags; the response carries the stored spellings. */
+export const setTags = (id: string, tags: string[]) =>
+  sendJson<PhotoDetail>(`/api/photos/${id}`, 'PATCH', { tags })
+/** Bulk add/remove tags on up to 1000 items. */
+export const changeTags = (ids: string[], add: string[], remove: string[]) =>
+  sendJson<{ ok: true; changed: number }>('/api/photos/tags', 'POST', { ids, add, remove })
 export const trashPhoto = (id: string) => sendJson<{ ok: true }>(`/api/photos/${id}`, 'DELETE')
 export const restorePhoto = (id: string) => sendJson<{ ok: true }>(`/api/photos/${id}?restore=1`, 'DELETE')
 export const deleteForever = (id: string) => sendJson<{ ok: true }>(`/api/photos/${id}?permanent=1`, 'DELETE')

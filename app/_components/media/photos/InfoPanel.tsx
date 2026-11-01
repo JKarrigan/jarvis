@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { formatTime } from '../playerUi'
 import { errorText, fetchJson, formatBytes, formatTaken, isAbort, type PhotoDetail, type PhotoItem } from './api'
 import { CloseIcon, MapPinIcon } from './icons'
+import { TagChips, TagEditor } from './Tags'
 
 function Row({ label, children, mono = false }: { label: string; children: React.ReactNode; mono?: boolean }) {
   return (
@@ -17,9 +18,16 @@ function Row({ label, children, mono = false }: { label: string; children: React
 
 /**
  * Metadata for the viewer's current item: date, camera, dimensions, size, duration, file
- * path, map link and albums. Right-hand panel on desktop, bottom sheet on phones.
+ * path, map link, albums and tags. Right-hand panel on desktop, bottom sheet on phones.
+ * Tags are editable when `onTagsChange` is given (not in the trash); `tagFocusSignal`
+ * bumps focus the tag input (the viewer's T key).
  */
-export function InfoPanel({ item, onClose }: { item: PhotoItem; onClose: () => void }) {
+export function InfoPanel({ item, onClose, onTagsChange, tagFocusSignal = 0 }: {
+  item: PhotoItem
+  onClose: () => void
+  onTagsChange?: (tags: string[]) => void
+  tagFocusSignal?: number
+}) {
   const [detail, setDetail] = useState<{ id: string; data: PhotoDetail | null; error: string | null } | null>(null)
 
   useEffect(() => {
@@ -78,6 +86,13 @@ export function InfoPanel({ item, onClose }: { item: PhotoItem; onClose: () => v
               ))}
             </span>
           </Row>
+        )}
+        {onTagsChange ? (
+          <Row label="Tags">
+            <TagEditor tags={item.tags} onChange={onTagsChange} focusSignal={tagFocusSignal} />
+          </Row>
+        ) : item.tags.length > 0 && (
+          <Row label="Tags"><TagChips tags={item.tags} /></Row>
         )}
         <Row label="File" mono>{item.relPath}</Row>
       </dl>

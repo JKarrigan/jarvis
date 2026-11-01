@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { errorText, fetchJson, isAbort, PhotosApiError, type Album, type PhotoItem, type PhotoPage, type PhotoSummary } from './api'
+import { normalizeTag } from '@/lib/photos/tags'
+import {
+  errorText, fetchJson, isAbort, PhotosApiError, type Album, type PhotoItem, type PhotoPage, type PhotoSummary, type PhotoTagCount,
+} from './api'
 
 const PAGE_SIZE = 120
 const NO_ITEMS: PhotoItem[] = []
@@ -76,6 +79,11 @@ export function usePhotoPages(endpoint: string, query: string) {
     const set = new Set(ids)
     setState(s => (s && s.key === key ? { ...s, items: s.items.map(i => (set.has(i.id) ? { ...i, ...patch } : i)) } : s))
   }, [key])
+  /** Per-item local edit (bulk tag changes differ per item). */
+  const updateItems = useCallback((ids: Iterable<string>, fn: (item: PhotoItem) => PhotoItem) => {
+    const set = new Set(ids)
+    setState(s => (s && s.key === key ? { ...s, items: s.items.map(i => (set.has(i.id) ? fn(i) : i)) } : s))
+  }, [key])
   const removeItems = useCallback((ids: Iterable<string>) => {
     const set = new Set(ids)
     setState(s => (s && s.key === key ? { ...s, items: s.items.filter(i => !set.has(i.id)) } : s))
@@ -91,6 +99,7 @@ export function usePhotoPages(endpoint: string, query: string) {
     loadMore,
     reload,
     patchItems,
+    updateItems,
     removeItems,
   }
 }
@@ -130,6 +139,46 @@ export function useAlbums(enabled = true) {
     loading: !state || state.seq !== seq,
     reload,
   }
+}
+
+/** `/api/photos/tags` (tag + item count, most used first); `enabled` fetches only while a menu/sheet is open. */
+export function useTagCounts(enabled = true) {
+  const [state, setState] = useState<{ seq: number; tags: PhotoTagCount[]; error: string | null } | null>(null)
+  const [seq, setSeq] = useState(0)
+  useEffect(() => {
+    if (!enabled) return
+    const ctrl = new AbortController()
+    fetchJson<PhotoTagCount[]>('/api/photos/tags', { signal: ctrl.signal })
+      .then(tags => setState({ seq, tags, error: null }))
+      .catch(e => { if (!isAbort(e)) setState({ seq, tags: [], error: errorText(e) }) })
+    return () => ctrl.abort()
+  }, [enabled, seq])
+  const reload = useCallback(() => setSeq(n => n + 1), [])
+  return {
+    /** Last response (kept while a reload is in flight), null before the first. */
+    tags: state?.tags ?? null,
+    error: state?.error ?? null,
+    loading: !state || state.seq !== seq,
+    reload,
+  }
+}
+
+/**
+ * The timeline's tag filter lives in the URL (`?tag=`) so it survives reload and Back.
+ * Picking a tag pushes a history entry (and closes any open viewer); same History API
+ * approach as the viewer, with a fresh state object so Next syncs useSearchParams.
+ */
+export function useTagParam() {
+  const params = useSearchParams()
+  const tag = normalizeTag(params.get('tag'))
+  const setTag = useCallback((next: string | null) => {
+    const url = new URL(window.location.href)
+    if (next) url.searchParams.set('tag', next)
+    else url.searchParams.delete('tag')
+    url.searchParams.delete('v')
+    window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [])
+  return { tag, setTag }
 }
 
 const VIEWER_STATE = 'photosViewer'
