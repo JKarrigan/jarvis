@@ -2,7 +2,6 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import Image from 'next/image'
-import { poster, hueFromId, POSTER_SHEEN } from '../artwork'
 import { formatTime } from '../playerUi'
 import { formatTaken, monthLabel, thumbUrl, type PhotoItem } from './api'
 import { CheckboxIcon, HeartIcon, PlayGlyph } from './icons'
@@ -12,12 +11,12 @@ export const PHOTO_GRID_STYLE: React.CSSProperties = {
   gridTemplateColumns: 'repeat(auto-fill, minmax(calc(var(--grid-min) * 0.7), 1fr))',
 }
 
-/** Thumb with the hue gradient as its placeholder; fades in on load, keeps the gradient on error. */
+/** Thumb over a neutral shimmer placeholder; fades in on load, stays a quiet grey tile on error. */
 export function Thumb({ item, size = 't', className = '', eager = false }: { item: Pick<PhotoItem, 'id' | 'size'>; size?: 't' | 'p'; className?: string; eager?: boolean }) {
   const [state, setState] = useState<'loading' | 'loaded' | 'error'>('loading')
   const px = size === 't' ? 400 : 1600
   return (
-    <div className={`absolute inset-0 overflow-hidden ${className}`} style={{ background: poster(hueFromId(item.id)) }}>
+    <div className={`absolute inset-0 overflow-hidden bg-white/[0.06] ${state === 'loading' ? 'reel-shimmer' : ''} ${className}`}>
       {state !== 'error' && (
         <Image
           src={thumbUrl(item, size)}
@@ -33,7 +32,6 @@ export function Thumb({ item, size = 't', className = '', eager = false }: { ite
           className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${state === 'loaded' ? 'opacity-100' : 'opacity-0'}`}
         />
       )}
-      {state !== 'loaded' && <div className="absolute inset-0" style={{ background: POSTER_SHEEN }} />}
     </div>
   )
 }
