@@ -144,3 +144,50 @@ describe('thumbCacheKey', () => {
     expect(files.thumbCachePath(k)).toBe(path.join(files.FILES_CACHE, k.slice(0, 2), `${k}.webp`))
   })
 })
+
+describe('deleteEntry and the share recycle bin', () => {
+  const write = (rel: string, body = 'x') => {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true })
+    fs.writeFileSync(path.join(root, rel), body)
+  }
+
+  it('deletes permanently when the share has no #recycle', async () => {
+    // The shared fixture tree has a #recycle (hidden-entry tests): set it aside here.
+    const bin = path.join(root, '#recycle')
+    const held = path.join(root, 'recycle-held')
+    const hadBin = fs.existsSync(bin)
+    if (hadBin) fs.renameSync(bin, held)
+    try {
+      write('bin-test/gone.txt')
+      expect(await files.recycleAvailable()).toBe(false)
+      expect(await files.deleteEntry('bin-test/gone.txt')).toEqual({ recycled: false })
+      expect(fs.existsSync(path.join(root, 'bin-test/gone.txt'))).toBe(false)
+    } finally {
+      if (hadBin) fs.renameSync(held, bin)
+    }
+  })
+
+  it('moves files and folders into #recycle/<folder> and never overwrites earlier copies', async () => {
+    fs.mkdirSync(path.join(root, '#recycle'), { recursive: true })
+    expect(await files.recycleAvailable()).toBe(true)
+
+    write('bin-test/Tax/return.pdf', 'first')
+    expect(await files.deleteEntry('bin-test/Tax/return.pdf')).toEqual({ recycled: true })
+    write('bin-test/Tax/return.pdf', 'second')
+    await files.deleteEntry('bin-test/Tax/return.pdf')
+    const binDir = path.join(root, '#recycle/bin-test/Tax')
+    expect(fs.readFileSync(path.join(binDir, 'return.pdf'), 'utf8')).toBe('first')
+    expect(fs.readFileSync(path.join(binDir, 'return (2).pdf'), 'utf8')).toBe('second')
+
+    write('bin-test/Old/a.txt')
+    expect(await files.deleteEntry('bin-test/Old')).toEqual({ recycled: true })
+    expect(fs.existsSync(path.join(root, 'bin-test/Old'))).toBe(false)
+    expect(fs.existsSync(path.join(root, '#recycle/bin-test/Old/a.txt'))).toBe(true)
+  })
+
+  it('removes an empty folder outright with recursive=false', async () => {
+    fs.mkdirSync(path.join(root, 'bin-test/Empty'), { recursive: true })
+    expect(await files.deleteEntry('bin-test/Empty', { recursive: false })).toEqual({ recycled: false })
+    expect(fs.existsSync(path.join(root, '#recycle/bin-test/Empty'))).toBe(false)
+  })
+})

@@ -384,6 +384,7 @@ export function DocumentsBrowser() {
       {dialog?.kind === 'delete' && (
         <DeleteDialog
           items={dialog.items}
+          recycle={status?.recycle === true}
           onCancel={() => { setDialog(null); focusList() }}
           onDone={(deleted, errors) => {
             setDialog(null)

@@ -9,12 +9,14 @@ type Inside = { key: string; stat: FolderStat | null }
 
 /**
  * One confirmation per delete. For folders it says what is inside (from
- * `/api/files/stat`, falling back to the listing's child count), and it says where a
- * copy might survive: deletion is permanent here, but Synology's #recycle keeps one when
- * the share's recycle bin is enabled.
+ * `/api/files/stat`, falling back to the listing's child count), and it says whether the
+ * items go to the NAS recycle bin (the server moves them into the share's #recycle when
+ * it exists; NFS deletes would otherwise bypass Synology's bin) or are gone for good.
  */
-export function DeleteDialog({ items: picked, onDone, onCancel }: {
+export function DeleteDialog({ items: picked, recycle, onDone, onCancel }: {
   items: DocItem[]
+  /** The share has a recycle bin (from /api/files/status): deletes are recoverable in DSM. */
+  recycle: boolean
   /** Called after the attempt with the paths that were deleted and the errors. */
   onDone: (deleted: string[], errors: string[]) => void
   onCancel: () => void
@@ -82,10 +84,12 @@ export function DeleteDialog({ items: picked, onDone, onCancel }: {
       onCancel={onCancel}
       body={
         <div className="space-y-2.5">
-          <p><span className="font-semibold text-ink">{subject}</span> will be deleted from the NAS{folders.length ? ', with everything inside' : ''}.</p>
+          <p><span className="font-semibold text-ink">{subject}</span> will be {recycle ? 'moved to the NAS recycle bin' : 'deleted from the NAS'}{folders.length ? ', with everything inside' : ''}.</p>
           {contents && <p aria-live="polite">{contents}</p>}
           <p className="text-[13px] text-white/50">
-            This can’t be undone here. If the recycle bin is turned on for the documents share in Synology, a copy is kept in its #recycle folder.
+            {recycle
+              ? 'You can restore it from the Recycle Bin in Synology’s File Station (documents › #recycle) until the NAS empties it.'
+              : 'This can’t be undone: the documents share has no recycle bin. Turn it on in Synology (Shared Folder › documents › Edit) to make deletes recoverable.'}
           </p>
         </div>
       }

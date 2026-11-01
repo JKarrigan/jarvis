@@ -120,7 +120,7 @@ export function statFolder(path: string, signal?: AbortSignal): Promise<FolderSt
   return request<FolderStat>(`/api/files/stat?${q({ path })}`, { signal })
 }
 
-export interface StorageStatus { online: boolean; root?: string; disk?: DiskInfo | null }
+export interface StorageStatus { online: boolean; root?: string; disk?: DiskInfo | null; recycle?: boolean }
 
 export function storageStatus(signal?: AbortSignal): Promise<StorageStatus> {
   return request<StorageStatus>('/api/files/status', { signal })

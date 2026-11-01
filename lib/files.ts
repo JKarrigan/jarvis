@@ -217,12 +217,55 @@ export async function getDiskInfo(mountPath: string): Promise<DiskInfo> {
  * Deletes a file or folder. With `recursive: false` a folder is only removed
  * when it is empty (ENOTEMPTY → 409) — used for the client's no-confirm path.
  */
-export async function deleteEntry(relPath: string | null, { recursive = true }: { recursive?: boolean } = {}): Promise<void> {
+/**
+ * Synology's share recycle bin. NFS deletes bypass it (only SMB/AFP/File Station
+ * deletes land there), so the app moves deleted items into it itself when it
+ * exists: they then show up in DSM's Recycle Bin and follow its retention policy.
+ */
+export const RECYCLE_DIR = '#recycle'
+
+export async function recycleAvailable(): Promise<boolean> {
+  try {
+    return (await fsp.stat(path.join(FILES_ROOT, RECYCLE_DIR))).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/** `dir/name`, or `dir/name (2).ext`, `(3)`… when that is taken. */
+async function freeName(dir: string, name: string): Promise<string> {
+  const dot = name.lastIndexOf('.')
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
+  for (let n = 1; n < 1000; n++) {
+    const candidate = path.join(dir, n === 1 ? name : `${stem} (${n})${ext}`)
+    try { await fsp.lstat(candidate) } catch { return candidate }
+  }
+  return path.join(dir, `${stem} (${randomUUID().slice(0, 8)})${ext}`)
+}
+
+/**
+ * Deletes an entry. With the share's recycle bin present (and `recursive`), the
+ * item is moved to `#recycle/<its folder path>/` instead and `{ recycled: true }`
+ * is returned; otherwise it is removed permanently. `recursive: false` only removes
+ * an empty folder (ENOTEMPTY otherwise) and never needs the recycle bin.
+ */
+export async function deleteEntry(
+  relPath: string | null,
+  { recursive = true }: { recursive?: boolean } = {},
+): Promise<{ recycled: boolean }> {
   const abs = resolveEntry(relPath)
   const stat = await fsp.lstat(abs)
-  if (!stat.isDirectory()) return fsp.unlink(abs)
-  if (recursive) return fsp.rm(abs, { recursive: true })
-  return fsp.rmdir(abs)
+  if (stat.isDirectory() && !recursive) { await fsp.rmdir(abs); return { recycled: false } }
+  if (await recycleAvailable()) {
+    const rel = path.relative(FILES_ROOT, abs)
+    const destDir = path.join(FILES_ROOT, RECYCLE_DIR, path.dirname(rel))
+    await fsp.mkdir(destDir, { recursive: true })
+    await fsp.rename(abs, await freeName(destDir, path.basename(abs)))
+    return { recycled: true }
+  }
+  if (!stat.isDirectory()) await fsp.unlink(abs)
+  else await fsp.rm(abs, { recursive: true })
+  return { recycled: false }
 }
 
 export async function createDirectory(relPath: string | null): Promise<void> {

@@ -24,7 +24,7 @@ export type DiskInfo = { usedBytes: number; totalBytes: number }
 export type FolderStats = { files: number; folders: number; bytes: number; truncated: boolean }
 
 /** `GET /api/files/status` — `disk` is null while offline. */
-export type FilesStatus = { online: boolean; root: 'documents'; disk: DiskInfo | null }
+export type FilesStatus = { online: boolean; root: 'documents'; disk: DiskInfo | null; recycle: boolean }
 
 /** Body of every 503 from `/api/files/*` while the share is not mounted. */
 export type FilesOfflineError = { error: 'Storage offline'; offline: true }

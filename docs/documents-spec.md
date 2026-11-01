@@ -93,8 +93,12 @@ with Range, and Photos has its own `/stream`).
   Skip on conflicts, errors stay with Retry, Cancel all; the page stays usable;
   `beforeunload` warning while uploading.
 - **Delete.** One confirm per action; for folders it states what is inside
-  (from `stat`). Deletion is permanent on the NAS but Synology's `#recycle`
-  keeps a copy when the share's recycle bin is enabled — the confirm says so.
+  (from `stat`). Synology's recycle bin ignores NFS deletes, so when the share
+  has a `#recycle` folder (recycle bin enabled in DSM) the server moves deleted
+  items to `#recycle/<their folder>/` itself (never overwriting earlier copies);
+  they show in File Station's Recycle Bin and follow DSM's retention. Without a
+  recycle bin, deletes are permanent and the confirm says so
+  (`/api/files/status` reports `recycle`).
 - **Offline.** "Documents storage is offline (the NAS share isn't mounted)"
   banner; uploads and edits disabled.
 - Reel look and tokens throughout; accessible dialogs, menus and keyboard
