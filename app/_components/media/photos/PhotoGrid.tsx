@@ -110,14 +110,19 @@ export const PhotoTile = memo(function PhotoTile({ item, selecting, selected, on
         )}
         {badge && <span className="absolute left-1.5 top-1.5">{badge}</span>}
       </div>
-      {selecting && (
-        <span
-          className={`absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full transition ${selected ? 'text-accent' : 'bg-black/30 text-white/85'}`}
-          aria-hidden
-        >
-          <CheckboxIcon checked={selected} className="h-6 w-6" />
-        </span>
-      )}
+      {/* Select circle: always present, so one tap enters selection mode from any tile.
+          Hover-only on mouse devices, faintly visible on touch screens (no hover). */}
+      <span
+        role="button"
+        aria-label={selected ? 'Deselect' : 'Select'}
+        onClick={e => { e.preventDefault(); e.stopPropagation(); onToggle(item.id, e.shiftKey) }}
+        onPointerDown={e => e.stopPropagation()}
+        className={`absolute right-1 top-1 grid h-8 w-8 place-items-center rounded-full transition ${
+          selected ? 'text-accent' : 'bg-black/35 text-white/90 hover:bg-black/60'
+        } ${selecting ? '' : 'opacity-70 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-visible:opacity-100'}`}
+      >
+        <CheckboxIcon checked={selected} className="h-6 w-6" />
+      </span>
       {selected && <span className="pointer-events-none absolute inset-0 rounded-[8px] ring-2 ring-[var(--accent)] md:rounded-[12px]" />}
     </>
   )
