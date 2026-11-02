@@ -1637,6 +1637,28 @@ export async function setPlayed(id: string, on: boolean): Promise<'ok' | 'local'
   }
 }
 
+/**
+ * Clear the Played flag while keeping (setting) the resume position. Jellyfin marks an
+ * audiobook Played when a stop lands near its end and never clears it on later progress
+ * reports; DELETE /UserPlayedItems would also zero the position, so write UserData
+ * directly (10.9+: POST /UserItems/{id}/UserData; older: /Users/{u}/Items/{id}/UserData).
+ */
+export async function setResumePoint(id: string, seconds: number): Promise<'ok' | 'local' | 'failed'> {
+  if (isMockMode()) return 'local'
+  try {
+    const { userId } = await getSession()
+    const json = { Played: false, PlaybackPositionTicks: Math.max(0, Math.round(seconds * 10_000_000)) }
+    let res = await jfFetch(`/UserItems/${enc(id)}/UserData`, { method: 'POST', params: { userId }, json })
+    if (res.status === 404 || res.status === 405) {
+      res = await jfFetch(`/Users/${enc(userId)}/Items/${enc(id)}/UserData`, { method: 'POST', json })
+    }
+    if (res.ok) bustUserData()
+    return res.ok ? 'ok' : 'failed'
+  } catch {
+    return 'failed'
+  }
+}
+
 /** Clear an item's resume position (mark it unplayed) so it leaves Continue Watching. */
 export async function clearResumeProgress(itemId: string): Promise<boolean> {
   return (await setPlayed(itemId, false)) !== 'failed'

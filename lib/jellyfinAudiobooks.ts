@@ -6,7 +6,7 @@ import { cache } from 'react'
 import { ticksToSeconds } from '@/app/_components/media/playback'
 import {
   BROWSER_PROFILE, directStream, fmtBytes, getSession, imageUrl, isItemId, isMockMode, isNotFound,
-  jfJson, jfPost, proxied, setPlayed, upstreamAuthHeader,
+  jfJson, jfPost, proxied, setPlayed, setResumePoint, upstreamAuthHeader,
 } from './jellyfinServer'
 import { getSetting, setSetting } from './db'
 import { folderKey, getBookFolderKeys } from './jellyfinBooks'
@@ -337,6 +337,11 @@ export async function getAudiobookPlayback(id: string): Promise<AudiobookPlaybac
     }
   }
   return { ...common, transcoding: true, playMethodLabel: 'Transcoding', url: proxied(src.TranscodingUrl) }
+}
+
+/** A finished book is being listened to again: clear Played but keep `seconds` as its position. */
+export async function reopenAudiobook(id: string, seconds: number): Promise<boolean> {
+  return (await setResumePoint(id, seconds)) !== 'failed'
 }
 
 /** Mark a book finished (true) or unplayed (false — also clears its resume position). */

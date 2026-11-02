@@ -16,6 +16,8 @@ import { postPlaybackReport, secondsToTicks, type ReportKind } from '../playback
 
 const STORAGE_KEY = 'reel.audiobook.v1'
 const REPORT_INTERVAL_MS = 10_000
+/** A paused screen older than this re-reads the server's position before resuming. */
+const STALE_RESUME_MS = 10 * 60_000
 /** Automatic reloads after a stream error before the player gives up and shows Retry. */
 const MAX_AUTO_RECOVERIES = 2
 const RECOVERY_WINDOW_MS = 60_000
@@ -142,6 +144,10 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
   const lastTimeRef = useRef(0)
   const recoveriesRef = useRef<number[]>([])
   const loadTokenRef = useRef(0)
+  /** The loaded book was flagged Played by Jellyfin: clear that once it starts playing. */
+  const wasFinishedRef = useRef(false)
+  /** Position and time of the last report this tab sent (or of the load). */
+  const lastReportRef = useRef<{ position: number; at: number }>({ position: 0, at: 0 })
   /** Seek + autoplay to apply once the new stream's metadata is in. */
   const pendingRef = useRef<{ time: number; autoplay: boolean } | null>(null)
   useEffect(() => { bookRef.current = book }, [book])
@@ -154,6 +160,7 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     if (!audio || !src) return
     // A dead element reads 0 — report where the listener actually was.
     const position = audio.readyState > 0 ? audio.currentTime : lastTimeRef.current
+    lastReportRef.current = { position, at: Date.now() }
     void postPlaybackReport(kind, {
       ItemId: src.itemId,
       MediaSourceId: src.mediaSourceId,
@@ -163,10 +170,19 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     })
   }, [])
 
+  /** Position has moved since this tab last reported it (so the server lacks it). */
+  const movedSinceReport = useCallback(() => {
+    const audio = audioRef.current
+    const now = audio && audio.readyState > 0 ? audio.currentTime : lastTimeRef.current
+    return Math.abs(now - lastReportRef.current.position) > 1
+  }, [])
+
   const stopSession = useCallback(() => {
-    if (startedRef.current) report('stopped')
+    // A paused tab that hasn't moved has nothing new to say; its 'stopped' would
+    // overwrite a newer position saved from another device.
+    if (startedRef.current && (!audioRef.current?.paused || movedSinceReport())) report('stopped')
     startedRef.current = false
-  }, [report])
+  }, [report, movedSinceReport])
 
   const load = useCallback(async (id: string, opts: { chapterIndex?: number; fromStart?: boolean; startAt?: number; autoplay: boolean }) => {
     const audio = audioRef.current
@@ -183,13 +199,19 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
       const data = (await res.json()) as { book: AudiobookDetail; source: AudiobookPlayback | null }
       if (token !== loadTokenRef.current) return
       const chapter = opts.chapterIndex != null ? data.book.chapters[opts.chapterIndex] : undefined
-      // A finished book (or one parked in its last seconds) restarts rather than resuming at the end.
-      const resume = data.book.finished || data.book.position > data.book.duration - 10 ? 0 : data.book.position
+      // Resume wherever a position is saved, even when Jellyfin flags the book Played
+      // (it sets that near the end and never clears it, which used to discard every
+      // later position). Only a book parked in its last seconds, or with nothing saved
+      // since it finished, starts over.
+      const pos = data.book.position
+      const resume = pos > 0 && pos < data.book.duration - 10 ? pos : 0
+      wasFinishedRef.current = data.book.finished
       const startAt = opts.startAt ?? (chapter ? chapter.start : opts.fromStart ? 0 : resume)
       setBook(data.book)
       setRateState(rateFor(id))
       setTime(startAt)
       lastTimeRef.current = startAt
+      lastReportRef.current = { position: startAt, at: Date.now() }
       writePrefs({ bookId: id })
       sourceRef.current = data.source
       setPlayMethodLabel(data.source?.playMethodLabel ?? null)
@@ -243,9 +265,26 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
     const audio = audioRef.current
     if (!audio || !sourceRef.current) return
     if (statusRef.current === 'error' || audio.error) return retry()
-    if (audio.paused) void audio.play().catch(() => { })
-    else audio.pause()
-  }, [retry])
+    if (!audio.paused) { audio.pause(); return }
+    const b = bookRef.current
+    if (b && Date.now() - lastReportRef.current.at > STALE_RESUME_MS && !movedSinceReport()) {
+      // Paused for a while: another device may have moved on. Pick up the server's
+      // position if it differs, then play.
+      void fetch(`/api/jellyfin/audiobooks/${b.id}/play`, { cache: 'no-store' })
+        .then(r => (r.ok ? r.json() as Promise<{ book: AudiobookDetail }> : null))
+        .then(data => {
+          const pos = data?.book.position ?? 0
+          if (data && bookRef.current?.id === b.id && pos > 0 && pos < b.duration - 10 && Math.abs(pos - audio.currentTime) > 5) {
+            audio.currentTime = pos
+            setTime(pos)
+          }
+        })
+        .catch(() => { })
+        .finally(() => { void audio.play().catch(() => { }) })
+      return
+    }
+    void audio.play().catch(() => { })
+  }, [retry, movedSinceReport])
 
   const seek = useCallback((t: number) => {
     const audio = audioRef.current
@@ -367,6 +406,16 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
       setPlaying(true)
       report(startedRef.current ? 'progress' : 'start')
       startedRef.current = true
+      const b = bookRef.current
+      if (wasFinishedRef.current && b) {
+        // Listening again: un-finish it (keeping the position) so later saves count.
+        wasFinishedRef.current = false
+        void fetch(`/api/jellyfin/audiobooks/${b.id}/finished`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ position: audio.currentTime }),
+        }).then(r => { if (r.ok) setBook(cur => (cur && cur.id === b.id ? { ...cur, finished: false } : cur)) }).catch(() => { })
+      }
     }
     const onPause = () => {
       setPlaying(false)
@@ -445,13 +494,15 @@ export function AudiobookPlayerProvider({ children }: { children: React.ReactNod
 
   // Final position on tab close / leaving the media app.
   useEffect(() => {
-    const onHide = () => { if (startedRef.current) report('stopped') }
+    const onHide = () => {
+      if (startedRef.current && (!audioRef.current?.paused || movedSinceReport())) report('stopped')
+    }
     window.addEventListener('pagehide', onHide)
     return () => {
       window.removeEventListener('pagehide', onHide)
       onHide()
     }
-  }, [report])
+  }, [report, movedSinceReport])
 
   // A movie/episode starting with sound takes over: two soundtracks is never wanted.
   // (Capture phase — media events don't bubble. Muted ambient clips are left alone.)
