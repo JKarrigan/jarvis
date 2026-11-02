@@ -4,10 +4,15 @@
 import type { DocItem } from './api'
 import { kindLabel } from './fileKinds'
 
-export interface SelectionState { selected: ReadonlySet<string>; anchor: string | null }
+export interface SelectionState {
+  /** Selection mode: circles on every item, plain clicks toggle instead of opening. */
+  mode: boolean
+  selected: ReadonlySet<string>
+  anchor: string | null
+}
 export interface ClickMods { meta?: boolean; shift?: boolean }
 
-export const EMPTY_SELECTION: SelectionState = { selected: new Set(), anchor: null }
+export const EMPTY_SELECTION: SelectionState = { mode: false, selected: new Set(), anchor: null }
 
 /** Keys from a to b inclusive, in `ordered` order. Missing anchor → just b. */
 export function rangeBetween(ordered: readonly string[], a: string | null, b: string): string[] {
@@ -19,20 +24,55 @@ export function rangeBetween(ordered: readonly string[], a: string | null, b: st
   return ordered.slice(lo, hi + 1)
 }
 
-/** The selection after a click: plain = only this, meta = toggle, shift = range from the anchor (meta+shift adds the range). */
-export function applyClick(state: SelectionState, ordered: readonly string[], key: string, { meta = false, shift = false }: ClickMods = {}): SelectionState {
-  if (shift) {
-    const range = rangeBetween(ordered, state.anchor, key)
-    const next = meta ? new Set([...state.selected, ...range]) : new Set(range)
-    return { selected: next, anchor: state.anchor ?? key }
+/**
+ * Explicit selection. A plain click outside selection mode opens the item and never
+ * reaches this reducer; everything that selects goes through it:
+ *  - `enter`: the ⋯ menu's Select (with that item) or the toolbar's Select (nothing yet);
+ *  - `click`: inside selection mode a plain click toggles; ⌘/Ctrl-click toggles and Shift-click
+ *    adds the range from the anchor, both also entering selection mode from outside (power
+ *    shortcuts); Space on the focused item is a toggle;
+ *  - `all` (Select all / ⌘A), `exit` (Done, Escape, after Move/Delete), `prune` (items left).
+ */
+export type SelectionAction =
+  | { type: 'enter'; key?: string }
+  | { type: 'click'; key: string; ordered: readonly string[]; mods?: ClickMods }
+  | { type: 'toggle'; key: string }
+  | { type: 'all'; ordered: readonly string[] }
+  | { type: 'exit' }
+  | { type: 'prune'; ordered: readonly string[] }
+
+export function selectionReducer(state: SelectionState, action: SelectionAction): SelectionState {
+  switch (action.type) {
+    case 'enter': {
+      if (action.key == null) return state.mode ? state : { mode: true, selected: new Set(), anchor: null }
+      const selected = new Set(state.mode ? state.selected : [])
+      selected.add(action.key)
+      return { mode: true, selected, anchor: action.key }
+    }
+    case 'toggle': {
+      const selected = new Set(state.mode ? state.selected : [])
+      if (selected.has(action.key)) selected.delete(action.key)
+      else selected.add(action.key)
+      return { mode: true, selected, anchor: action.key }
+    }
+    case 'click': {
+      const { key, ordered, mods = {} } = action
+      const base = state.mode ? state.selected : new Set<string>()
+      if (mods.shift) {
+        const anchor = state.mode ? state.anchor : null
+        return { mode: true, selected: new Set([...base, ...rangeBetween(ordered, anchor, key)]), anchor: anchor ?? key }
+      }
+      if (mods.meta || state.mode) return selectionReducer(state, { type: 'toggle', key })
+      // A plain click outside selection mode opens; selection is untouched.
+      return state
+    }
+    case 'all':
+      return { mode: true, selected: new Set(action.ordered), anchor: state.anchor ?? action.ordered[0] ?? null }
+    case 'exit':
+      return state.mode || state.selected.size ? EMPTY_SELECTION : state
+    case 'prune':
+      return pruneSelection(state, action.ordered)
   }
-  if (meta) {
-    const next = new Set(state.selected)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
-    return { selected: next, anchor: key }
-  }
-  return { selected: new Set([key]), anchor: key }
 }
 
 /** Drops keys that are no longer listed; returns the same object when nothing changed. */
@@ -41,7 +81,7 @@ export function pruneSelection(state: SelectionState, ordered: readonly string[]
   const kept = [...state.selected].filter(k => valid.has(k))
   const anchor = state.anchor != null && valid.has(state.anchor) ? state.anchor : null
   if (kept.length === state.selected.size && anchor === state.anchor) return state
-  return { selected: new Set(kept), anchor }
+  return { mode: state.mode, selected: new Set(kept), anchor }
 }
 
 // --- sorting -------------------------------------------------------------------

@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocItem } from './api'
-import { DownloadIcon, PencilIcon, TrashIcon, UploadIcon } from '../photos/icons'
+import { CheckboxIcon, DownloadIcon, PencilIcon, TrashIcon, UploadIcon } from '../photos/icons'
 import { FolderPlusIcon, MoveIcon, OpenIcon } from './icons'
 
 export interface Action {
@@ -16,6 +16,8 @@ export interface Action {
 }
 
 export interface ActionHandlers {
+  /** Enters selection mode with this item selected. */
+  select: (item: DocItem) => void
   open: (item: DocItem) => void
   download: (item: DocItem) => void
   rename: (item: DocItem) => void
@@ -29,7 +31,9 @@ const ic = 'h-[18px] w-[18px] text-white/55'
 
 /**
  * The one action list behind the right-click menu and the ⋯ button (GuardianPad's
- * buildItemActions). No items = the blank area (New Folder / Upload).
+ * buildItemActions): Select, Open, Download, Rename, Move to…, Delete. Several items
+ * (right-click on a selected item in selection mode) = Move / Delete for all of them.
+ * No items = the blank area (New Folder / Upload).
  */
 export function buildActions(items: DocItem[], readOnly: boolean, h: ActionHandlers): Action[] {
   const write = !readOnly
@@ -50,6 +54,7 @@ export function buildActions(items: DocItem[], readOnly: boolean, h: ActionHandl
   }
   const [item] = items
   return [
+    { label: 'Select', icon: <CheckboxIcon className={ic} />, onSelect: () => h.select(item) },
     { label: 'Open', icon: <OpenIcon className={ic} />, onSelect: () => h.open(item) },
     ...(!item.isDir ? [{ label: 'Download', icon: <DownloadIcon className={ic} />, onSelect: () => h.download(item) }] : []),
     ...(write ? [

@@ -1,14 +1,15 @@
 'use client'
 
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toast } from '../photos/PhotoBrowser'
 import { useMounted, useToast } from '../photos/hooks'
-import { CloseIcon, DownloadIcon, OfflineIcon, TrashIcon, UploadIcon } from '../photos/icons'
+import { DownloadIcon, OfflineIcon, TrashIcon, UploadIcon } from '../photos/icons'
 import {
   DocsApiError, ROOT_NAME, baseName, downloadFile, errorText, formatBytes, joinPath, listFolder, makeFolder, moveItem,
   parentOf, plural, renameItem, runPool, type DocItem,
 } from './api'
+import { folderItem, storedItem, withPlaceholders, type DropTree } from './uploadPlan'
 import { ActionMenu, buildActions, type Action, type ActionHandlers } from './ActionMenu'
 import { DeleteDialog } from './DeleteDialog'
 import { DocumentViewer } from './DocumentViewer'
@@ -19,14 +20,44 @@ import { FolderGlyph, FolderPlusIcon, MoveIcon } from './icons'
 import { DocumentsGrid, DocumentsList, ListHeader, type ItemEnv } from './Items'
 import type { RenameResult } from './ItemName'
 import { MoveToDialog } from './MoveToDialog'
-import { Breadcrumbs, SearchField, SortMenu, ViewToggle } from './Toolbar'
+import { Breadcrumbs, SearchField, SelectButton, SortMenu, ViewToggle } from './Toolbar'
 import { UploadsPanel } from './UploadsPanel'
 import { useDocumentsBrowser } from './useDocumentsBrowser'
-import { useUploads } from './useUploads'
+import { useUploads, type UploadCallbacks } from './useUploads'
 import { DocumentsGridSkeleton } from './DocumentsSkeleton'
 
 type DialogState = { kind: 'move'; items: DocItem[] } | { kind: 'delete'; items: DocItem[] } | null
 type MenuState = { actions: Action[]; at: { x: number; y: number } | HTMLElement; label: string } | null
+
+/** Background refetches while a queue runs: at most one per this many ms (plus one when it drains). */
+const REFRESH_EVERY = 2000
+
+/**
+ * Coalesces refresh requests: `schedule()` refetches at most once per `every` ms
+ * (trailing), `flush()` refetches now. Timers live in refs, so callers stay stable.
+ */
+function useCoalescedRefresh(refresh: () => void, every: number) {
+  const fn = useRef(refresh)
+  useEffect(() => { fn.current = refresh }, [refresh])
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const last = useRef(0)
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  const schedule = useCallback(() => {
+    if (timer.current) return
+    const wait = Math.max(0, last.current + every - Date.now())
+    timer.current = setTimeout(() => {
+      timer.current = null
+      last.current = Date.now()
+      fn.current()
+    }, wait)
+  }, [every])
+  const flush = useCallback(() => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null }
+    last.current = Date.now()
+    fn.current()
+  }, [])
+  return { schedule, flush }
+}
 
 const glassBtn = 'inline-flex h-10 items-center gap-2 rounded-[12px] border border-white/10 bg-white/[0.06] px-3.5 text-[13.5px] font-semibold text-ink transition hover:bg-white/[0.12] disabled:cursor-not-allowed disabled:opacity-45'
 
@@ -64,14 +95,30 @@ export function DocumentsBrowser() {
 
   // --- uploads ---------------------------------------------------------------------
 
-  const uploads = useUploads(useCallback((dir: string) => {
-    // A file landing here, or in a subfolder shown here (its item count changes).
-    if (dir === folder || parentOf(dir) === folder || (!folder && !dir.includes('/'))) refresh()
-  }, [folder, refresh]))
-  const startUpload = useCallback((files: File[], dir: string) => {
+  // Each stored file patches the listing in place (its placeholder turns into it); the
+  // server is asked at most every 2 s while the queue runs, and once when it drains.
+  const { schedule: scheduleRefresh, flush: flushRefresh } = useCoalescedRefresh(refresh, REFRESH_EVERY)
+  const { addLocal } = data
+  const uploadCallbacks = useMemo<UploadCallbacks>(() => ({
+    onStored: (entry, name) => {
+      addLocal([storedItem(entry.dir, name, entry.total, Date.now())])
+      // Here, or in a subfolder shown here (its item count changes).
+      if (entry.dir === folder || parentOf(entry.dir) === folder) scheduleRefresh()
+    },
+    onFolder: path => {
+      addLocal([folderItem(path, Date.now())])
+      if (parentOf(path) === folder) scheduleRefresh()
+    },
+    onDrained: flushRefresh,
+  }), [addLocal, folder, scheduleRefresh, flushRefresh])
+  const uploads = useUploads(uploadCallbacks)
+  const startUpload = useCallback((tree: DropTree<File>, dir: string) => {
     if (readOnly) { show('Documents storage is offline', 'error'); return }
-    uploads.add(files, dir)
+    uploads.addTree(tree, dir)
   }, [readOnly, show, uploads])
+  const uploadFiles = useCallback((files: File[], dir: string) => {
+    startUpload({ files: files.map(file => ({ file, relDir: '' })), dirs: [] }, dir)
+  }, [startUpload])
 
   // --- mutations -------------------------------------------------------------------
 
@@ -116,7 +163,7 @@ export function DocumentsBrowser() {
     const failed = errors.flatMap(e => (e == null ? [] : [errorText(e)]))
     const where = target ? baseName(target) : ROOT_NAME
     refresh()
-    b.clearSelection()
+    b.exitSelect()
     if (failed.length) show(moved ? `Moved ${moved}; ${failed.length} couldn’t move (${failed[0]})` : `Couldn’t move: ${failed[0]}`, 'error')
     else show(`Moved ${plural(moved, 'item')} to ${where}`)
     return failed.length === 0
@@ -131,24 +178,21 @@ export function DocumentsBrowser() {
     onUpload: startUpload,
   })
 
-  const { selectedItems, isSelected, selectOnly } = b
+  // Outside selection mode a drag moves just the dragged item; in it, a selected item drags the selection.
+  const { selectedItems, isSelected, selectMode } = b
   const onDragStart = useCallback((e: React.DragEvent, item: DocItem) => {
-    let items: DocItem[]
-    if (isSelected(item.path)) items = selectedItems
-    else {
-      selectOnly(item.path)
-      items = [item]
-    }
+    const items = selectMode && isSelected(item.path) ? selectedItems : [item]
     dnd.startDrag(e, {
       paths: items.map(i => i.path),
       dirs: new Set(items.filter(i => i.isDir).map(i => i.path)),
       label: items[0]?.name ?? item.name,
     })
-  }, [isSelected, selectedItems, selectOnly, dnd])
+  }, [isSelected, selectedItems, selectMode, dnd])
 
   // --- menus ------------------------------------------------------------------------
 
   const handlers: ActionHandlers = {
+    select: item => b.enterSelect(item.path),
     open: b.open,
     download: downloadFile,
     rename: item => b.startRename(item.path),
@@ -157,7 +201,7 @@ export function DocumentsBrowser() {
     newFolder: () => void newFolder(),
     upload: () => fileInput.current?.click(),
   }
-  const targetsFor = (item: DocItem) => (b.isSelected(item.path) && b.selectedCount > 1 ? b.selectedItems : [item])
+  const targetsFor = (item: DocItem) => (b.selectMode && b.isSelected(item.path) && b.selectedCount > 1 ? b.selectedItems : [item])
   const openMenu = (item: DocItem, at: { x: number; y: number } | HTMLElement) => {
     const items = targetsFor(item)
     setMenu({ actions: buildActions(items, readOnly, handlers), at, label: items.length > 1 ? `Actions for ${items.length} items` : `Actions for ${item.name}` })
@@ -165,7 +209,6 @@ export function DocumentsBrowser() {
   const onBlankContextMenu = (e: React.MouseEvent) => {
     if (readOnly) return
     e.preventDefault()
-    b.clearSelection()
     setMenu({ actions: buildActions([], readOnly, handlers), at: { x: e.clientX, y: e.clientY }, label: 'Folder actions' })
   }
 
@@ -179,6 +222,8 @@ export function DocumentsBrowser() {
     onDragEnd: dnd.endDrag,
     onMenu: openMenu,
     onCommitRename: commitRename,
+    onRetryUpload: uploads.retry,
+    onCancelUpload: uploads.cancel,
   }
 
   // --- render -----------------------------------------------------------------------
@@ -195,9 +240,30 @@ export function DocumentsBrowser() {
     return [plural(files.length, 'file'), plural(folders, 'folder'), bytes ? formatBytes(bytes) : null].filter(Boolean).join(' · ')
   }, [b.searching, b.searchLoading, b.items.length, b.searchTruncated, data.loading, data.error, data.items])
 
+  // The folder's items with uploads in flight drawn in place, in the current sort.
+  const listEntries = useMemo(
+    () => (b.searching ? b.items : withPlaceholders(b.items, uploads.entries, folder, b.sort)),
+    [b.searching, b.items, uploads.entries, folder, b.sort],
+  )
+
   const viewerOpen = mounted && Boolean(b.viewPath)
-  const showBar = b.selectedCount > 0 && !viewerOpen
+  const showBar = b.selectMode && !viewerOpen
   const single = b.selectedCount === 1 ? b.selectedItems[0] : null
+
+  // Escape leaves selection mode from anywhere on the page (the listbox handles its own;
+  // dialogs and menus claim theirs first with preventDefault).
+  const { exitSelect } = b
+  useEffect(() => {
+    if (!selectMode || viewerOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      if (document.querySelector('[aria-modal="true"], [role="menu"]')) return
+      e.preventDefault()
+      exitSelect()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectMode, viewerOpen, exitSelect])
   const dropName = dnd.over != null ? (dnd.over ? baseName(dnd.over) : ROOT_NAME) : b.folderName
 
   const content = () => {
@@ -221,7 +287,7 @@ export function DocumentsBrowser() {
           </Notice>
         )
       }
-      if (data.items.length === 0) {
+      if (listEntries.length === 0) {
         return (
           <div className="flex flex-col items-center justify-center gap-1.5 px-6 py-16 text-center">
             <FolderGlyph open className="mb-2 h-[52px] w-[64px] opacity-80" />
@@ -231,7 +297,7 @@ export function DocumentsBrowser() {
         )
       }
     }
-    return b.viewMode === 'list' ? <DocumentsList items={b.items} env={env} /> : <DocumentsGrid items={b.items} env={env} />
+    return b.viewMode === 'list' ? <DocumentsList items={listEntries} env={env} /> : <DocumentsGrid items={listEntries} env={env} />
   }
 
   return (
@@ -264,7 +330,7 @@ export function DocumentsBrowser() {
             data-testid="documents-upload-input"
             onChange={e => {
               const files = e.currentTarget.files
-              if (files && files.length) startUpload([...files], folder)
+              if (files && files.length) uploadFiles([...files], folder)
               e.currentTarget.value = ''
             }}
           />
@@ -291,18 +357,19 @@ export function DocumentsBrowser() {
             <SearchField value={b.search} onChange={b.setSearch} loading={b.searching && b.searchLoading} />
             <SortMenu sort={b.sort} onField={b.setSortField} onDir={b.setSortDir} />
             <ViewToggle view={b.viewMode} onChange={b.setViewMode} />
+            <SelectButton active={b.selectMode} onToggle={() => (b.selectMode ? b.exitSelect() : b.enterSelect())} />
           </div>
         </div>
-        {b.viewMode === 'list' && b.items.length > 0 && <ListHeader sort={b.sort} onSort={b.toggleSort} />}
+        {b.viewMode === 'list' && listEntries.length > 0 && <ListHeader sort={b.sort} onSort={b.toggleSort} />}
         <div
           ref={listRef}
           tabIndex={0}
           role="listbox"
-          aria-multiselectable="true"
+          aria-multiselectable={b.selectMode}
           aria-label={b.searching ? 'Search results' : `${b.folderName} contents`}
           aria-activedescendant={b.lead ? b.optionId(b.lead) : undefined}
+          aria-busy={uploads.running || undefined}
           onKeyDown={b.onKeyDown}
-          onClick={e => { if (!(e.target as Element).closest('[data-doc-key]')) b.clearSelection() }}
           onContextMenu={onBlankContextMenu}
           className="group/list min-h-[280px] rounded-b-[18px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
         >
@@ -339,14 +406,29 @@ export function DocumentsBrowser() {
             className="fixed inset-x-0 bottom-0 z-[46] border-t border-white/10 bg-[rgba(12,10,16,0.9)] pb-[env(safe-area-inset-bottom)] backdrop-blur-xl backdrop-saturate-150 md:bottom-5 md:left-[var(--rail)] md:right-[var(--gx)] md:mx-auto md:max-w-[620px] md:rounded-[18px] md:border md:pb-0 md:shadow-[0_18px_44px_rgba(0,0,0,0.55)]"
           >
             <div className="flex items-center gap-1 px-2 py-2 md:gap-2 md:px-3">
-              <p className="min-w-0 flex-1 truncate px-2 text-[14px] font-bold text-ink" aria-live="polite">
-                {single ? single.name : `${plural(b.selectedCount, 'item')} selected`}
-              </p>
-              {!readOnly && <BarButton label="Move to…" icon={<MoveIcon className="h-5 w-5" />} onClick={() => setDialog({ kind: 'move', items: b.selectedItems })} />}
+              <div className="min-w-[88px] flex-1 px-2">
+                <p className="truncate text-[14px] font-bold tabular-nums text-ink" aria-live="polite" data-testid="selection-count">
+                  {b.selectedCount === 0 ? 'Select items' : `${b.selectedCount.toLocaleString('en-GB')} selected`}
+                </p>
+                <button
+                  type="button"
+                  onClick={b.selectAll}
+                  disabled={b.items.length === 0 || b.selectedCount === b.items.length}
+                  className="text-[12px] font-semibold text-accent hover:underline disabled:cursor-default disabled:text-white/35 disabled:no-underline"
+                >
+                  Select all
+                </button>
+              </div>
+              {!readOnly && <BarButton label="Move to…" icon={<MoveIcon className="h-5 w-5" />} disabled={b.selectedCount === 0} onClick={() => setDialog({ kind: 'move', items: b.selectedItems })} />}
               {single && !single.isDir && <BarButton label="Download" icon={<DownloadIcon className="h-5 w-5" />} onClick={() => downloadFile(single)} />}
-              {!readOnly && <BarButton label="Delete" danger icon={<TrashIcon className="h-5 w-5" />} onClick={() => requestDelete(b.selectedItems)} />}
-              <button type="button" onClick={b.clearSelection} aria-label="Clear selection" className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-white/65 transition hover:bg-white/10 hover:text-white">
-                <CloseIcon className="h-5 w-5" />
+              {!readOnly && <BarButton label="Delete" danger disabled={b.selectedCount === 0} icon={<TrashIcon className="h-5 w-5" />} onClick={() => requestDelete(b.selectedItems)} />}
+              <button
+                type="button"
+                onClick={b.exitSelect}
+                className="ml-1 inline-flex h-10 shrink-0 items-center rounded-[12px] px-3.5 text-[13.5px] font-bold text-ink-on-accent transition hover:brightness-[1.06]"
+                style={{ background: 'var(--accent)' }}
+              >
+                Done
               </button>
             </div>
           </motion.div>
@@ -357,7 +439,9 @@ export function DocumentsBrowser() {
         entries={uploads.entries}
         onRetry={uploads.retry}
         onKeepBoth={id => void uploads.keepBoth(id)}
+        onKeepBothAll={() => void uploads.keepBothAll()}
         onSkip={uploads.skip}
+        onSkipAll={uploads.skipAll}
         onCancel={uploads.cancel}
         onCancelAll={uploads.cancelAll}
         onDismiss={uploads.dismiss}
@@ -388,7 +472,7 @@ export function DocumentsBrowser() {
           onCancel={() => { setDialog(null); focusList() }}
           onDone={(deleted, errors) => {
             setDialog(null)
-            b.clearSelection()
+            b.exitSelect()
             refresh()
             focusList()
             if (errors.length) show(deleted.length ? `Deleted ${deleted.length}; ${errors.length} failed (${errors[0]})` : `Couldn’t delete: ${errors[0]}`, 'error')
@@ -415,12 +499,13 @@ export function DocumentsBrowser() {
   )
 }
 
-function BarButton({ label, icon, onClick, danger }: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean }) {
+function BarButton({ label, icon, onClick, danger, disabled }: { label: string; icon: React.ReactNode; onClick: () => void; danger?: boolean; disabled?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex h-12 shrink-0 flex-col items-center justify-center gap-0.5 rounded-[12px] px-2.5 text-[11px] font-semibold transition md:h-10 md:flex-row md:gap-2 md:px-3.5 md:text-[13.5px] ${
+      disabled={disabled}
+      className={`flex h-12 shrink-0 disabled:cursor-not-allowed disabled:opacity-40 flex-col items-center justify-center gap-0.5 rounded-[12px] px-2 text-[11px] font-semibold transition md:h-10 md:flex-row md:gap-2 md:px-3.5 md:text-[13.5px] ${
         danger ? 'text-[#ff8a8a] hover:bg-[#ff6b6b]/12' : 'text-white/85 hover:bg-white/10 hover:text-white'
       }`}
     >

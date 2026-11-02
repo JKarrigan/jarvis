@@ -45,7 +45,14 @@ export function errorText(e: unknown): string {
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   let body: Record<string, unknown> = {}
-  try { body = (await res.json()) as Record<string, unknown> } catch { /* empty or not JSON */ }
+  try {
+    body = (await res.json()) as Record<string, unknown>
+  } catch (e) {
+    // An abort while the body streams must stay an abort: swallowing it here turned a
+    // cancelled listing into `{}`, i.e. an empty folder (the mass-upload flash).
+    if (isAbort(e) || init?.signal?.aborted) throw e instanceof Error ? e : new DOMException('Aborted', 'AbortError')
+    /* empty or not JSON */
+  }
   if (!res.ok) {
     const msg = typeof body.error === 'string' && body.error ? body.error : res.statusText || `Request failed (${res.status})`
     throw new DocsApiError(msg, res.status, body)

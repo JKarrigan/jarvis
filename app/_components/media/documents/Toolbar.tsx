@@ -140,3 +140,19 @@ export function ViewToggle({ view, onChange }: { view: ViewMode; onChange: (v: V
     </div>
   )
 }
+
+/** Enters selection mode with nothing selected (pressed while selecting; pressing again is Done). */
+export function SelectButton({ active, onToggle }: { active: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onToggle}
+      className={`inline-flex h-10 shrink-0 items-center rounded-[12px] border px-3.5 text-[13.5px] font-semibold transition ${
+        active ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-ink' : 'border-white/10 bg-white/[0.06] text-ink hover:bg-white/[0.12]'
+      }`}
+    >
+      {active ? 'Done' : 'Select'}
+    </button>
+  )
+}

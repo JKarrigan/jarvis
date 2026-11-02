@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { canMoveInto } from './selection'
+import { walkEntries, type DropTree, type EntryLike } from './uploadPlan'
 
 /** dataTransfer type of an in-app drag (paths travel in the hook's ref, not the payload). */
 export const DRAG_MIME = 'application/x-reel-documents'
@@ -50,21 +51,42 @@ function ghost(host: HTMLElement, label: string, count: number): HTMLElement {
   return el
 }
 
+/**
+ * Files and folders from a desktop drop. Entries must be taken synchronously inside the
+ * drop event (the DataTransfer is emptied afterwards); folders are then walked
+ * (`webkitGetAsEntry`) so their tree can be recreated. Without folders, or where entries
+ * aren't available, it is just the dropped files.
+ */
+export function readDrop(dt: DataTransfer): Promise<DropTree<File>> {
+  const files = Array.from(dt.files ?? [])
+  const entries: EntryLike[] = []
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind !== 'file') continue
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+    if (entry) entries.push(entry)
+  }
+  const loose: DropTree<File> = { files: files.map(file => ({ file, relDir: '' })), dirs: [] }
+  if (!entries.some(en => en.isDirectory)) return Promise.resolve(loose)
+  return walkEntries<File>(entries).catch(() => loose)
+}
+
 export interface DragPayload { paths: string[]; dirs: Set<string>; label: string }
 
 /**
  * Native HTML5 drag and drop for the browser (no library):
  *  - items drag onto folder tiles/rows and breadcrumbs (anything with `data-drop-folder`)
  *    to move; a selected item drags the whole selection (count badge on the drag image);
- *  - files from the desktop drop anywhere on the browser (the current folder) or onto a
- *    folder (that folder). A depth counter keeps the highlight from flickering over children.
+ *  - files and folders from the desktop drop anywhere on the browser (the current folder)
+ *    or onto a folder (that folder); a dropped folder's tree is recreated there. A depth
+ *    counter keeps the highlight from flickering over children.
  * The returned `zoneProps` go on the browser's root element.
  */
 export function useDocumentsDnd({ enabled, currentFolder, onMove, onUpload }: {
   enabled: boolean
   currentFolder: string
   onMove: (paths: string[], target: string) => void
-  onUpload: (files: File[], target: string) => void
+  /** Desktop files (and folders: their tree, to recreate under `target`). */
+  onUpload: (tree: DropTree<File>, target: string) => void
 }) {
   const drag = useRef<DragPayload | null>(null)
   const [dragging, setDragging] = useState<ReadonlySet<string> | null>(null)
@@ -113,6 +135,18 @@ export function useDocumentsDnd({ enabled, currentFolder, onMove, onUpload }: {
     setOver(null)
   }, [])
 
+  // The dragged tile can unmount mid-drag (a refresh, a rename), and its onDragEnd then
+  // never fires: end the drag from the window too so nothing stays dimmed or armed.
+  useEffect(() => {
+    if (!dragging) return
+    window.addEventListener('dragend', endDrag)
+    window.addEventListener('drop', endDrag)
+    return () => {
+      window.removeEventListener('dragend', endDrag)
+      window.removeEventListener('drop', endDrag)
+    }
+  }, [dragging, endDrag])
+
   const zoneProps = {
     ref: (el: HTMLElement | null) => { hostRef.current = el },
     onDragEnter: (e: React.DragEvent) => {
@@ -160,8 +194,9 @@ export function useDocumentsDnd({ enabled, currentFolder, onMove, onUpload }: {
       const target = folderAt(e.target)
       reset()
       if (!enabled) return
-      const files = Array.from(e.dataTransfer.files ?? [])
-      if (files.length) onUpload(files, target ?? currentFolder)
+      void readDrop(e.dataTransfer).then(tree => {
+        if (tree.files.length || tree.dirs.length) onUpload(tree, target ?? currentFolder)
+      })
     },
   }
 

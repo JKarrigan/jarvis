@@ -189,3 +189,16 @@ describe('assertSameOrigin', () => {
     expect(assertSameOrigin(req({ origin: 'http://192.168.1.13:3000' }))?.status).toBe(403)
   })
 })
+
+describe('contentDisposition', () => {
+  it('sends an ASCII fallback and an RFC 5987 UTF-8 name', async () => {
+    const { contentDisposition } = await import('@/lib/http')
+    const h = contentDisposition('attachment', 'Taxes — 2025 (final) Bob\'s *copy*.pdf')
+    expect(h).toContain('filename="Taxes _ 2025 (final) Bob\'s *copy*.pdf"')
+    expect(h).toContain("filename*=UTF-8''Taxes%20%E2%80%94%202025%20%28final%29%20Bob%27s%20%2Acopy%2A.pdf")
+    const star = h.split("filename*=UTF-8''")[1]
+    expect(decodeURIComponent(star)).toBe('Taxes — 2025 (final) Bob\'s *copy*.pdf')
+    expect(contentDisposition('inline', 'Café "100%".txt')).toContain('filename="Caf_ _100__.txt"')
+    expect(decodeURIComponent(contentDisposition('inline', '日本語 📄.pdf').split("''")[1])).toBe('日本語 📄.pdf')
+  })
+})

@@ -95,6 +95,60 @@ function realpathLoose(abs: string): string {
   }
 }
 
+/** NFC form, for comparing names that may differ only in Unicode normalisation. */
+export function nfc(name: string): string {
+  return name.normalize('NFC')
+}
+
+/** The entry of `names` equal to `name` under NFC (exact match first), or null. */
+export function findNormalized(names: readonly string[], name: string): string | null {
+  if (names.includes(name)) return name
+  const want = nfc(name)
+  return names.find(n => nfc(n) === want) ?? null
+}
+
+/**
+ * `abs` (inside FILES_ROOT) with every segment that doesn't exist as given replaced
+ * by the directory entry that is equal to it under NFC — the on-disk spelling, so a
+ * folder created as NFD on the NAS still resolves from an NFC URL. Segments that
+ * match nothing (a name about to be created) are kept as given. One lstat when the
+ * path exists as is; a readdir only per missing segment.
+ */
+function matchOnDisk(abs: string): string {
+  try {
+    fs.lstatSync(abs)
+    return abs
+  } catch {
+    // fall through: find the missing segment(s)
+  }
+  const segments = path.relative(FILES_ROOT, abs).split(path.sep)
+  let cur = FILES_ROOT
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]
+    const direct = path.join(cur, seg)
+    let found: string | null = null
+    try {
+      fs.lstatSync(direct)
+      found = seg
+    } catch {
+      try { found = findNormalized(fs.readdirSync(cur), seg) } catch { found = null }
+    }
+    if (found == null) return path.join(cur, ...segments.slice(i))
+    cur = path.join(cur, found)
+  }
+  return cur
+}
+
+/** True when `dirAbs` holds an entry equal to `name` under NFC but spelled differently (another normalisation). */
+export async function hasNormalizedTwin(dirAbs: string, name: string): Promise<boolean> {
+  try {
+    const want = nfc(name)
+    return (await fsp.readdir(dirAbs)).some(n => n !== name && nfc(n) === want)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Resolves a client-supplied path (relative to FILES_ROOT) to an absolute path
  * inside the storage root. `..` cannot climb above the root, and symlinks that
@@ -103,10 +157,13 @@ function realpathLoose(abs: string): string {
  */
 export function resolveSafe(relPath: string, { followLeaf = true }: { followLeaf?: boolean } = {}): string {
   if (relPath.includes('\0')) throw new FilesError('Invalid path', 400)
-  const abs = path.join(FILES_ROOT, path.normalize('/' + relPath))
-  const trimmed = abs.length > 1 && abs.endsWith(path.sep) ? abs.slice(0, -1) : abs
-  if (!isInside(trimmed)) throw new FilesError('Forbidden', 403)
-  if (trimmed === FILES_ROOT) return trimmed
+  // Clients send NFC (and new names are stored NFC); on-disk names made by a Mac over
+  // SMB may be NFD, so each missing segment is matched by its NFC form (below).
+  const abs = path.join(FILES_ROOT, path.normalize('/' + relPath.normalize('NFC')))
+  const lexical = abs.length > 1 && abs.endsWith(path.sep) ? abs.slice(0, -1) : abs
+  if (!isInside(lexical)) throw new FilesError('Forbidden', 403)
+  if (lexical === FILES_ROOT) return lexical
+  const trimmed = matchOnDisk(lexical)
 
   const toCheck = followLeaf ? trimmed : path.dirname(trimmed)
   let real: string
@@ -293,12 +350,15 @@ export async function moveEntry(fromRel: string | null, toDirRel: string | null)
   if (!isInside(dest) || dest === FILES_ROOT) throw new FilesError('Forbidden', 403)
   if (dest === absFrom) return
   await fsp.lstat(absFrom)
-  if (await exists(dest)) throw new FilesError(`"${path.basename(dest)}" already exists there`, 409)
+  if (await exists(dest) || await hasNormalizedTwin(absToDir, path.basename(dest))) {
+    throw new FilesError(`"${path.basename(dest)}" already exists there`, 409)
+  }
   await fsp.rename(absFrom, dest)
 }
 
 /** Renames an entry in place. Never overwrites: an existing destination → 409. */
-export async function renameEntry(relPath: string | null, newName: string): Promise<void> {
+export async function renameEntry(relPath: string | null, rawName: string): Promise<void> {
+  const newName = nfc(rawName)
   if (!isValidName(newName)) throw new FilesError('Invalid name', 400)
   const abs = resolveEntry(relPath)
   const dest = path.join(path.dirname(abs), newName)
@@ -308,6 +368,11 @@ export async function renameEntry(relPath: string | null, newName: string): Prom
   const existing = await exists(dest)
   // On case-insensitive filesystems a case-only rename "finds" the source itself.
   if (existing && !(existing.ino === src.ino && existing.dev === src.dev)) {
+    throw new FilesError(`"${newName}" already exists`, 409)
+  }
+  // The same name in another normalisation (a Mac-made NFD twin) counts as taken too,
+  // unless it is the source itself (renaming NFD → NFC).
+  if (!existing && path.basename(abs) !== newName && nfc(path.basename(abs)) !== newName && await hasNormalizedTwin(path.dirname(abs), newName)) {
     throw new FilesError(`"${newName}" already exists`, 409)
   }
   await fsp.rename(abs, dest)
@@ -327,7 +392,7 @@ export async function searchEntries(
   { limit = 200, signal }: { limit?: number; signal?: AbortSignal } = {},
 ): Promise<{ results: SearchResult[]; truncated: boolean }> {
   const root = resolveSafe(rootRel)
-  const lowerQ = query.toLowerCase()
+  const lowerQ = nfc(query).toLowerCase()
   const results: SearchResult[] = []
   let visited = 0
   let truncated = false
@@ -343,7 +408,7 @@ export async function searchEntries(
         if (isHiddenName(dirent.name)) continue
         if (++visited > SEARCH_MAX_VISITED) return { results, truncated: true }
         const entAbs = path.join(dir, dirent.name)
-        if (dirent.name.toLowerCase().includes(lowerQ)) {
+        if (nfc(dirent.name).toLowerCase().includes(lowerQ)) {
           const entry = await toApiEntry(dirent, entAbs)
           if (entry) results.push({ ...entry, relPath: path.relative(FILES_ROOT, entAbs) })
           if (results.length >= limit) return { results, truncated: true }
@@ -429,7 +494,7 @@ export function thumbCachePath(key: string): string {
 
 /** Reduces a client-supplied upload file name to a safe single segment, or null. */
 export function safeUploadName(filename: string | undefined): string | null {
-  const base = (filename ?? '').split(/[/\\]/).pop()?.trim() ?? ''
+  const base = nfc((filename ?? '').split(/[/\\]/).pop()?.trim() ?? '')
   return isValidName(base) ? base : null
 }
 

@@ -22,7 +22,8 @@ function standIn(path: string): DocItem {
  * Full-screen file viewer (`?view=<path>`): PDFs in a pdf.js reader, images (server
  * preview first, then the original), video and audio natively from `content` (Range),
  * text up to 256 KiB inline, and an icon card with Download and the NAS path for
- * everything else (Word, Excel…). ←/→ page through the current folder's files only.
+ * everything else (Word, Excel…). ←/→ (Shift+←/→ in a PDF, whose plain arrows turn its
+ * pages) step through the current folder's files only.
  */
 export function DocumentViewer({ path, files, nasRoot, onGo, onClose }: {
   path: string
@@ -40,6 +41,7 @@ export function DocumentViewer({ path, files, nasRoot, onGo, onClose }: {
   const item = index >= 0 ? files[index] : standIn(path)
   const prev = index > 0 ? files[index - 1] : null
   const next = index >= 0 && index < files.length - 1 ? files[index + 1] : null
+  const isPdf = fileKind(item) === 'pdf'
   const [pdfInfo, setPdfInfo] = useState<{ path: string; page: number; pages: number } | null>(null)
   const onPdfInfo = useCallback((i: { page: number; pages: number }) => setPdfInfo({ path, ...i }), [path])
 
@@ -50,12 +52,15 @@ export function DocumentViewer({ path, files, nasRoot, onGo, onClose }: {
       // Media elements and text fields keep their own arrow keys (seek, caret).
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'VIDEO' || t.tagName === 'AUDIO' || t.isContentEditable)) return
       if (document.querySelectorAll('[aria-modal="true"]').length > 1) return
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+      // In a PDF, plain ←/→ turn its pages (PdfView); Shift+←/→ change file everywhere.
+      if (isPdf && !e.shiftKey) return
       if (e.key === 'ArrowRight' && next) { e.preventDefault(); onGo(next.path) }
       else if (e.key === 'ArrowLeft' && prev) { e.preventDefault(); onGo(prev.path) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [prev, next, onGo])
+  }, [prev, next, onGo, isPdf])
 
   const kind = fileKind(item)
   const position = index >= 0 ? `${index + 1} of ${files.length}` : ''
@@ -64,7 +69,7 @@ export function DocumentViewer({ path, files, nasRoot, onGo, onClose }: {
   const card = (note?: string) => <InfoCard item={item} nasRoot={nasRoot} note={note} />
 
   let body: React.ReactNode
-  if (kind === 'pdf') body = <PdfView key={path} url={contentUrl(path)} onInfo={onPdfInfo} fallback={err => card(`Couldn’t open this PDF (${err}).`)} />
+  if (kind === 'pdf') body = <PdfView key={path} item={item} onInfo={onPdfInfo} fallback={err => card(`Couldn’t open this PDF (${err}).`)} />
   else if (kind === 'image') body = <ImageView key={path} item={item} fallback={card} />
   else if (kind === 'video') body = <MediaView key={path} kind="video" item={item} fallback={card} />
   else if (kind === 'audio') body = <MediaView key={path} kind="audio" item={item} fallback={card} />
@@ -94,10 +99,10 @@ export function DocumentViewer({ path, files, nasRoot, onGo, onClose }: {
           <h2 className="truncate text-[15px] font-bold" style={{ fontFamily: 'var(--font-schibsted), var(--font-manrope), sans-serif' }} title={item.name}>{item.name}</h2>
           <p className="truncate text-[11.5px] text-white/50" aria-live="polite">{sub}</p>
         </div>
-        <button type="button" onClick={() => prev && onGo(prev.path)} disabled={!prev} aria-label="Previous file" className={navBtn}>
+        <button type="button" onClick={() => prev && onGo(prev.path)} disabled={!prev} aria-label="Previous file" title="Previous file (⇧←)" className={navBtn}>
           <ChevronLeftIcon className="h-5 w-5" />
         </button>
-        <button type="button" onClick={() => next && onGo(next.path)} disabled={!next} aria-label="Next file" className={navBtn}>
+        <button type="button" onClick={() => next && onGo(next.path)} disabled={!next} aria-label="Next file" title="Next file (⇧→)" className={navBtn}>
           <ChevronRightIcon className="h-5 w-5" />
         </button>
         <button type="button" onClick={() => downloadFile(item)} aria-label={`Download ${item.name}`} className={navBtn}>

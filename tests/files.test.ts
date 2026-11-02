@@ -191,3 +191,46 @@ describe('deleteEntry and the share recycle bin', () => {
     expect(fs.existsSync(path.join(root, '#recycle/bin-test/Empty'))).toBe(false)
   })
 })
+
+describe('Unicode names (NFC vs NFD, special characters)', () => {
+  const nfd = 'Café (NFD)'
+  const names = ['Taxes — 2025', 'Ελληνικά', '日本語.pdf', 'emoji 📄.txt', 'a # b', '100% & more+', 'what?']
+  beforeAll(() => {
+    fs.mkdirSync(path.join(root, 'uni', nfd), { recursive: true })
+    fs.writeFileSync(path.join(root, 'uni', nfd, 'inner.txt'), 'x')
+    for (const n of names) fs.writeFileSync(path.join(root, 'uni', n), n)
+  })
+
+  it('findNormalized prefers the exact name, else the NFC-equal one', () => {
+    expect(files.findNormalized(['a', nfd], nfd.normalize('NFC'))).toBe(nfd)
+    expect(files.findNormalized([nfd, nfd.normalize('NFC')], nfd.normalize('NFC'))).toBe(nfd.normalize('NFC'))
+    expect(files.findNormalized(['x'], 'y')).toBeNull()
+  })
+  it('resolves an NFC path to a folder stored NFD (and leaves new names as given)', () => {
+    const abs = files.resolveSafe(`uni/${nfd.normalize('NFC')}/inner.txt`)
+    expect(fs.readFileSync(abs, 'utf8')).toBe('x')
+    const fresh = files.resolveSafe(`uni/${nfd.normalize('NFC')}/new — file.txt`)
+    expect(path.basename(fresh)).toBe('new — file.txt')
+    expect(fs.existsSync(path.dirname(fresh))).toBe(true)
+  })
+  it('lists and finds special-character names, NFC queries matching NFD names', async () => {
+    const listed = (await files.listDirectory('uni')).map(e => e.name)
+    for (const n of names) expect(listed).toContain(n)
+    const hits = await files.searchEntries('', 'café')
+    expect(hits.results.some(r => r.relPath.normalize('NFC') === `uni/${nfd.normalize('NFC')}`)).toBe(true)
+    expect((await files.searchEntries('', 'ελλην')).results.map(r => r.name)).toContain('Ελληνικά')
+  })
+  it('stores new names NFC and treats a twin in another normalisation as taken', async () => {
+    expect(files.safeUploadName('Café.pdf')).toBe('Café.pdf'.normalize('NFC'))
+    expect(files.safeUploadName('dir/Taxes — 2025.pdf')).toBe('Taxes — 2025.pdf')
+    fs.writeFileSync(path.join(root, 'uni', 'twin-src.txt'), '1')
+    await expect(files.renameEntry('uni/twin-src.txt', nfd.normalize('NFC'))).rejects.toMatchObject({ status: 409 })
+    await files.renameEntry('uni/twin-src.txt', 'Ωμέγα — ok.txt')
+    expect(fs.existsSync(path.join(root, 'uni', 'Ωμέγα — ok.txt'))).toBe(true)
+    expect(await files.hasNormalizedTwin(path.join(root, 'uni'), nfd.normalize('NFC'))).toBe(fs.readdirSync(path.join(root, 'uni')).includes(nfd))
+  })
+  it('creates folders under an NFD parent from an NFC path', async () => {
+    await files.createDirectory(`uni/${nfd.normalize('NFC')}/Sub — 1`)
+    expect(fs.existsSync(path.join(root, 'uni', nfd, 'Sub — 1'))).toBe(true)
+  })
+})

@@ -1,11 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   DocsApiError, errorText, isAbort, listFolder, searchAll, storageStatus,
   type DiskInfo, type DocItem, type StorageStatus,
 } from './api'
 import { DEFAULT_SORT, type Sort, type SortField } from './selection'
+import { mergeListing, upsertItems, type PendingItem } from './uploadPlan'
 
 const NO_ITEMS: DocItem[] = []
 
@@ -20,23 +21,36 @@ type FolderState = {
 }
 
 /**
- * One folder's listing. State is keyed by the folder, so a slow answer for the folder
- * you just left never shows under the new one, and a changed folder shows the loading
- * state rather than the previous folder's items. `reload()` refetches in place.
+ * One folder's listing, stale-while-revalidate. State is keyed by the folder, so a slow
+ * answer for the folder you just left never shows under the new one, and only a folder
+ * change shows the loading state. `reload()` refetches in place: the current items stay
+ * on screen until the new listing replaces them (a failed background refetch keeps them,
+ * unless the folder is gone or storage went offline). `addLocal()` patches the listing
+ * optimistically (stored uploads, folders a drop created); those entries survive a
+ * refetch that started before they existed, so a refresh never takes an item away.
  */
 export function useFolder(folder: string) {
   const [state, setState] = useState<FolderState | null>(null)
   const [seq, setSeq] = useState(0)
+  const pending = useRef<PendingItem[]>([])
 
   useEffect(() => {
     const ctrl = new AbortController()
+    const startedAt = Date.now()
     listFolder(folder, ctrl.signal)
-      .then(({ items, disk }) => setState({ key: folder, items, disk, error: null, status: 200, offline: false }))
+      .then(({ items, disk }) => {
+        if (ctrl.signal.aborted) return
+        const merged = mergeListing(items, pending.current.filter(p => p.item.parent === folder), startedAt)
+        pending.current = [...pending.current.filter(p => p.item.parent !== folder), ...merged.pending]
+        setState({ key: folder, items: merged.items, disk, error: null, status: 200, offline: false })
+      })
       .catch(e => {
-        if (isAbort(e)) return
+        if (isAbort(e) || ctrl.signal.aborted) return
         const status = e instanceof DocsApiError ? e.status : 0
         const offline = e instanceof DocsApiError && e.offline
-        setState({ key: folder, items: [], disk: null, error: errorText(e), status, offline })
+        setState(s => (s && s.key === folder && !s.error && status !== 404 && !offline
+          ? s
+          : { key: folder, items: [], disk: null, error: errorText(e), status, offline }))
       })
     return () => ctrl.abort()
   }, [folder, seq])
@@ -47,6 +61,17 @@ export function useFolder(folder: string) {
   const patch = useCallback((fn: (items: DocItem[]) => DocItem[]) => {
     setState(s => (s && s.key === folder ? { ...s, items: fn(s.items) } : s))
   }, [folder])
+  /** Optimistic additions (any folder; only this folder's show now, the rest wait for their listing). */
+  const addLocal = useCallback((items: DocItem[]) => {
+    if (items.length === 0) return
+    const at = Date.now()
+    pending.current = [...pending.current.filter(p => !items.some(i => i.path === p.item.path)), ...items.map(item => ({ item, at }))]
+    setState(s => {
+      if (!s || s.error) return s
+      const mine = items.filter(i => i.parent === s.key)
+      return mine.length ? { ...s, items: upsertItems(s.items, mine) } : s
+    })
+  }, [])
 
   return {
     items: current?.items ?? NO_ITEMS,
@@ -57,6 +82,7 @@ export function useFolder(folder: string) {
     offline: current?.offline ?? false,
     reload,
     patch,
+    addLocal,
   }
 }
 

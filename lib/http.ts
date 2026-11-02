@@ -113,3 +113,14 @@ export async function readJson<T = unknown>(request: Request, maxBytes = 256 * 1
     return null
   }
 }
+
+/**
+ * `filename` (ASCII fallback) plus RFC 5987 `filename*` with the UTF-8 name. encodeURIComponent
+ * leaves ' ( ) * ! unescaped, but ' is the ext-value delimiter and the others aren't attr-chars.
+ */
+export function contentDisposition(kind: 'inline' | 'attachment', filename: string): string {
+  const name = filename.normalize('NFC')
+  const ascii = name.replace(/[^\x20-\x7e]|["\\%]/g, '_')
+  const ext = encodeURIComponent(name).replace(/['()*!]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${ext}`
+}

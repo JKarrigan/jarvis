@@ -7,7 +7,7 @@ import type { ReadableStream as NodeWebReadableStream } from 'stream/web'
 import busboy from 'busboy'
 import { assertSameOrigin, intParam } from '@/lib/http'
 import {
-  assertStorageOnline, resolveSafe, safeUploadName, uploadTempPath, commitNoClobber, filesErrorResponse, FilesError,
+  assertStorageOnline, resolveSafe, safeUploadName, uploadTempPath, commitNoClobber, filesErrorResponse, FilesError, hasNormalizedTwin,
 } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
@@ -55,6 +55,8 @@ export async function POST(request: Request) {
   try {
     bb = busboy({
       headers: { 'content-type': contentType },
+      // Without this busboy decodes the multipart filename as latin1 ("—" → "â€”").
+      defParamCharset: 'utf8',
       limits: { fileSize: MAX_UPLOAD_BYTES, files: MAX_FILES, fields: 20, parts: MAX_FILES + 20 },
     })
   } catch {
@@ -86,6 +88,8 @@ export async function POST(request: Request) {
       await pipeline(file, fs.createWriteStream(tmp, { flags: 'wx' }))
       if (file.truncated) throw new FilesError(`"${name}" exceeds the ${gib(MAX_UPLOAD_BYTES)} upload limit`, 413)
       try {
+        // The same name in another Unicode normalisation (made on a Mac) is taken too.
+        if (await hasNormalizedTwin(dirAbs, name)) throw new FilesError(`"${name}" already exists`, 409)
         await commitNoClobber(tmp, dest)
       } catch (e) {
         if (e instanceof FilesError && e.status === 409) { conflicts.push(name); return }

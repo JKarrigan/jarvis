@@ -2,7 +2,7 @@ import { createReadStream } from 'fs'
 import fsp from 'fs/promises'
 import { Readable } from 'stream'
 import path from 'path'
-import { parseRange, rangeNotSatisfiable } from '@/lib/http'
+import { contentDisposition, parseRange, rangeNotSatisfiable } from '@/lib/http'
 import { assertStorageOnline, resolveSafe, filesErrorResponse, FilesError } from '@/lib/files'
 
 export const dynamic = 'force-dynamic'
@@ -36,11 +36,6 @@ const MIME: Record<string, string> = {
  */
 const ACTIVE = new Set(['image/svg+xml'])
 const SANDBOX_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
-
-function contentDisposition(kind: 'inline' | 'attachment', filename: string): string {
-  const ascii = filename.replace(/[^\x20-\x7e]|["\\]/g, '_')
-  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
-}
 
 export async function GET(request: Request) {
   const offline = await assertStorageOnline()

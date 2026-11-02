@@ -12,6 +12,27 @@ function loadPdfjs() {
   return lib
 }
 
+/** pdf.js's viewer components (PDFViewer, EventBus, link service, find controller), legacy build. */
+export type PdfViewerLib = typeof import('pdfjs-dist/legacy/web/pdf_viewer.mjs')
+
+let viewerLib: Promise<{ core: typeof import('pdfjs-dist'); viewer: PdfViewerLib }> | null = null
+/**
+ * The core plus `pdfjs-dist/legacy/web/pdf_viewer.mjs`, loaded on demand. The viewer
+ * bundle reads the core from `globalThis.pdfjsLib` when it is evaluated, so the core is
+ * published there first (same build, so the viewer's version check passes).
+ */
+export function loadPdfViewer() {
+  if (!viewerLib) {
+    viewerLib = loadPdfjs().then(async core => {
+      (globalThis as typeof globalThis & { pdfjsLib?: typeof core }).pdfjsLib = core
+      const viewer = await import('pdfjs-dist/legacy/web/pdf_viewer.mjs')
+      return { core, viewer }
+    })
+    viewerLib.catch(() => { viewerLib = null })
+  }
+  return viewerLib
+}
+
 export interface OpenBook {
   doc: PDFDocumentProxy
   /** Abort outstanding requests and release the worker's copy of the file. */

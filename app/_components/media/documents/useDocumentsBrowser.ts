@@ -1,12 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useReducer, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { ROOT_NAME, cleanFolder, type DocItem } from './api'
 import { useDocPrefs, useDocSearch, useFolder, type ViewMode } from './hooks'
 import {
-  DEFAULT_DIR, EMPTY_SELECTION, applyClick, pruneSelection, sortItems, toggleSort as nextSort,
-  type ClickMods, type SelectionState, type SortField,
+  DEFAULT_DIR, EMPTY_SELECTION, pruneSelection, selectionReducer, sortItems, toggleSort as nextSort,
+  type ClickMods, type SortField,
 } from './selection'
 
 const VIEWER_STATE = 'docsViewer'
@@ -45,7 +45,8 @@ export interface Crumb { path: string; name: string }
  * View model for the Documents browser (port of GuardianPad's useDocumentsBrowser):
  * folder from `?folder=` (router.push, so Back steps up), the open file from `?view=`
  * (History API, so Back closes the viewer), view mode + sort (localStorage), tree-wide
- * search, Finder selection, rename target and keyboard handling.
+ * search, explicit selection mode (`selectionReducer`), the keyboard focus (`lead`, which
+ * arrows move without selecting), rename target and keyboard handling.
  */
 export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: {
   /** The listbox element (keyboard handling measures grid columns from it). */
@@ -71,7 +72,7 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   const searching = found.active
   const refreshSearch = useCallback(() => setSearchSeq(n => n + 1), [])
 
-  const [selState, setSelState] = useState<SelectionState>(EMPTY_SELECTION)
+  const [selState, dispatchSel] = useReducer(selectionReducer, EMPTY_SELECTION)
   const [lead, setLead] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
 
@@ -79,7 +80,7 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   const [prevFolder, setPrevFolder] = useState(folder)
   if (prevFolder !== folder) {
     setPrevFolder(folder)
-    setSelState(EMPTY_SELECTION)
+    dispatchSel({ type: 'exit' })
     setLead(null)
     setRenaming(null)
     setSearch('')
@@ -103,26 +104,26 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
 
   // --- navigation ----------------------------------------------------------------
 
-  const urlFor = useCallback((path: string) => {
-    const next = new URLSearchParams(params.toString())
-    next.delete('view')
-    if (path) next.set('folder', path)
-    else next.delete('folder')
-    const qs = next.toString()
-    return `${pathname}${qs ? `?${qs}` : ''}`
-  }, [params, pathname])
-
+  // Navigation reads the *live* URL rather than the render's useSearchParams snapshot: the
+  // viewer moves ?view= through the History API, and a stale `folder` made a crumb click on
+  // "the current folder" (or one just left by Back) a silent no-op.
   const enterFolder = useCallback((path: string) => {
     setSearch('')
-    if (path === folder) return
-    router.push(urlFor(path))
-  }, [folder, router, urlFor])
+    const url = new URL(window.location.href)
+    const live = cleanFolder(url.searchParams.get('folder'))
+    if (path === live && !url.searchParams.has('view')) return
+    url.searchParams.delete('view')
+    if (path) url.searchParams.set('folder', path)
+    else url.searchParams.delete('folder')
+    router.push(`${pathname}${url.search}`)
+  }, [router, pathname])
 
   const goUp = useCallback(() => {
-    if (!folder) return
-    const i = folder.lastIndexOf('/')
-    enterFolder(i < 0 ? '' : folder.slice(0, i))
-  }, [folder, enterFolder])
+    const live = cleanFolder(new URL(window.location.href).searchParams.get('folder'))
+    if (!live) return
+    const i = live.lastIndexOf('/')
+    enterFolder(i < 0 ? '' : live.slice(0, i))
+  }, [enterFolder])
 
   const openViewer = useCallback((path: string) => {
     window.history.pushState({ [VIEWER_STATE]: true }, '', urlWithViewer(path))
@@ -144,35 +145,35 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
 
   // --- selection -----------------------------------------------------------------
 
-  const select = useCallback((key: string, mods: ClickMods = {}) => {
-    setSelState(s => applyClick(pruneSelection(s, visibleKeys), visibleKeys, key, mods))
+  const selectMode = selection.mode
+  /** A modifier click (⌘/Ctrl toggles, Shift ranges) or, in selection mode, a plain click. */
+  const clickSelect = useCallback((key: string, mods: ClickMods = {}) => {
+    dispatchSel({ type: 'click', key, ordered: visibleKeys, mods })
     setLead(key)
   }, [visibleKeys])
-  const selectOnly = useCallback((key: string) => {
-    setSelState({ selected: new Set([key]), anchor: key })
+  const toggle = useCallback((key: string) => {
+    dispatchSel({ type: 'toggle', key })
     setLead(key)
   }, [])
-  const toggle = useCallback((key: string, range = false) => select(key, { meta: true, shift: range }), [select])
-  const selectAll = useCallback(() => {
-    setSelState(s => ({ selected: new Set(visibleKeys), anchor: s.anchor ?? visibleKeys[0] ?? null }))
-  }, [visibleKeys])
-  const clearSelection = useCallback(() => {
-    setSelState(EMPTY_SELECTION)
-    setLead(null)
+  /** Selection mode, with `key` selected (⋯ → Select) or nothing yet (toolbar Select). */
+  const enterSelect = useCallback((key?: string) => {
+    dispatchSel({ type: 'enter', key })
+    if (key) setLead(key)
   }, [])
+  const selectAll = useCallback(() => dispatchSel({ type: 'all', ordered: visibleKeys }), [visibleKeys])
+  const exitSelect = useCallback(() => dispatchSel({ type: 'exit' }), [])
   const isSelected = useCallback((key: string) => selection.selected.has(key), [selection])
 
   // --- rename ----------------------------------------------------------------------
 
   const startRename = useCallback((key: string | null) => {
     if (readOnly || !key) return
-    selectOnly(key)
+    setLead(key)
     setRenaming(key)
-  }, [readOnly, selectOnly])
+  }, [readOnly])
   const cancelRename = useCallback(() => setRenaming(null), [])
-  /** Select (and optionally rename) a path that is about to appear (new folder, renamed item). */
+  /** Focus (and optionally rename) a path that is about to appear (new folder, renamed item). */
   const reveal = useCallback((key: string, { rename = false } = {}) => {
-    setSelState({ selected: new Set([key]), anchor: key })
     setLead(key)
     setRenaming(rename ? key : null)
   }, [])
@@ -209,30 +210,30 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     if (target !== container && target.closest('button, a, [role="menuitem"]')) return
     const mod = e.metaKey || e.ctrlKey
     const count = selection.selected.size
+    const leadItem = leadKey ? itemsByKey.get(leadKey) : undefined
 
     if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); selectAll(); return }
     if (e.key === 'Escape') {
-      if (count) { e.preventDefault(); clearSelection() }
+      if (selection.mode) { e.preventDefault(); exitSelect() }
       return
     }
     if (e.key === 'Enter' || (mod && e.key === 'ArrowDown')) {
-      if (count === 1) {
-        e.preventDefault()
-        // Enter opens (the spec's keyboard model); F2 renames.
-        open(selectedItems[0])
-      }
+      // Enter opens the focused item, in selection mode too (Space selects).
+      if (leadItem) { e.preventDefault(); open(leadItem) }
       return
     }
     if (e.key === 'F2') {
-      if (count === 1) { e.preventDefault(); startRename(selectedItems[0].path) }
+      if (leadItem) { e.preventDefault(); startRename(leadItem.path) }
       return
     }
     if (e.key === 'Delete' || e.key === 'Backspace') {
-      if (!readOnly && count) { e.preventDefault(); onDelete(selectedItems) }
+      if (readOnly) return
+      if (selection.mode && count) { e.preventDefault(); onDelete(selectedItems) }
+      else if (!selection.mode && leadItem) { e.preventDefault(); onDelete([leadItem]) }
       return
     }
     if (mod && e.key === 'ArrowUp') { e.preventDefault(); goUp(); return }
-    if (e.key === ' ' && leadKey) { e.preventDefault(); select(leadKey, { meta: true }); return }
+    if (e.key === ' ' && leadKey) { e.preventDefault(); toggle(leadKey); return }
 
     const grid = prefs.view === 'grid'
     const cols = grid ? columnsOf(container) : 1
@@ -244,9 +245,10 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
       ? (step > 0 ? 0 : visibleKeys.length - 1)
       : Math.min(visibleKeys.length - 1, Math.max(0, from + step))
     const key = visibleKeys[next]
-    if (e.shiftKey) select(key, { shift: true })
-    else selectOnly(key)
-  }, [containerRef, selection, selectAll, clearSelection, open, selectedItems, startRename, readOnly, onDelete, goUp, leadKey, select, prefs.view, visibleKeys, selectOnly])
+    // Arrows move focus only; Shift+arrows extend a selection (and enter selection mode).
+    if (e.shiftKey) clickSelect(key, { shift: true })
+    else setLead(key)
+  }, [containerRef, selection, itemsByKey, selectAll, exitSelect, open, selectedItems, startRename, readOnly, onDelete, goUp, leadKey, toggle, prefs.view, visibleKeys, clickSelect])
 
   return {
     readOnly,
@@ -281,16 +283,18 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     goViewer,
     closeViewer,
     // selection
+    selectMode,
     selectedKeys: selection.selected,
     selectedItems,
     selectedCount: selection.selected.size,
     isSelected,
-    select,
-    selectOnly,
+    clickSelect,
     toggle,
+    enterSelect,
     selectAll,
-    clearSelection,
+    exitSelect,
     lead: leadKey,
+    setLead,
     optionId,
     // rename
     renaming,

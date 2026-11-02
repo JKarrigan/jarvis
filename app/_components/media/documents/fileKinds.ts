@@ -122,15 +122,34 @@ export function keepBothName(name: string, taken: Iterable<string>): string {
  * "Quarterly statement for the acc…ding 4411.pdf". Names within `max` are returned as is.
  */
 export function middleEllipsis(name: string, max: number): string {
-  const chars = [...name]
+  const chars = graphemes(name)
   if (chars.length <= max) return name
   const { ext } = splitName(name)
-  const tail = Math.min(chars.length - 1, [...ext].length + 6)
+  const tail = Math.min(chars.length - 1, graphemes(ext).length + 6)
   const head = Math.max(1, max - tail - 1)
   return `${chars.slice(0, head).join('')}…${chars.slice(chars.length - tail).join('')}`
 }
 
+let segmenter: Intl.Segmenter | null = null
+/**
+ * User-perceived characters: an emoji (📄, 👩‍👩‍👧, flags), a letter with combining marks
+ * (an NFD "é") or a surrogate pair is one unit, so truncation never splits one.
+ */
+export function graphemes(text: string): string[] {
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    segmenter ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    return Array.from(segmenter.segment(text), s => s.segment)
+  }
+  return [...text]
+}
+
 const HIDDEN_NAMES = new Set(['#recycle', '#snapshot', '@eadir'])
+
+/** What the server hides from listings (dot-entries, NAS housekeeping, `*.part`) — folder drops skip these. */
+export function isHiddenName(name: string): boolean {
+  const n = name.toLowerCase()
+  return n.startsWith('.') || HIDDEN_NAMES.has(n) || n.endsWith('.part')
+}
 
 /**
  * Why a name can't be used, or null. The server hides dot-entries, Synology housekeeping
