@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useId, useMemo, useReducer, useState } from 'react'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { ROOT_NAME, cleanFolder, type DocItem } from './api'
 import { useDocPrefs, useDocSearch, useFolder, type ViewMode } from './hooks'
 import {
@@ -43,7 +43,7 @@ export interface Crumb { path: string; name: string }
 
 /**
  * View model for the Documents browser (port of GuardianPad's useDocumentsBrowser):
- * folder from `?folder=` (router.push, so Back steps up), the open file from `?view=`
+ * folder from `?folder=` (History API pushState, so Back steps up), the open file from `?view=`
  * (History API, so Back closes the viewer), view mode + sort (localStorage), tree-wide
  * search, explicit selection mode (`selectionReducer`), the keyboard focus (`lead`, which
  * arrows move without selecting), rename target and keyboard handling.
@@ -56,7 +56,6 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   /** Delete / Backspace on a selection. */
   onDelete: (items: DocItem[]) => void
 }) {
-  const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
   const folder = cleanFolder(params.get('folder'))
@@ -104,9 +103,13 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
 
   // --- navigation ----------------------------------------------------------------
 
-  // Navigation reads the *live* URL rather than the render's useSearchParams snapshot: the
-  // viewer moves ?view= through the History API, and a stale `folder` made a crumb click on
-  // "the current folder" (or one just left by Back) a silent no-op.
+  // Folder moves go through the History API (pushState), like the viewer's ?view=, never
+  // router.push. Next syncs useSearchParams with pushState itself, so the page re-renders
+  // without a server round trip, and its router state stays tied to the address bar. Mixing
+  // router.push with the viewer's pushState could leave Next's saved tree for one folder
+  // under another folder's URL; a later router.push (a crumb, or the rail's Documents link)
+  // to a folder that tree already named was then silently dropped. Reads the *live* URL so a
+  // stale render can't turn a click into a no-op.
   const enterFolder = useCallback((path: string) => {
     setSearch('')
     const url = new URL(window.location.href)
@@ -115,8 +118,9 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     url.searchParams.delete('view')
     if (path) url.searchParams.set('folder', path)
     else url.searchParams.delete('folder')
-    router.push(`${pathname}${url.search}`)
-  }, [router, pathname])
+    window.history.pushState({}, '', `${pathname}${url.search}`)
+    window.scrollTo({ top: 0 })
+  }, [pathname])
 
   const goUp = useCallback(() => {
     const live = cleanFolder(new URL(window.location.href).searchParams.get('folder'))

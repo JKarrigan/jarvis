@@ -65,10 +65,14 @@ with Range, and Photos has its own `/stream`).
 - **Toolbar.** Breadcrumbs (Documents › Taxes › 2025, each a drop target),
   search (all folders; results show each hit's folder path), sort (Name, Kind,
   Date modified, Size + direction), grid/list toggle and a **Select** button. The
-  current folder is `?folder=<relPath>` and navigation uses `router.push`, so Back
-  steps up a folder; it reads the live URL (not the render's `useSearchParams`
-  snapshot) so a crumb click is never swallowed after the viewer moved `?view=`
-  through the History API. View mode and sort are remembered per browser
+  current folder is `?folder=<relPath>`; folder moves and the viewer's `?view=`
+  both go through the History API (`pushState`, which Next syncs into
+  `useSearchParams`), never `router.push`, so Back steps up a folder and Next's
+  router state can't drift from the address bar (a drifted state silently dropped
+  crumb clicks and the rail link). The page is `force-dynamic`: prerendered as
+  static, Next reused the first load's URL (search params included) when a Link
+  targeted the route again. A rail or tab link to the section you're already in
+  resets it to the top level. View mode and sort are remembered per browser
   (localStorage). Names sort with a numeric, accent- and case-insensitive collator;
   tile names are middle-truncated by grapheme (`Intl.Segmenter`), so emoji and
   combining marks are never split.

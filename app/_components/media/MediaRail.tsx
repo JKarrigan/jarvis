@@ -53,6 +53,19 @@ function CountBadge({ count, className }: { count: number; className: string }) 
   )
 }
 
+/**
+ * A rail/tab link to the section you're already in (e.g. Documents while inside a
+ * subfolder, or Photos with the viewer open) resets that section to its top level. Done
+ * with the History API so it works even when Next's router considers the route current.
+ */
+function onSamePageClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+  if (window.location.pathname !== href) return
+  e.preventDefault()
+  if (window.location.search || window.location.hash) window.history.pushState({}, '', href)
+  window.scrollTo({ top: 0 })
+}
+
 export function MediaRail({ onSearch }: { onSearch: () => void }) {
   const pathname = usePathname()
   const { pickList } = useTitleState()
@@ -72,6 +85,7 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
       <Link
         key={item.href}
         href={item.href}
+        onClick={e => onSamePageClick(e, item.href)}
         aria-label={badge ? `${item.label} (${badge})` : item.label}
         aria-current={active ? 'page' : undefined}
         title={item.label}
@@ -95,6 +109,7 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
       <Link
         key={item.href}
         href={item.href}
+        onClick={e => onSamePageClick(e, item.href)}
         aria-current={active ? 'page' : undefined}
         aria-label={badge ? `${item.label} (${badge})` : item.label}
         className={tabClass(active)}
