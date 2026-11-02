@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toast } from '../photos/PhotoBrowser'
 import { useMounted, useToast } from '../photos/hooks'
@@ -15,6 +15,7 @@ import { DeleteDialog } from './DeleteDialog'
 import { DocumentViewer } from './DocumentViewer'
 import { useCanDrag, useDocumentsDnd } from './dnd'
 import { nextUntitledName } from './fileKinds'
+import { folderCache } from './folderCache'
 import { useStorageStatus } from './hooks'
 import { FolderGlyph, FolderPlusIcon, MoveIcon } from './icons'
 import { DocumentsGrid, DocumentsList, ListHeader, type ItemEnv } from './Items'
@@ -25,6 +26,7 @@ import { UploadsPanel } from './UploadsPanel'
 import { useDocumentsBrowser } from './useDocumentsBrowser'
 import { useUploads, type UploadCallbacks } from './useUploads'
 import { DocumentsGridSkeleton } from './DocumentsSkeleton'
+import { folderScroll, navDirection, slideFrom, type NavDirection } from './navigation'
 
 type DialogState = { kind: 'move'; items: DocItem[] } | { kind: 'delete'; items: DocItem[] } | null
 type MenuState = { actions: Action[]; at: { x: number; y: number } | HTMLElement; label: string } | null
@@ -58,6 +60,16 @@ function useCoalescedRefresh(refresh: () => void, every: number) {
   }, [])
   return { schedule, flush }
 }
+
+// Pane keys that aren't folders (folder paths never contain NUL).
+const SEARCH_PANE = '\u0000search'
+const LOADING_PANE = '\u0000loading'
+const isFolderPane = (key: string) => key !== SEARCH_PANE && key !== LOADING_PANE
+
+type Pane = { key: string; dir: NavDirection; animate: boolean }
+
+/** Content swap: a short fade with a small slide (in from the right going down, from the left going up). Reduced motion keeps the fade only (MotionConfig). */
+const PANE_TRANSITION = { duration: 0.17, ease: [0.22, 0.8, 0.3, 1] as const }
 
 const glassBtn = 'inline-flex h-10 items-center gap-2 rounded-[12px] border border-white/10 bg-white/[0.06] px-3.5 text-[13.5px] font-semibold text-ink transition hover:bg-white/[0.12] disabled:cursor-not-allowed disabled:opacity-45'
 
@@ -130,6 +142,7 @@ export function DocumentsBrowser() {
       const { items } = await listFolder(folder)
       const path = joinPath(folder, nextUntitledName(items.map(i => i.name)))
       await makeFolder(path)
+      if (folder) folderCache.markStale(parentOf(folder))
       reload()
       b.reveal(path, { rename: true })
     } catch (e) {
@@ -149,17 +162,26 @@ export function DocumentsBrowser() {
       return { fieldError: errorText(e) }
     }
     const path = joinPath(item.parent, name)
-    data.patch(items => items.map(i => (i.path === item.path ? { ...i, name, path } : i)))
+    folderCache.patch(item.parent, items => items.map(i => (i.path === item.path ? { ...i, name, path } : i)))
+    if (item.isDir) {
+      folderCache.dropTree(item.path)
+      folderScroll.forget(item.path)
+    }
     b.reveal(path)
     refresh()
     focusList()
     return {}
-  }, [data, b, refresh, focusList])
+  }, [b, refresh, focusList])
 
   const performMove = useCallback(async (paths: string[], target: string): Promise<boolean> => {
     if (readOnly || paths.length === 0) return false
     const errors = await runPool(paths, 2, p => moveItem(p, target))
-    const moved = errors.filter(e => e == null).length
+    const movedPaths = paths.filter((_, i) => errors[i] == null)
+    folderCache.removeItems(movedPaths)
+    for (const p of movedPaths) folderScroll.forget(p)
+    folderCache.markStale(target)
+    if (target) folderCache.markStale(parentOf(target))
+    const moved = movedPaths.length
     const failed = errors.flatMap(e => (e == null ? [] : [errorText(e)]))
     const where = target ? baseName(target) : ROOT_NAME
     refresh()
@@ -233,7 +255,7 @@ export function DocumentsBrowser() {
       if (b.searchLoading) return 'Searching all folders…'
       return `${plural(b.items.length, 'result')} in all folders${b.searchTruncated ? ' (showing the first ones)' : ''}`
     }
-    if (data.loading || data.error) return ' '
+    if (data.loading || data.error) return ''
     const files = data.items.filter(i => !i.isDir)
     const folders = data.items.length - files.length
     const bytes = files.reduce((a, f) => a + f.size, 0)
@@ -241,10 +263,71 @@ export function DocumentsBrowser() {
   }, [b.searching, b.searchLoading, b.items.length, b.searchTruncated, data.loading, data.error, data.items])
 
   // The folder's items with uploads in flight drawn in place, in the current sort.
+  const shownFolder = b.shownFolder ?? folder
   const listEntries = useMemo(
-    () => (b.searching ? b.items : withPlaceholders(b.items, uploads.entries, folder, b.sort)),
-    [b.searching, b.items, uploads.entries, folder, b.sort],
+    () => (b.searching ? b.items : withPlaceholders(b.items, uploads.entries, shownFolder, b.sort)),
+    [b.searching, b.items, uploads.entries, shownFolder, b.sort],
   )
+
+  // --- folder transitions -------------------------------------------------------------
+  //
+  // The content pane is keyed by the folder on screen. A cached folder swaps in the same
+  // render; an uncached one keeps the previous folder in place (progress bar, aria-busy)
+  // and swaps when it arrives (the skeleton only after SKELETON_DELAY). Each swap slides
+  // in its direction; the first load doesn't animate.
+  const paneKey = b.searching ? SEARCH_PANE : b.shownFolder ?? LOADING_PANE
+  const [pane, setPane] = useState<Pane>({ key: paneKey, dir: 'none', animate: false })
+  if (pane.key !== paneKey) {
+    setPane({
+      key: paneKey,
+      dir: isFolderPane(pane.key) && isFolderPane(paneKey) ? navDirection(pane.key, paneKey) : 'none',
+      animate: pane.key !== LOADING_PANE && paneKey !== LOADING_PANE,
+    })
+  }
+
+  // Scroll is remembered per folder as you scroll (this tab), against the pane on screen,
+  // and set after each folder swap, before paint: a folder opened from here going down
+  // brings the list's top into view only if it's above the viewport; going up, Back /
+  // Forward and links put back where you were in that folder (else the same top rule).
+  // Focus is the model's (keyboard → first item; otherwise it stays put).
+  const sectionRef = useRef<HTMLElement>(null)
+  const paneRef = useRef(pane.key)
+  useEffect(() => {
+    const onScroll = () => {
+      if (isFolderPane(paneRef.current)) folderScroll.remember(paneRef.current, window.scrollY)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+  const { takeNavIntent } = b
+  useLayoutEffect(() => {
+    paneRef.current = pane.key
+    // Not on the first load (a page link already decided the scroll) or into search.
+    if (!pane.animate || !isFolderPane(pane.key)) return
+    const intent = takeNavIntent(pane.key)
+    const saved = !intent || pane.dir === 'up' ? folderScroll.recall(pane.key) : undefined
+    if (saved !== undefined) {
+      window.scrollTo(0, saved)
+      return
+    }
+    const top = sectionRef.current?.getBoundingClientRect().top
+    if (top !== undefined && top < 0) window.scrollTo(0, Math.max(0, window.scrollY + top - 12))
+  }, [pane, takeNavIntent])
+
+  // The skeleton (a slow folder) holds the height of the content it stands in for, so the
+  // card never collapses between folders.
+  const showSkeleton = b.searching ? b.searchLoading : data.loading || data.slow
+  const [contentHeight, setContentHeight] = useState(0)
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (!el.querySelector('[aria-label="Loading"]')) setContentHeight(el.offsetHeight)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  const busy = !b.searching && data.pending
 
   const viewerOpen = mounted && Boolean(b.viewPath)
   const showBar = b.selectMode && !viewerOpen
@@ -267,12 +350,11 @@ export function DocumentsBrowser() {
   const dropName = dnd.over != null ? (dnd.over ? baseName(dnd.over) : ROOT_NAME) : b.folderName
 
   const content = () => {
+    if (showSkeleton) return <DocumentsGridSkeleton view={b.viewMode} />
     if (b.searching) {
       if (b.searchError) return <Notice title="Search failed" body={b.searchError} />
-      if (b.searchLoading) return <DocumentsGridSkeleton view={b.viewMode} />
       if (b.items.length === 0) return <Notice title="No matches" body={`Nothing in Documents is called “${b.search.trim()}”.`} />
     } else {
-      if (data.loading) return <DocumentsGridSkeleton view={b.viewMode} />
       if (data.notFound) {
         return (
           <Notice title="This folder isn’t here any more" body="It may have been moved, renamed or deleted.">
@@ -291,7 +373,7 @@ export function DocumentsBrowser() {
         return (
           <div className="flex flex-col items-center justify-center gap-1.5 px-6 py-16 text-center">
             <FolderGlyph open className="mb-2 h-[52px] w-[64px] opacity-80" />
-            <p className="text-[15px] font-bold text-ink">{folder ? 'This folder is empty' : 'No documents yet'}</p>
+            <p className="text-[15px] font-bold text-ink">{shownFolder ? 'This folder is empty' : 'No documents yet'}</p>
             {!readOnly && <p className="text-[13px] text-white/50">Drag files here or use Upload.</p>}
           </div>
         )
@@ -306,7 +388,12 @@ export function DocumentsBrowser() {
         <div className="w-full min-w-0 sm:w-auto sm:flex-1">
           <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">Family files</p>
           <h1 className="text-[34px] font-[800] leading-none tracking-[-0.02em] text-ink md:text-[42px]" style={{ fontFamily: 'var(--font-schibsted), var(--font-manrope), sans-serif' }}>Documents</h1>
-          <p className="mt-2 text-[13px] tabular-nums text-white/50" aria-live="polite">{summary}</p>
+          <p
+            className={`mt-2 h-5 truncate text-[13px] leading-5 tabular-nums text-white/50 transition-opacity duration-150 ${busy ? 'opacity-0' : 'opacity-100'}`}
+            aria-live="polite"
+          >
+            {summary}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => void newFolder()} disabled={readOnly || creating} className={glassBtn}>
@@ -348,11 +435,17 @@ export function DocumentsBrowser() {
       )}
 
       <section
+        ref={sectionRef}
         aria-label={`${b.folderName} folder`}
         className={`relative rounded-[18px] border bg-surface transition-[border-color,box-shadow] ${dnd.fileDrag ? 'border-[var(--accent)] shadow-[0_0_0_3px_var(--glow)]' : 'border-border'}`}
       >
+        {busy && (
+          <div className="docs-progress pointer-events-none absolute inset-x-0 top-0 z-[2] h-0.5 overflow-hidden rounded-t-[18px]" role="progressbar" aria-label={`Opening ${b.folderName}`}>
+            <span className="block h-full w-2/5 rounded-full" style={{ background: 'var(--accent)' }} />
+          </div>
+        )}
         <div className="flex flex-col gap-2.5 border-b border-white/[0.06] px-3 py-3 md:flex-row md:items-center md:justify-between md:px-4">
-          <Breadcrumbs crumbs={b.crumbs} over={dnd.over} onOpen={b.enterFolder} />
+          <Breadcrumbs crumbs={b.crumbs} over={dnd.over} onOpen={b.enterFolder} onPrefetch={b.prefetch} />
           <div className="flex items-center gap-2">
             <SearchField value={b.search} onChange={b.setSearch} loading={b.searching && b.searchLoading} />
             <SortMenu sort={b.sort} onField={b.setSortField} onDir={b.setSortDir} />
@@ -360,20 +453,29 @@ export function DocumentsBrowser() {
             <SelectButton active={b.selectMode} onToggle={() => (b.selectMode ? b.exitSelect() : b.enterSelect())} />
           </div>
         </div>
-        {b.viewMode === 'list' && listEntries.length > 0 && <ListHeader sort={b.sort} onSort={b.toggleSort} />}
+        {b.viewMode === 'list' && <ListHeader sort={b.sort} onSort={b.toggleSort} />}
         <div
           ref={listRef}
           tabIndex={0}
           role="listbox"
           aria-multiselectable={b.selectMode}
-          aria-label={b.searching ? 'Search results' : `${b.folderName} contents`}
+          aria-label={b.searching ? 'Search results' : `${b.shownName} contents`}
           aria-activedescendant={b.lead ? b.optionId(b.lead) : undefined}
-          aria-busy={uploads.running || undefined}
+          aria-busy={uploads.running || busy || undefined}
           onKeyDown={b.onKeyDown}
           onContextMenu={onBlankContextMenu}
-          className="group/list min-h-[280px] rounded-b-[18px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
+          style={showSkeleton && contentHeight ? { minHeight: contentHeight } : undefined}
+          className="group/list min-h-[280px] overflow-x-clip rounded-b-[18px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/20"
         >
-          {content()}
+          <motion.div
+            key={pane.key}
+            data-docs-pane=""
+            initial={pane.animate ? { opacity: 0, x: slideFrom(pane.dir) } : false}
+            animate={{ opacity: 1, x: 0 }}
+            transition={PANE_TRANSITION}
+          >
+            {content()}
+          </motion.div>
         </div>
 
         <AnimatePresence>
@@ -471,6 +573,8 @@ export function DocumentsBrowser() {
           recycle={status?.recycle === true}
           onCancel={() => { setDialog(null); focusList() }}
           onDone={(deleted, errors) => {
+            folderCache.removeItems(deleted)
+            for (const p of deleted) folderScroll.forget(p)
             setDialog(null)
             b.exitSelect()
             refresh()

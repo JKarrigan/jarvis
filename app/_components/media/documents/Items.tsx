@@ -10,6 +10,7 @@ import type { Sort, SortField } from './selection'
 import { CheckboxIcon, CloseIcon, MoreIcon } from '../photos/icons'
 import { AlertIcon, ArrowDownIcon, ArrowUpIcon, FileGlyph, RetryIcon } from './icons'
 import type { ListEntry, PlaceholderSource } from './uploadPlan'
+import { GRID, ROW_GRID, ROW_HEIGHT, TILE, TILE_META, TILE_NAME, TILE_WELL } from './geometry'
 
 /** Everything a tile or row needs from the browser, passed as one object. */
 export interface ItemEnv {
@@ -38,6 +39,10 @@ export interface ItemEnv {
 function useItemPointer(item: DocItem, env: ItemEnv) {
   const { b } = env
   return {
+    // A folder about to be opened is fetched now: hover (mouse) or the press itself
+    // (touch, pen, or a click's pointerdown ~100 ms before its click).
+    onPointerEnter: item.isDir ? (e: React.PointerEvent) => { if (e.pointerType === 'mouse') b.prefetch(item.path) } : undefined,
+    onPointerDown: item.isDir ? () => b.prefetch(item.path) : undefined,
     onClick: (e: React.MouseEvent) => {
       e.stopPropagation()
       const mods = { meta: e.metaKey || e.ctrlKey, shift: e.shiftKey }
@@ -113,14 +118,14 @@ export function ItemTile({ item, env }: { item: DocItem; env: ItemEnv }) {
     <div
       {...itemProps(item, env, editing)}
       {...pointer}
-      className={`group relative flex min-w-0 cursor-pointer select-none flex-col items-center gap-1.5 rounded-[14px] px-1.5 pb-2 pt-2 outline-none transition-colors [-webkit-touch-callout:none] ${
+      className={`group ${TILE} cursor-pointer select-none outline-none transition-colors [-webkit-touch-callout:none] ${
         isOver ? 'bg-[var(--accent)]/15 ring-2 ring-[var(--accent)]' : selected ? 'bg-white/[0.07]' : 'hover:bg-white/[0.045]'
       } ${b.lead === item.path ? 'focus-lead group-focus-visible/list:ring-2 group-focus-visible/list:ring-white/45' : ''} ${env.dragging?.has(item.path) ? 'opacity-40' : ''}`}
     >
-      <div className="relative grid h-[92px] w-full place-items-center">
+      <div className={TILE_WELL}>
         <ItemIcon item={item} />
       </div>
-      <div className="flex w-full min-w-0 justify-center">
+      <div className={editing ? 'flex min-h-[34.5px] w-full min-w-0 justify-center' : TILE_NAME}>
         <ItemName
           item={item}
           editing={editing}
@@ -133,9 +138,9 @@ export function ItemTile({ item, env }: { item: DocItem; env: ItemEnv }) {
           }`}
         />
       </div>
-      {b.searching && <span className="-mt-1 max-w-full truncate text-[11px] text-white/45" title={pathLabel(item.parent)}>{pathLabel(item.parent)}</span>}
-      {!item.isDir && !b.searching && <span className="-mt-1 text-[11px] tabular-nums text-white/40">{formatBytes(item.size)}</span>}
-      {item.isDir && !b.searching && <span className="-mt-1 text-[11px] tabular-nums text-white/40">{item.childCount === 0 ? 'Empty' : `${item.childCount} item${item.childCount === 1 ? '' : 's'}`}</span>}
+      {b.searching
+        ? <span className={`${TILE_META} text-white/45`} title={pathLabel(item.parent)}><span className="truncate">{pathLabel(item.parent)}</span></span>
+        : <span className={`${TILE_META} tabular-nums text-white/40`}>{item.isDir ? (item.childCount === 0 ? 'Empty' : `${item.childCount} item${item.childCount === 1 ? '' : 's'}`) : formatBytes(item.size)}</span>}
       {b.selectMode && <SelectCircle selected={selected} className="absolute left-1 top-1" />}
       {!editing && <MoreButton item={item} env={env} className="absolute right-1 top-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-[.focus-lead]:opacity-100 [@media(hover:hover)]:group-aria-selected:opacity-100" />}
     </div>
@@ -145,7 +150,7 @@ export function ItemTile({ item, env }: { item: DocItem; env: ItemEnv }) {
 /** Icon grid. Three columns on phones, auto-fill from 128px up. Uploads in flight sit in place as placeholders. */
 export function DocumentsGrid({ items, env }: { items: ListEntry[]; env: ItemEnv }) {
   return (
-    <div className="grid grid-cols-3 gap-1 p-2 md:grid-cols-[repeat(auto-fill,minmax(132px,1fr))] md:gap-1.5 md:p-3">
+    <div className={GRID}>
       {items.map(item => (item.upload
         ? <UploadTile key={item.path} item={item} upload={item.upload} env={env} />
         : <ItemTile key={item.path} item={item} env={env} />))}
@@ -165,13 +170,13 @@ function UploadProgress({ upload, env, compact }: { upload: PlaceholderSource; e
   const { pct, label } = uploadStatus(upload)
   if (upload.state === 'error') {
     return (
-      <span className="flex items-center gap-1.5 text-[11px] font-semibold text-[#ff8a8a]">
+      <span className="flex h-5 items-center gap-1.5 text-[11px] font-semibold text-[#ff8a8a]">
         <AlertIcon className="h-3.5 w-3.5 shrink-0" /> {label}
         <button
           type="button"
           onClick={e => { e.stopPropagation(); env.onRetryUpload(upload.id) }}
           aria-label={`Retry ${upload.name}`}
-          className="inline-flex h-6 items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-2 text-[11px] font-bold text-ink hover:bg-white/[0.12]"
+          className="inline-flex h-5 items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-2 text-[11px] font-bold text-ink hover:bg-white/[0.12]"
         >
           <RetryIcon className="h-3 w-3" /> Retry
         </button>
@@ -179,7 +184,7 @@ function UploadProgress({ upload, env, compact }: { upload: PlaceholderSource; e
     )
   }
   return (
-    <span className={`flex items-center gap-2 ${compact ? 'w-full max-w-[200px]' : 'w-[84%]'}`}>
+    <span className={`flex h-4 items-center gap-2 ${compact ? 'w-full max-w-[200px]' : 'w-[84%]'}`}>
       <span
         role="progressbar"
         aria-label={`Uploading ${upload.name}`}
@@ -207,13 +212,15 @@ function UploadTile({ item, upload, env }: { item: DocItem; upload: PlaceholderS
       data-doc-key={item.path}
       data-upload={upload.state}
       onClick={e => e.stopPropagation()}
-      className="group relative flex min-w-0 select-none flex-col items-center gap-1.5 rounded-[14px] px-1.5 pb-2 pt-2"
+      className={`group ${TILE} select-none`}
     >
-      <div className={`relative grid h-[92px] w-full place-items-center ${upload.state === 'error' ? '' : 'opacity-60'}`}>
+      <div className={`${TILE_WELL} ${upload.state === 'error' ? '' : 'opacity-60'}`}>
         <FileGlyph kind={fileKind(item)} className="h-[66px] w-[54px]" />
       </div>
-      <span title={item.name} className="line-clamp-2 max-w-full px-1.5 py-px text-center text-[12.5px] font-medium leading-[1.3] text-white/60 [overflow-wrap:anywhere]">{item.name}</span>
-      <UploadProgress upload={upload} env={env} />
+      <div className={TILE_NAME}>
+        <span title={item.name} className="line-clamp-2 max-w-full px-1.5 py-px text-center text-[12.5px] font-medium leading-[1.3] text-white/60 [overflow-wrap:anywhere]">{item.name}</span>
+      </div>
+      <span className={`${TILE_META} w-full`}><UploadProgress upload={upload} env={env} /></span>
       {upload.state !== 'error' && (
         <button
           type="button"
@@ -238,13 +245,13 @@ function UploadListRow({ item, upload, env }: { item: DocItem; upload: Placehold
       data-doc-key={item.path}
       data-upload={upload.state}
       onClick={e => e.stopPropagation()}
-      className={`${ROW_GRID} min-h-[52px] select-none border-b border-white/[0.05] px-2 py-1.5 last:border-b-0 md:min-h-11 md:px-3`}
+      className={`${ROW_GRID} ${ROW_HEIGHT} select-none border-b border-white/[0.05] px-2 last:border-b-0 md:px-3`}
     >
       <span aria-hidden />
       <div className="flex min-w-0 items-center gap-2.5">
         <span className={`grid w-8 shrink-0 place-items-center ${upload.state === 'error' ? '' : 'opacity-60'}`}><FileGlyph kind={fileKind(item)} className="h-[28px] w-[23px] shrink-0" /></span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="truncate text-[13.5px] font-medium text-white/60" title={item.name}>{item.name}</span>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="truncate text-[13.5px] font-medium leading-5 text-white/60" title={item.name}>{item.name}</span>
           <UploadProgress upload={upload} env={env} compact />
         </div>
       </div>
@@ -267,9 +274,6 @@ function UploadListRow({ item, upload, env }: { item: DocItem; upload: Placehold
   )
 }
 
-// Name | Kind | Modified | Size | ⋯ ; phones: Name (+ a secondary line) | ⋯
-export const ROW_GRID = 'grid grid-cols-[32px_minmax(0,1fr)_36px] md:grid-cols-[32px_minmax(0,1fr)_150px_170px_86px_36px] items-center gap-x-2 md:gap-x-3'
-
 /** One list row; same click, drag and menu behaviour as a tile. */
 export function ItemRow({ item, env }: { item: DocItem; env: ItemEnv }) {
   const { b } = env
@@ -287,7 +291,7 @@ export function ItemRow({ item, env }: { item: DocItem; env: ItemEnv }) {
     <div
       {...itemProps(item, env, editing)}
       {...pointer}
-      className={`group ${ROW_GRID} min-h-[52px] cursor-pointer select-none border-b border-white/[0.05] px-2 py-1.5 outline-none transition-colors last:border-b-0 [-webkit-touch-callout:none] md:min-h-11 md:px-3 ${
+      className={`group ${ROW_GRID} ${editing ? 'min-h-[52px] py-1.5 md:min-h-12' : ROW_HEIGHT} cursor-pointer select-none border-b border-white/[0.05] px-2 outline-none transition-colors last:border-b-0 [-webkit-touch-callout:none] md:px-3 ${
         isOver ? 'bg-[var(--accent)]/15 ring-2 ring-inset ring-[var(--accent)]' : selected ? 'bg-[var(--accent)]/[0.13]' : 'hover:bg-white/[0.04]'
       } ${b.lead === item.path ? 'focus-lead group-focus-visible/list:ring-2 group-focus-visible/list:ring-white/45' : ''} ${env.dragging?.has(item.path) ? 'opacity-40' : ''}`}
     >

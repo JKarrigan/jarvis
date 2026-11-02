@@ -1,8 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useId, useMemo, useReducer, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
-import { ROOT_NAME, cleanFolder, type DocItem } from './api'
+import { ROOT_NAME, baseName, cleanFolder, parentOf, type DocItem } from './api'
+import { DROP_ATTR } from './dnd'
+import { folderCache } from './folderCache'
 import { useDocPrefs, useDocSearch, useFolder, type ViewMode } from './hooks'
 import {
   DEFAULT_DIR, EMPTY_SELECTION, pruneSelection, selectionReducer, sortItems, toggleSort as nextSort,
@@ -42,6 +44,29 @@ const isTypingTarget = (el: EventTarget | null) =>
 export interface Crumb { path: string; name: string }
 
 /**
+ * A folder change started here (a click, crumb or key); read once by the browser when that
+ * folder is on screen. A folder change without one came from Back / Forward or a link.
+ */
+export interface NavIntent {
+  /** The folder being opened. */
+  to: string
+  /** Started from the keyboard (focus goes to the folder's first item). */
+  keyboard: boolean
+}
+
+/** Subfolders on screen prefetched per view, when the browser is idle. */
+const IDLE_PREFETCH_MAX = 8
+
+function whenIdle(fn: () => void): () => void {
+  if (typeof window.requestIdleCallback === 'function') {
+    const h = window.requestIdleCallback(fn, { timeout: 1200 })
+    return () => window.cancelIdleCallback(h)
+  }
+  const t = window.setTimeout(fn, 250)
+  return () => window.clearTimeout(t)
+}
+
+/**
  * View model for the Documents browser (port of GuardianPad's useDocumentsBrowser):
  * folder from `?folder=` (History API pushState, so Back steps up), the open file from `?view=`
  * (History API, so Back closes the viewer), view mode + sort (localStorage), tree-wide
@@ -74,6 +99,8 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   const [selState, dispatchSel] = useReducer(selectionReducer, EMPTY_SELECTION)
   const [lead, setLead] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
+  /** A keyboard navigation to this folder: its first item takes the focus once it's on screen. */
+  const [focusFirstIn, setFocusFirstIn] = useState<string | null>(null)
 
   // A folder change (a click, Back, a pasted link) resets the per-folder view state.
   const [prevFolder, setPrevFolder] = useState(folder)
@@ -96,6 +123,11 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   const selectedItems = useMemo(() => items.filter(i => selection.selected.has(i.path)), [items, selection])
   const leadKey = lead && itemsByKey.has(lead) ? lead : null
 
+  if (focusFirstIn !== null && !data.pending && data.shownFolder === focusFirstIn && !searching) {
+    setFocusFirstIn(null)
+    if (visibleKeys.length) setLead(visibleKeys[0])
+  }
+
   const crumbs = useMemo<Crumb[]>(() => {
     const parts = folder ? folder.split('/') : []
     return [{ path: '', name: ROOT_NAME }, ...parts.map((name, i) => ({ path: parts.slice(0, i + 1).join('/'), name }))]
@@ -110,24 +142,81 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   // under another folder's URL; a later router.push (a crumb, or the rail's Documents link)
   // to a folder that tree already named was then silently dropped. Reads the *live* URL so a
   // stale render can't turn a click into a no-op.
-  const enterFolder = useCallback((path: string) => {
+  //
+  // Scroll is ours on this page (manual restoration, see DocumentsBrowser): going up, Back
+  // or Forward puts back where you were in that folder, going in shows the list's top.
+  const intentRef = useRef<NavIntent | null>(null)
+  /** The intent behind the folder now on screen, once (null: it wasn't opened from here). */
+  const takeNavIntent = useCallback((shown: string): NavIntent | null => {
+    const intent = intentRef.current
+    if (!intent || intent.to !== shown) return null
+    intentRef.current = null
+    return intent
+  }, [])
+
+  useEffect(() => {
+    const h = window.history
+    const before = h.scrollRestoration
+    h.scrollRestoration = 'manual'
+    return () => { h.scrollRestoration = before }
+  }, [])
+
+  const enterFolder = useCallback((path: string, { keyboard = false }: { keyboard?: boolean } = {}) => {
     setSearch('')
     const url = new URL(window.location.href)
     const live = cleanFolder(url.searchParams.get('folder'))
     if (path === live && !url.searchParams.has('view')) return
+    if (path !== live) {
+      intentRef.current = { to: path, keyboard }
+      if (keyboard) {
+        setFocusFirstIn(path)
+        containerRef.current?.focus({ preventScroll: true })
+      }
+    }
     url.searchParams.delete('view')
     if (path) url.searchParams.set('folder', path)
     else url.searchParams.delete('folder')
     window.history.pushState({}, '', `${pathname}${url.search}`)
-    window.scrollTo({ top: 0 })
-  }, [pathname])
+  }, [pathname, containerRef])
 
-  const goUp = useCallback(() => {
+  const goUp = useCallback((opts: { keyboard?: boolean } = {}) => {
     const live = cleanFolder(new URL(window.location.href).searchParams.get('folder'))
     if (!live) return
-    const i = live.lastIndexOf('/')
-    enterFolder(i < 0 ? '' : live.slice(0, i))
+    enterFolder(parentOf(live), opts)
   }, [enterFolder])
+
+  // --- prefetch --------------------------------------------------------------------
+
+  /** A folder the user is about to open (hover, press, focus): fetch it now. */
+  const prefetch = useCallback((path: string) => {
+    if (!readOnly) folderCache.prefetch(path, 'high')
+  }, [readOnly])
+
+  // Once a folder is on screen: its parent (up is one click away), then, when the browser
+  // is idle, the subfolders you can see (at most IDLE_PREFETCH_MAX; the cache runs two at once).
+  const settled = !data.pending && !data.loading && data.error === null && !searching ? data.shownFolder : null
+  useEffect(() => {
+    if (settled === null || readOnly) return
+    if (settled) folderCache.prefetch(parentOf(settled), 'low')
+    const cancel = whenIdle(() => {
+      const box = containerRef.current
+      if (!box) return
+      const bottom = window.innerHeight
+      const paths: string[] = []
+      for (const el of box.querySelectorAll<HTMLElement>(`[role="option"][${DROP_ATTR}]`)) {
+        const r = el.getBoundingClientRect()
+        if (r.bottom < 0 || r.top > bottom) continue
+        const p = el.getAttribute(DROP_ATTR)
+        if (p !== null) paths.push(p)
+        if (paths.length >= IDLE_PREFETCH_MAX) break
+      }
+      for (const p of paths) folderCache.prefetch(p, 'low')
+    })
+    return () => {
+      cancel()
+      folderCache.cancelQueued('low')
+    }
+  }, [settled, readOnly, containerRef])
 
   const openViewer = useCallback((path: string) => {
     window.history.pushState({ [VIEWER_STATE]: true }, '', urlWithViewer(path))
@@ -141,9 +230,9 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     else window.history.replaceState({}, '', urlWithViewer(null))
   }, [])
 
-  const open = useCallback((item: DocItem | undefined) => {
+  const open = useCallback((item: DocItem | undefined, opts: { keyboard?: boolean } = {}) => {
     if (!item) return
-    if (item.isDir) enterFolder(item.path)
+    if (item.isDir) enterFolder(item.path, opts)
     else openViewer(item.path)
   }, [enterFolder, openViewer])
 
@@ -191,13 +280,14 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
   const toggleSort = useCallback((field: SortField) => updatePrefs({ sort: nextSort(prefs.sort, field) }), [prefs.sort, updatePrefs])
   const setViewMode = useCallback((view: ViewMode) => updatePrefs({ view }), [updatePrefs])
 
-  // Keep the keyboard lead on screen.
+  // Keep the keyboard lead on screen; a folder under it is likely next, so fetch it.
   useEffect(() => {
     if (!leadKey) return
     const i = visibleKeys.indexOf(leadKey)
     if (i < 0) return
     document.getElementById(`${idPrefix}-${i}`)?.scrollIntoView({ block: 'nearest' })
-  }, [leadKey, visibleKeys, idPrefix])
+    if (itemsByKey.get(leadKey)?.isDir && !readOnly) folderCache.prefetch(leadKey, 'high')
+  }, [leadKey, visibleKeys, idPrefix, itemsByKey, readOnly])
 
   const optionId = useCallback((key: string) => {
     const i = visibleKeys.indexOf(key)
@@ -223,7 +313,7 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     }
     if (e.key === 'Enter' || (mod && e.key === 'ArrowDown')) {
       // Enter opens the focused item, in selection mode too (Space selects).
-      if (leadItem) { e.preventDefault(); open(leadItem) }
+      if (leadItem) { e.preventDefault(); open(leadItem, { keyboard: true }) }
       return
     }
     if (e.key === 'F2') {
@@ -236,7 +326,7 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
       else if (!selection.mode && leadItem) { e.preventDefault(); onDelete([leadItem]) }
       return
     }
-    if (mod && e.key === 'ArrowUp') { e.preventDefault(); goUp(); return }
+    if (mod && e.key === 'ArrowUp') { e.preventDefault(); goUp({ keyboard: true }); return }
     if (e.key === ' ' && leadKey) { e.preventDefault(); toggle(leadKey); return }
 
     const grid = prefs.view === 'grid'
@@ -258,6 +348,9 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     readOnly,
     folder,
     folderName: crumbs[crumbs.length - 1].name,
+    /** The folder whose contents are on screen (lags `folder` while an uncached one loads). */
+    shownFolder: data.shownFolder,
+    shownName: data.shownFolder ? baseName(data.shownFolder) : ROOT_NAME,
     crumbs,
     data,
     items,
@@ -282,6 +375,8 @@ export function useDocumentsBrowser({ containerRef, storageOffline, onDelete }: 
     enterFolder,
     goUp,
     open,
+    prefetch,
+    takeNavIntent,
     viewPath,
     openViewer,
     goViewer,

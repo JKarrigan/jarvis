@@ -76,6 +76,36 @@ with Range, and Photos has its own `/stream`).
   (localStorage). Names sort with a numeric, accent- and case-insensitive collator;
   tile names are middle-truncated by grapheme (`Intl.Segmenter`), so emoji and
   combining marks are never split.
+- **Folder navigation** (instant, no layout shift).
+  - *Listing cache* (`folderCache.ts`, unit-tested): an in-memory, per-tab cache of
+    listings (items + disk) keyed by path. `useFolder` reads it first, so a cached folder
+    shows in the same frame, and revalidates it in the background when older than 2 s
+    (an unchanged answer keeps the same objects and re-renders nothing; an older answer
+    never replaces a newer one). Uploads patch cached folders (`addLocal`, optimistic
+    entries survive refetches that started before them); rename patches the parent and
+    drops the folder's own entries; move/delete remove the items and drop their subtrees;
+    folders whose item counts changed go stale (refetched on the next visit or prefetch).
+  - *Prefetch*: hovering (mouse) or pressing a folder tile/row or a crumb (or focusing a
+    crumb, or the keyboard lead landing on a folder) fetches it; once a folder is on screen
+    its parent and, when idle, up to 8 visible subfolders are fetched. At most 2 prefetches
+    run at once; queued idle ones are dropped when you move on.
+  - *Uncached folder*: the previous folder stays on screen with a thin indeterminate bar
+    on top of the card (faded in after 120 ms; `aria-busy` on the list) and the header
+    summary faded out; the new folder swaps in when it arrives. Only after 400 ms with
+    nothing does the skeleton replace it, in the real tiles'/rows' geometry and holding the
+    card's height. The first load shows the skeleton straight away.
+  - *Transition*: each swap fades in over ~170 ms with a 10 px slide — from the right going
+    into a folder, from the left going up (Back counts as up when the target is an
+    ancestor); siblings and search fade only. Reduced motion: fade only. None on first load.
+  - *Stable geometry*: tiles have a fixed well, a fixed two-line name block and a fixed
+    meta line (size / item count / folder path / upload progress); list rows are one fixed
+    height; the summary line and the crumb bar are fixed-height single lines; thumbnails
+    fade in over the typed icon, which keeps its box (shared classes in `geometry.ts`).
+  - *Scroll and focus*: scroll restoration is manual on this page; each folder's position
+    is remembered per tab as you scroll. Going into a folder brings the list's top into
+    view only if it is above the viewport; going up, Back/Forward restore where you were
+    in that folder. A navigation started from the keyboard (Enter, ⌘↑, Enter on a crumb)
+    puts the focus on the new folder's first item; otherwise focus stays where it was.
 - **Grid.** Folder icon or typed file icon (PDF, Word, Excel, PowerPoint, CSV,
   text, image, audio, video, archive, other — colour-coded like GuardianPad),
   image and PDF thumbnails when the server has them, name underneath (2 lines,
@@ -158,11 +188,11 @@ with Range, and Photos has its own `/stream`).
     (`withPlaceholders`). When a file is stored the listing is patched from the
     upload result (`useFolder().addLocal`), so the placeholder becomes the real
     entry in the same spot, in the same render.
-  - *Stable listing.* `useFolder` is stale-while-revalidate: refreshing a loaded
-    folder keeps its items until the new listing replaces them (a failed
-    background refresh keeps them too, unless the folder is gone or storage went
-    offline); only a folder change shows the loading state. Optimistic entries
-    survive a refetch that started before they were stored (`mergeListing`).
+  - *Stable listing.* `useFolder` is stale-while-revalidate over the listing cache:
+    refreshing a loaded folder keeps its items until the new listing replaces them (a
+    failed background refresh keeps them too, unless the folder is gone or storage went
+    offline). Optimistic entries survive a refetch that started before they were stored
+    (`mergeListing`).
     Server refreshes are coalesced: at most one every 2 s while a queue runs,
     plus one when it drains, so the final state matches the server.
   - *Panel.* Floating bottom-right: a stable summary ("Uploading 12 of 30 ·

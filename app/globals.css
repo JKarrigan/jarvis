@@ -282,6 +282,26 @@ body {
   animation: reelShimmer 1.25s linear infinite;
 }
 
+/* Documents: thin indeterminate bar while an uncached folder loads. It fades in after a
+   beat, so a folder that arrives quickly never flashes it. */
+.docs-progress {
+  opacity: 0;
+  animation: docsProgressIn 160ms ease-out 120ms forwards;
+}
+.docs-progress > span {
+  animation: docsProgressSlide 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+.docs-thumb-in {
+  animation: docsProgressIn 200ms ease-out both;
+}
+@keyframes docsProgressIn {
+  to { opacity: 1; }
+}
+@keyframes docsProgressSlide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(260%); }
+}
+
 /* ===== Reduced motion =====
    Honour the OS "reduce motion" setting. framer-motion components follow it via
    <MotionConfig reducedMotion="user"> in the root layout; this covers the CSS
@@ -310,5 +330,11 @@ body {
   .animate-spin {
     animation-duration: 1s !important;
     animation-iteration-count: infinite !important;
+  }
+  /* A static bar still says "loading" without sliding. */
+  .docs-progress > span {
+    animation: none !important;
+    width: 100% !important;
+    opacity: 0.55;
   }
 }

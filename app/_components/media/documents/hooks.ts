@@ -1,85 +1,111 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import {
-  DocsApiError, errorText, isAbort, listFolder, searchAll, storageStatus,
-  type DiskInfo, type DocItem, type StorageStatus,
+  DocsApiError, errorText, isAbort, searchAll, storageStatus,
+  type DocItem, type StorageStatus,
 } from './api'
+import { REVALIDATE_AFTER, folderCache } from './folderCache'
 import { DEFAULT_SORT, type Sort, type SortField } from './selection'
-import { mergeListing, upsertItems, type PendingItem } from './uploadPlan'
 
 const NO_ITEMS: DocItem[] = []
 
-type FolderState = {
-  /** The folder these items belong to. */
+/** An uncached folder keeps the previous one on screen this long before showing the skeleton (ms). */
+export const SKELETON_DELAY = 400
+
+type Failure = {
+  /** The folder the request was for. */
   key: string
-  items: DocItem[]
-  disk: DiskInfo | null
-  error: string | null
+  error: string
   status: number
   offline: boolean
 }
 
+const serverVersion = () => 0
+
 /**
- * One folder's listing, stale-while-revalidate. State is keyed by the folder, so a slow
- * answer for the folder you just left never shows under the new one, and only a folder
- * change shows the loading state. `reload()` refetches in place: the current items stay
- * on screen until the new listing replaces them (a failed background refetch keeps them,
- * unless the folder is gone or storage went offline). `addLocal()` patches the listing
- * optimistically (stored uploads, folders a drop created); those entries survive a
- * refetch that started before they existed, so a refresh never takes an item away.
+ * The folder to show, from the tab's listing cache (`folderCache`), stale-while-revalidate.
+ *
+ * - A cached folder shows in the same render; it's refetched in the background when
+ *   older than `REVALIDATE_AFTER` (an unchanged answer re-renders nothing).
+ * - An uncached one keeps the previous folder's listing on screen (`pending`, for the
+ *   progress bar) until its own arrives; only after `SKELETON_DELAY` with nothing does
+ *   it report `slow` (the skeleton). The very first load is `loading`.
+ * - `reload()` refetches in place after an edit; a failed background refetch keeps the
+ *   cached items unless the folder is gone (404) or storage went offline.
+ * - `patch()` / `addLocal()` edit the cache optimistically (rename, stored uploads,
+ *   folders a drop created); additions survive a refetch that started before them.
+ *
+ * State is keyed by folder, so a slow answer for a folder you left never shows under
+ * another one.
  */
 export function useFolder(folder: string) {
-  const [state, setState] = useState<FolderState | null>(null)
-  const [seq, setSeq] = useState(0)
-  const pending = useRef<PendingItem[]>([])
+  const cache = folderCache
+  useSyncExternalStore(cache.subscribe, cache.getVersion, serverVersion)
+  const entry = cache.get(folder)
+  const [failure, setFailure] = useState<Failure | null>(null)
+  const failed = failure?.key === folder ? failure : null
+  const ready = entry !== undefined || failed !== null
+
+  // The folder on screen: this one once it has something to show, else the last one that did.
+  const [shownKey, setShownKey] = useState<string | null>(null)
+  if (ready && shownKey !== folder) setShownKey(folder)
+  const [slowKey, setSlowKey] = useState<string | null>(null)
+  if (ready && slowKey !== null) setSlowKey(null)
+
+  const track = useCallback((key: string, request: Promise<unknown>, signal?: AbortSignal) => {
+    request
+      .then(() => {
+        if (signal?.aborted) return
+        setFailure(f => (f && f.key === key ? null : f))
+      })
+      .catch((e: unknown) => {
+        if (isAbort(e) || signal?.aborted) return
+        const status = e instanceof DocsApiError ? e.status : 0
+        const offline = e instanceof DocsApiError && e.offline
+        // A failed refetch of a folder still on screen keeps it, unless it's gone or storage is.
+        if (status !== 404 && !offline && cache.get(key)) return
+        setFailure({ key, error: errorText(e), status, offline })
+      })
+  }, [cache])
 
   useEffect(() => {
     const ctrl = new AbortController()
-    const startedAt = Date.now()
-    listFolder(folder, ctrl.signal)
-      .then(({ items, disk }) => {
-        if (ctrl.signal.aborted) return
-        const merged = mergeListing(items, pending.current.filter(p => p.item.parent === folder), startedAt)
-        pending.current = [...pending.current.filter(p => p.item.parent !== folder), ...merged.pending]
-        setState({ key: folder, items: merged.items, disk, error: null, status: 200, offline: false })
-      })
-      .catch(e => {
-        if (isAbort(e) || ctrl.signal.aborted) return
-        const status = e instanceof DocsApiError ? e.status : 0
-        const offline = e instanceof DocsApiError && e.offline
-        setState(s => (s && s.key === folder && !s.error && status !== 404 && !offline
-          ? s
-          : { key: folder, items: [], disk: null, error: errorText(e), status, offline }))
-      })
+    if (!cache.isFresh(folder, REVALIDATE_AFTER)) track(folder, cache.load(folder), ctrl.signal)
     return () => ctrl.abort()
-  }, [folder, seq])
+  }, [cache, folder, track])
 
-  const current = state?.key === folder ? state : null
-  const reload = useCallback(() => setSeq(n => n + 1), [])
+  useEffect(() => {
+    if (ready) return
+    const t = setTimeout(() => setSlowKey(folder), SKELETON_DELAY)
+    return () => clearTimeout(t)
+  }, [ready, folder])
+
+  const reload = useCallback(() => track(folder, cache.load(folder, { force: true })), [cache, folder, track])
   /** Local edits before the refetch lands (rename keeps its tile instead of flashing). */
-  const patch = useCallback((fn: (items: DocItem[]) => DocItem[]) => {
-    setState(s => (s && s.key === folder ? { ...s, items: fn(s.items) } : s))
-  }, [folder])
-  /** Optimistic additions (any folder; only this folder's show now, the rest wait for their listing). */
-  const addLocal = useCallback((items: DocItem[]) => {
-    if (items.length === 0) return
-    const at = Date.now()
-    pending.current = [...pending.current.filter(p => !items.some(i => i.path === p.item.path)), ...items.map(item => ({ item, at }))]
-    setState(s => {
-      if (!s || s.error) return s
-      const mine = items.filter(i => i.parent === s.key)
-      return mine.length ? { ...s, items: upsertItems(s.items, mine) } : s
-    })
-  }, [])
+  const patch = useCallback((fn: (items: DocItem[]) => DocItem[]) => cache.patch(folder, fn), [cache, folder])
+  /** Optimistic additions (any folder; cached ones update now, the rest wait for their listing). */
+  const addLocal = useCallback((items: DocItem[]) => cache.addLocal(items), [cache])
+
+  const shown = ready ? folder : shownKey
+  const shownListing = shown === null ? undefined : shown === folder ? entry : cache.get(shown)
+  const shownFailure = shown !== null && failure?.key === shown ? failure : null
+  const has = shownListing !== undefined || shownFailure !== null
 
   return {
-    items: current?.items ?? NO_ITEMS,
-    disk: current?.disk ?? null,
-    loading: current === null,
-    error: current?.error ?? null,
-    notFound: current?.status === 404,
-    offline: current?.offline ?? false,
+    /** The folder whose contents are on screen (the previous one while `pending`; null before the first load). */
+    shownFolder: has ? shown : null,
+    items: shownFailure ? NO_ITEMS : shownListing?.items ?? NO_ITEMS,
+    disk: shownListing?.disk ?? null,
+    /** Nothing to show at all (first load). */
+    loading: !has,
+    /** The requested folder isn't here yet; the previous one stays on screen. */
+    pending: !ready,
+    /** …and it has taken longer than SKELETON_DELAY. */
+    slow: !ready && slowKey === folder,
+    error: shownFailure?.error ?? null,
+    notFound: shownFailure?.status === 404,
+    offline: shownFailure?.offline ?? false,
     reload,
     patch,
     addLocal,

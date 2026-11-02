@@ -10,13 +10,30 @@ import type { Crumb } from './useDocumentsBrowser'
 import type { ViewMode } from './hooks'
 import { ArrowDownIcon, ArrowUpIcon, ChevronSmallRight, CheckIcon, GridViewIcon, ListViewIcon, SortIcon } from './icons'
 
-/** Documents › Taxes › 2025 — every crumb opens its folder and takes drops (items to move, files to upload). */
-export function Breadcrumbs({ crumbs, over, onOpen }: { crumbs: Crumb[]; over: string | null; onOpen: (path: string) => void }) {
+/**
+ * Documents › Taxes › 2025 — every crumb opens its folder and takes drops (items to move,
+ * files to upload). Hovering, pressing or focusing a crumb prefetches its folder. One
+ * fixed-height line, so the bar never changes height between folders.
+ */
+export function Breadcrumbs({ crumbs, over, onOpen, onPrefetch }: {
+  crumbs: Crumb[]
+  over: string | null
+  /** `keyboard`: activated with Enter/Space (focus then moves to the folder's first item). */
+  onOpen: (path: string, opts: { keyboard: boolean }) => void
+  onPrefetch: (path: string) => void
+}) {
   // Phones keep the last two crumbs; "…" steps up to the hidden parent.
   const collapse = crumbs.length > 3
   const hiddenParent = collapse ? crumbs[crumbs.length - 3] : null
+  const intent = (path: string) => ({
+    onPointerEnter: (e: React.PointerEvent) => { if (e.pointerType === 'mouse') onPrefetch(path) },
+    onPointerDown: () => onPrefetch(path),
+    onFocus: () => onPrefetch(path),
+    // A keyboard activation has no pointer position (detail 0).
+    onClick: (e: React.MouseEvent) => onOpen(path, { keyboard: e.detail === 0 }),
+  })
   return (
-    <nav aria-label="Folder path" className="flex min-w-0 items-center gap-0.5">
+    <nav aria-label="Folder path" className="flex h-8 min-w-0 items-center gap-0.5">
       {crumbs.map((c, i) => {
         const current = i === crumbs.length - 1
         const hideOnPhone = collapse && i < crumbs.length - 2
@@ -27,7 +44,7 @@ export function Breadcrumbs({ crumbs, over, onOpen }: { crumbs: Crumb[]; over: s
               <>
                 <button
                   type="button"
-                  onClick={() => onOpen(hiddenParent.path)}
+                  {...intent(hiddenParent.path)}
                   aria-label={`Up to ${hiddenParent.name}`}
                   {...{ [DROP_ATTR]: hiddenParent.path }}
                   className="rounded-[8px] px-1.5 py-1 text-[14px] text-white/55 hover:text-white md:hidden"
@@ -39,7 +56,7 @@ export function Breadcrumbs({ crumbs, over, onOpen }: { crumbs: Crumb[]; over: s
             )}
             <button
               type="button"
-              onClick={() => onOpen(c.path)}
+              {...intent(c.path)}
               aria-current={current ? 'page' : undefined}
               {...{ [DROP_ATTR]: c.path }}
               className={`min-w-0 max-w-[200px] truncate rounded-[8px] px-2 py-1 text-[14px] outline-none transition focus-visible:ring-2 focus-visible:ring-white/40 ${
