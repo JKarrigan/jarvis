@@ -1,69 +1,38 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { usePolling } from './PollingProvider'
 import { Dashboard } from './Dashboard'
 import { SetupScreen } from './SetupScreen'
 import { StaleBanner } from './StaleBanner'
-import { Toast, useToast } from './Toast'
 import type { DailySummary } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
+import { eventDescription, eventRecommendation, eventTitle, severityFor } from '@/lib/eventInfo'
 import { STALE_AFTER_MS, useIsOlderThan } from '@/lib/useNow'
 
 const DEV = process.env.NODE_ENV === 'development'
 const SUMMARY_REFRESH_MS = 15 * 60 * 1000
-/** Event ids already toasted, so a reload doesn't toast them again (bounded). */
-const NOTIFIED_KEY = 'aq-notified'
-const NOTIFIED_MAX = 50
-
-function makeMockEvent(overrides: Partial<AirQualityEvent> & Pick<AirQualityEvent, 'id' | 'type' | 'severity' | 'title' | 'description'>): AirQualityEvent {
-  const now = new Date()
-  return {
-    startTime: new Date(now.getTime() - 8 * 60 * 1000),
-    endTime: null,
-    durationMinutes: 8,
-    peak: { noxIndex: 245, tvocIndex: 230, pm02: 18.4, rco2: 1120 },
-    baseline: { noxIndex: 101, tvocIndex: 102, pm02: 4.2, rco2: 870 },
-    recommendation: null,
-    confidence: 0.78,
-    acknowledged: false,
-    ...overrides,
-  }
-}
-
+/** Development only: two made-up open alerts, to see the banner, toasts and badge. */
 function mockEvents(): AirQualityEvent[] {
+  const startTime = new Date(Date.now() - 8 * 60 * 1000)
+  const baseline = { noxIndex: 1, tvocIndex: 90, pm02: 4.2, rco2: 870 }
+  const smoke = { noxIndex: 25, tvocIndex: 430, pm02: 140, rco2: 1120 }
+  const stale = { noxIndex: 1, tvocIndex: 104, pm02: 4.2, rco2: 1620 }
+  const base = { startTime, endTime: null, durationMinutes: 8, baseline, confidence: 1, acknowledged: false }
   return [
-    makeMockEvent({
-      id: 'dev_combustion_exhaust',
-      type: 'combustion_exhaust',
-      severity: 'critical',
-      title: 'Possible combustion exhaust',
-      description: 'NOx (245), PM2.5 (18.4 μg/m³), and VOC rose together — a pattern consistent with combustion products entering the room.',
-      recommendation: 'Check stove venting. Open windows. Check your CO detector.',
-    }),
-    makeMockEvent({
-      id: 'dev_ventilation_poor',
-      type: 'ventilation_poor',
-      severity: 'warning',
-      title: 'Poor ventilation',
-      description: 'CO₂ reached 1120 ppm. The room has insufficient fresh air for current occupancy.',
-      recommendation: 'Open a window or increase fresh air intake.',
-      peak: { noxIndex: 101, tvocIndex: 104, pm02: 4.2, rco2: 1120 },
-    }),
+    {
+      ...base, id: 'dev_combustion_exhaust', type: 'combustion_exhaust', peak: smoke,
+      severity: severityFor('combustion_exhaust', smoke), title: eventTitle('combustion_exhaust'),
+      description: eventDescription('combustion_exhaust', smoke, baseline),
+      recommendation: eventRecommendation('combustion_exhaust', 'critical'),
+    },
+    {
+      ...base, id: 'dev_ventilation_poor', type: 'ventilation_poor', peak: stale,
+      severity: severityFor('ventilation_poor', stale), title: eventTitle('ventilation_poor'),
+      description: eventDescription('ventilation_poor', stale, baseline),
+      recommendation: eventRecommendation('ventilation_poor', 'warning'),
+    },
   ]
-}
-
-function readNotified(): string[] {
-  try {
-    const v = JSON.parse(localStorage.getItem(NOTIFIED_KEY) ?? '[]')
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
-  } catch {
-    return []
-  }
-}
-
-function writeNotified(ids: string[]): void {
-  try { localStorage.setItem(NOTIFIED_KEY, JSON.stringify(ids.slice(-NOTIFIED_MAX))) } catch { /* ignore */ }
 }
 
 /** Daily AQI summaries bucketed in the browser's time zone, refreshed every 15 min. */
@@ -93,50 +62,20 @@ function useDailySummaries(): DailySummary[] {
 }
 
 export function DashboardShell() {
-  const { ready, deviceIp, measures, history, lastUpdated, error, tempUnit, setTempUnit, pmBatchId, outdoorAqi, handleIpSave, activeEvents, acknowledgeEvent } = usePolling()
+  const { ready, deviceIp, measures, history, lastUpdated, error, tempUnit, setTempUnit, pmBatchId, outdoorAqi, handleIpSave, setPreviewEvents } = usePolling()
   const dailySummaries = useDailySummaries()
-  const { toast, showToast, dismissToast } = useToast()
-  const [devEvents, setDevEvents] = useState<AirQualityEvent[]>([])
-  const notifiedIds = useRef<Set<string> | null>(null)
+  const [simulating, setSimulating] = useState(false)
 
-  const allActiveEvents = useMemo(() => [...activeEvents, ...devEvents], [activeEvents, devEvents])
-
-  // Toast new critical/warning events once per id and severity: an event
-  // keeps its id when it escalates (say VOC → combustion), and that should alert again.
-  useEffect(() => {
-    notifiedIds.current ??= new Set(readNotified())
-    const seen = notifiedIds.current
-    let changed = false
-    for (const event of allActiveEvents) {
-      const key = `${event.id}:${event.severity}`
-      if (seen.has(key) || event.acknowledged) continue
-      if (event.severity !== 'critical' && event.severity !== 'warning') continue
-      showToast(event.severity, event.title)
-      seen.add(key)
-      changed = true
-    }
-    if (changed) writeNotified([...seen])
-  }, [allActiveEvents, showToast])
-
-  function handleAcknowledge(id: string) {
-    if (devEvents.some(e => e.id === id)) {
-      setDevEvents(prev => prev.filter(e => e.id !== id))
-    } else {
-      acknowledgeEvent(id)
-    }
-  }
-
+  // Made-up alerts go through the provider, so the banner, toasts and badge all react.
   function simulateAlerts() {
-    // Forget the mock ids so their toasts fire again
-    const mockIds = new Set(mockEvents().map(e => e.id))
-    for (const key of [...(notifiedIds.current ?? [])]) {
-      if (mockIds.has(key.slice(0, key.lastIndexOf(':')))) notifiedIds.current?.delete(key)
-    }
-    setDevEvents(mockEvents())
+    try { localStorage.removeItem('aq-notified') } catch { /* ignore */ }
+    setPreviewEvents(mockEvents())
+    setSimulating(true)
   }
 
   function clearAlerts() {
-    setDevEvents([])
+    setPreviewEvents([])
+    setSimulating(false)
   }
 
   const lastHistoryEntry = history.length > 0 ? history[history.length - 1] : null
@@ -181,13 +120,10 @@ export function DashboardShell() {
         pmBatchId={pmBatchId}
         outdoorAqi={outdoorAqi}
         dailySummaries={dailySummaries}
-        activeEvents={allActiveEvents}
-        onAcknowledgeEvent={handleAcknowledge}
         stale={stale}
         banner={<StaleBanner lastUpdated={displayLastUpdated} error={error} stale={old} />}
-        devControls={DEV ? { onSimulate: simulateAlerts, onClear: clearAlerts, hasDevEvents: devEvents.length > 0 } : undefined}
+        devControls={DEV ? { onSimulate: simulateAlerts, onClear: clearAlerts, hasDevEvents: simulating } : undefined}
       />
-      <Toast toast={toast} onDismiss={dismissToast} />
     </>
   )
 }

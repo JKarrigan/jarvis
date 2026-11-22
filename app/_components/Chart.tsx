@@ -4,12 +4,14 @@ import { memo, useMemo, useState } from 'react'
 import type { StatusColor } from '@/lib/types'
 import type { AirQualityEvent, Severity } from '@/lib/eventTypes'
 import { NEUTRAL_HEX, STATUS_COLORS } from '@/lib/statusColors'
+import { METRIC_INFO, SEVERITY_INFO, eventTitle, fmtDuration, fmtMetric, keyMetrics } from '@/lib/eventInfo'
 
+/** Event bands use the one severity palette (lib/eventInfo.ts). */
 const EVENT_COLOR: Record<Severity, string> = {
-  critical: '#dc2626',
-  warning: '#f59e0b',
-  notable: '#3b82f6',
-  info: '#9ca3af',
+  critical: SEVERITY_INFO.critical.barHex,
+  warning: SEVERITY_INFO.warning.barHex,
+  notable: SEVERITY_INFO.notable.barHex,
+  info: SEVERITY_INFO.info.barHex,
 }
 
 const EVENT_OPACITY: Record<Severity, number> = {
@@ -144,10 +146,9 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
 
   const sortedEvents = useMemo(() => {
     if (!geo) return []
-    // Events visible in this chart's time window (confidence >= 0.5 to avoid low-confidence noise)
+    // Events visible in this chart's time window
     return (events ?? [])
       .filter(e => {
-        if (e.confidence < 0.5) return false
         const start = e.startTime.getTime()
         const end = e.endTime?.getTime() ?? geo.tMax
         return end >= geo.tMin && start <= geo.tMax
@@ -318,13 +319,13 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
             <g>
               <rect x={TX} y={TY} width={TW} height={TH} rx="4" fill="#18181b" stroke={eColor} strokeWidth="1" strokeOpacity="0.6" />
               <text x={TX + TW / 2} y={TY + 14} textAnchor="middle" fill={eColor} fontSize="12" fontWeight="600">
-                {hoveredEvent.title}
+                {eventTitle(hoveredEvent.type)}
               </text>
               <text x={TX + TW / 2} y={TY + 28} textAnchor="middle" fill="#a1a1aa" fontSize="10">
-                NOx {hoveredEvent.peak.noxIndex} · PM2.5 {hoveredEvent.peak.pm02.toFixed(1)} · VOC {hoveredEvent.peak.tvocIndex}
+                {keyMetrics(hoveredEvent).map(m => `${METRIC_INFO[m].short} ${fmtMetric(m, hoveredEvent.peak[m])}`).join(' · ')}
               </text>
               <text x={TX + TW / 2} y={TY + 42} textAnchor="middle" fill="#a1a1aa" fontSize="10">
-                {Math.round(hoveredEvent.durationMinutes)} min · confidence {Math.round(hoveredEvent.confidence * 100)}%
+                {SEVERITY_INFO[hoveredEvent.severity].label} · {fmtDuration(hoveredEvent.durationMinutes)}
               </text>
             </g>
           )

@@ -14,6 +14,8 @@ import { MetricStrip, metricReading, type MetricReading } from './MetricCard'
 import { attentionLine, outdoorLine } from './AqiSummary'
 import { buildSeries, toUnit } from './Dashboard'
 import { cardCls, SectionTitle } from './air/ui'
+import { EventBanner } from './events/EventBanner'
+import { DayTrack, EventRow, HourAxis, fmtClock, fmtDay, relativeDay, startOfDay } from './events/EventBits'
 import { computeAqi } from '@/lib/aqi'
 import { STATUS_COLORS } from '@/lib/statusColors'
 import { type LightState, briPct, RoomModal, LightModal } from './HueControls'
@@ -50,56 +52,56 @@ interface HomeDashboardProps {
   onLightClose: () => void
 }
 
-const EVENT_COLOR: Record<string, string> = {
-  critical: '#dc2626',
-  warning: '#f59e0b',
-  notable: '#3b82f6',
-  info: '#9ca3af',
-}
+const TODAY_SHOWN = 4
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
-/** Last-24-h events; re-renders once a minute for the "x min ago" labels. */
-const RecentEvents = memo(function RecentEvents({ events }: { events: AirQualityEvent[] }) {
+/**
+ * Today as one midnight-to-midnight line with what happened under it. On a
+ * quiet day it is a single sentence saying when the last event was.
+ */
+const TodayEvents = memo(function TodayEvents({ events }: { events: AirQualityEvent[] }) {
   const nowMs = useNowMinute()
-  const recent = useMemo(() => {
-    if (nowMs == null) return []
-    const cutoff = nowMs - DAY_MS
-    const byId = new Map<string, AirQualityEvent>()
-    for (const e of events) {
-      if ((e.startTime.getTime() >= cutoff || e.endTime === null) && e.confidence >= 0.5) byId.set(e.id, e)
+  const { today, last } = useMemo(() => {
+    if (nowMs == null) return { today: [], last: null }
+    const dayStart = startOfDay(nowMs)
+    const sorted = [...events].sort((a, b) => b.startTime.getTime() - a.startTime.getTime())
+    return {
+      // Anything that touched today, including one that began last night.
+      today: sorted.filter(e => (e.endTime?.getTime() ?? nowMs) >= dayStart),
+      last: sorted[0] ?? null,
     }
-    return [...byId.values()]
-      .sort((a, b) => b.startTime.getTime() - a.startTime.getTime())
-      .slice(0, 5)
   }, [events, nowMs])
-  if (nowMs == null || recent.length === 0) return null
+  if (nowMs == null) return null
+  const dayStart = startOfDay(nowMs)
+  const allEvents = (
+    <Link href="/events" className="inline-flex min-h-8 shrink-0 items-center text-sm text-zinc-400 transition-colors hover:text-white">All events</Link>
+  )
+
+  if (today.length === 0) {
+    const lastDay = last ? relativeDay(startOfDay(last.startTime.getTime()), nowMs)?.toLowerCase() ?? fmtDay(last.startTime) : null
+    return (
+      <section aria-label="Today's events" className={`${cardCls} flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-3`}>
+        <p className="text-sm text-zinc-300">
+          No events today.
+          {last && <span className="text-zinc-400"> Last one: {lastDay}, {fmtClock(last.startTime)}.</span>}
+        </p>
+        {allEvents}
+      </section>
+    )
+  }
 
   return (
-    <section aria-label="Recent events" className={`${cardCls} overflow-hidden`}>
+    <section aria-label="Today's events" className={`${cardCls} overflow-hidden`}>
       <div className="flex items-center justify-between px-5 pb-2 pt-4">
-        <SectionTitle>Events in the last 24 hours</SectionTitle>
-        <Link href="/events" className="inline-flex min-h-8 items-center text-sm text-zinc-400 transition-colors hover:text-white">All events</Link>
+        <SectionTitle>Today&apos;s events</SectionTitle>
+        {allEvents}
       </div>
-      <div className="divide-y divide-air-line">
-        {recent.map(e => {
-          const mins = Math.max(0, Math.round((nowMs - e.startTime.getTime()) / 60000))
-          const ago = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`
-          return (
-            <Link key={e.id} href={`/events/${encodeURIComponent(e.id)}`} className="flex gap-3 px-5 py-3.5 transition-colors hover:bg-white/[0.03]">
-              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-[2px]" style={{ backgroundColor: EVENT_COLOR[e.severity] }} aria-hidden="true" />
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium text-zinc-100">{e.title}</span>
-                  {!e.endTime && <span className="shrink-0 text-sm text-emerald-400">ongoing</span>}
-                  <span className="ml-auto shrink-0 text-sm tabular-nums text-zinc-400">{ago}</span>
-                </div>
-                {e.description && <p className="line-clamp-2 text-sm leading-relaxed text-zinc-400">{e.description}</p>}
-              </div>
-            </Link>
-          )
-        })}
+      <div className="px-5 pb-3">
+        <DayTrack dayStart={dayStart} events={today} now={nowMs} linked />
+        <HourAxis className="mt-1" />
       </div>
+      {today.slice(0, TODAY_SHOWN).map(e => (
+        <EventRow key={e.id} event={e} now={nowMs} showDay={e.startTime.getTime() < dayStart} className="border-t border-air-line" />
+      ))}
     </section>
   )
 })
@@ -202,9 +204,12 @@ export function HomeDashboard({
 
       <main className="relative mx-auto flex w-full max-w-[1320px] flex-col gap-8 px-5 pb-10 pt-5 md:gap-10 md:px-12 md:pb-12 md:pt-10">
         <h1 className="sr-only">Overview</h1>
-        <DateLine className="text-base text-zinc-300 md:text-lg" />
-
-        {banner}
+        {/* One tight stack, so a banner sliding in or out moves the page by its own height only. */}
+        <div className="flex flex-col gap-4">
+          <DateLine className="text-base text-zinc-300 md:text-lg" />
+          {banner}
+          <EventBanner />
+        </div>
 
         {/* Now: the clock and the one-line answer to "how is the air?" */}
         <section aria-label="Now" className="flex flex-wrap items-end justify-between gap-x-16 gap-y-8">
@@ -279,7 +284,7 @@ export function HomeDashboard({
           />
         )}
 
-        <RecentEvents events={recentEvents} />
+        <TodayEvents events={recentEvents} />
       </main>
 
       <AnimatePresence>

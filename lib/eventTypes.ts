@@ -15,6 +15,27 @@ export interface LocalBaseline {
   rco2: number
 }
 
+/**
+ * A small, saved outline of an event: averaged buckets of the four detection
+ * readings from 15 minutes before it to 15 minutes after, plus when each one
+ * peaked and how long the air spent in the health bands. Kept with the event
+ * row, so an event still has a chart after its raw readings are pruned.
+ */
+export interface EventTrace {
+  /** Start of the first bucket (ms). */
+  from: number
+  stepMs: number
+  /** One value per bucket; null where there were no readings. */
+  pm02: (number | null)[]
+  tvocIndex: (number | null)[]
+  noxIndex: (number | null)[]
+  rco2: (number | null)[]
+  /** When each reading was highest during the event (ms). */
+  peakAt: { pm02: number; tvocIndex: number; noxIndex: number; rco2: number }
+  /** Minutes during the event at or above each band. */
+  minutes: { pmSensitive: number; pmUnhealthy: number; pmVeryUnhealthy: number; co2High: number; co2VeryHigh: number }
+}
+
 export interface AirQualityEvent {
   id: string
   type: EventType
@@ -34,6 +55,8 @@ export interface AirQualityEvent {
   recommendation: string | null
   confidence: number
   acknowledged: boolean
+  /** Only on a single event read (`getEventById`); lists leave it out. */
+  trace?: EventTrace | null
 }
 
 // Thin adapter — subset of DeviceMeasures needed by the detector

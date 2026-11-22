@@ -125,12 +125,13 @@ function HealthRow({ label, health }: { label: string; health: { state: Health; 
  */
 export function AirSidebar() {
   const pathname = usePathname()
-  const { activeEvents } = usePolling()
+  const { alerts } = usePolling()
   const sensor = useSensorHealth()
   const hue = useHueHealth()
   const [moreOpen, setMoreOpen] = useState(false)
 
-  const openEvents = activeEvents.filter(e => !e.acknowledged).length
+  // Open warnings and criticals nobody has dismissed (notable events never badge).
+  const openEvents = alerts.length
   const moreActive = SYSTEM.some(item => isActive(pathname, item))
 
   const sideLink = (item: NavItem, badge?: number) => {
@@ -149,7 +150,7 @@ export function AirSidebar() {
         <span className="flex-1 whitespace-nowrap opacity-0 transition-opacity duration-200 wide:opacity-100">{item.label}</span>
         {badge ? (
           <span className="absolute right-1.5 top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-amber-400 px-1 text-[11px] font-bold text-zinc-950 wide:static">
-            {badge}<span className="sr-only"> open</span>
+            {badge}<span className="sr-only"> {badge === 1 ? 'alert' : 'alerts'}</span>
           </span>
         ) : null}
       </Link>
@@ -214,7 +215,7 @@ export function AirSidebar() {
               <span className="max-w-full truncate">{item.short ?? item.label}</span>
               {badge > 0 && (
                 <span className="absolute left-1/2 top-1 ml-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-amber-400 px-1 text-[10px] font-bold text-zinc-950">
-                  {badge}<span className="sr-only"> open</span>
+                  {badge}<span className="sr-only"> {badge === 1 ? 'alert' : 'alerts'}</span>
                 </span>
               )}
             </Link>

@@ -2,8 +2,9 @@ import 'server-only'
 import Database from 'better-sqlite3'
 import path from 'path'
 import type { DeviceMeasures, HistoryEntry } from './types'
-import type { AirGradientReading, AirQualityEvent } from './eventTypes'
-import { DETECTION_TIMING, SEVERITY_RANK, mergeEvents, slotOf } from './eventDetection'
+import type { AirGradientReading, AirQualityEvent, EventTrace } from './eventTypes'
+import { DETECTION_TIMING, SEVERITY_RANK, mergeEvents, rederiveEvent, slotOf } from './eventDetection'
+import { SEVERITY_LIMITS } from './eventInfo'
 
 const DB_PATH = process.env.DB_PATH ?? path.join(process.cwd(), 'airgradient.db')
 
@@ -39,10 +40,14 @@ export function getDb(): Database.Database {
         recommendation   TEXT,
         confidence       REAL    NOT NULL,
         acknowledged     INTEGER NOT NULL DEFAULT 0,
-        created_at       INTEGER NOT NULL
+        created_at       INTEGER NOT NULL,
+        trace            TEXT
       );
       CREATE INDEX IF NOT EXISTS events_start ON events (start_time);
     `)
+    // Databases created before events kept a trace.
+    const eventColumns = db.prepare('PRAGMA table_info(events)').all() as { name: string }[]
+    if (!eventColumns.some(c => c.name === 'trace')) db.exec('ALTER TABLE events ADD COLUMN trace TEXT')
     g.__ag_db = db
   }
   return g.__ag_db
@@ -305,6 +310,8 @@ const UPSERT_EVENT_SQL = `
     description      = excluded.description,
     recommendation   = excluded.recommendation,
     confidence       = excluded.confidence,
+    -- Any write means the event changed; its trace is rebuilt when it closes.
+    trace            = NULL,
     -- An acknowledgement is sticky while the event stays as severe as it was;
     -- escalating (say VOC → combustion) makes it alert again.
     acknowledged     = CASE
@@ -366,7 +373,7 @@ export function replaceEvents(events: AirQualityEvent[], readingsFrom: number): 
   const margin = DETECTION_TIMING.MERGE_WINDOW_MS
   db.transaction(() => {
     const acked = (db
-      .prepare('SELECT * FROM events WHERE acknowledged = 1 AND start_time >= ?')
+      .prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE acknowledged = 1 AND start_time >= ?`)
       .all(from) as EventRow[]).map(rowToEvent)
     const ackedIds = new Set(acked.map(a => a.id))
     const isAcked = (e: AirQualityEvent) => {
@@ -402,7 +409,7 @@ const EVENT_COLUMNS = 'id, type, severity, start_time, end_time, duration_minute
 export function mergeDuplicateEvents(now = Date.now()): { removed: number; merged: number } {
   const db = getDb()
   return db.transaction(() => {
-    const rows = (db.prepare('SELECT * FROM events').all() as EventRow[]).map(rowToEvent)
+    const rows = (db.prepare(`SELECT ${EVENT_COLUMNS} FROM events`).all() as EventRow[]).map(rowToEvent)
     const { merged, removedIds } = mergeEvents(rows)
     if (removedIds.length === 0) return { removed: 0, merged: 0 }
 
@@ -411,7 +418,8 @@ export function mergeDuplicateEvents(now = Date.now()): { removed: number; merge
     const remove = db.prepare('DELETE FROM events WHERE id = ?')
     const update = db.prepare(`
       UPDATE events SET type = ?, severity = ?, end_time = ?, duration_minutes = ?, peak = ?,
-                        title = ?, description = ?, recommendation = ?, confidence = ?, acknowledged = ?
+                        title = ?, description = ?, recommendation = ?, confidence = ?, acknowledged = ?,
+                        trace = NULL
       WHERE id = ?
     `)
     for (const id of [...merged.map(e => e.id), ...removedIds]) backup.run(now, id)
@@ -430,10 +438,18 @@ interface EventRow {
   id: string; type: string; severity: string; start_time: number; end_time: number | null
   duration_minutes: number; peak: string; baseline: string; title: string; description: string
   recommendation: string | null; confidence: number; acknowledged: number
+  /** Only selected for a single event read. */
+  trace?: string | null
+}
+
+function parseTrace(raw: string | null | undefined): EventTrace | null {
+  if (!raw) return null
+  try { return JSON.parse(raw) as EventTrace | null } catch { return null }
 }
 
 function rowToEvent(r: EventRow): AirQualityEvent {
   return {
+    ...(r.trace !== undefined ? { trace: parseTrace(r.trace) } : {}),
     id: r.id,
     type: r.type as AirQualityEvent['type'],
     severity: r.severity as AirQualityEvent['severity'],
@@ -450,6 +466,7 @@ function rowToEvent(r: EventRow): AirQualityEvent {
   }
 }
 
+/** One event, with its saved trace (lists leave the trace out). */
 export function getEventById(id: string): AirQualityEvent | null {
   const row = getDb()
     .prepare('SELECT * FROM events WHERE id = ?')
@@ -474,7 +491,7 @@ export function getEvents({ limit = 200, since, activeOnly = false }: EventQuery
     where.push('(start_time >= ? OR end_time IS NULL OR end_time >= ?)')
     args.push(since, since)
   }
-  const sql = `SELECT * FROM events ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY start_time DESC LIMIT ?`
+  const sql = `SELECT ${EVENT_COLUMNS} FROM events ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY start_time DESC LIMIT ?`
   const rows = getDb().prepare(sql).all(...args, limit) as EventRow[]
   return rows.map(rowToEvent)
 }
@@ -520,4 +537,152 @@ export function pruneEvents(keepMs: number, now = Date.now()): number {
   return getDb()
     .prepare('DELETE FROM events WHERE start_time < ? AND end_time IS NOT NULL')
     .run(now - keepMs).changes
+}
+
+/**
+ * Deletes one finished event (a junk row, or one the user says was not real).
+ * An event that is still going cannot be deleted: the detector would write
+ * it again a minute later. Re-running detection brings a deleted event back
+ * if the stored readings still show it.
+ */
+export function deleteEvent(id: string): 'deleted' | 'open' | 'missing' {
+  const db = getDb()
+  const row = db.prepare('SELECT end_time FROM events WHERE id = ?').get(id) as { end_time: number | null } | undefined
+  if (!row) return 'missing'
+  if (row.end_time == null) return 'open'
+  db.prepare('DELETE FROM events WHERE id = ?').run(id)
+  return 'deleted'
+}
+
+/** Ids of the events that started just after and just before this one. */
+export function getEventNeighbours(event: AirQualityEvent): { newerId: string | null; olderId: string | null } {
+  const db = getDb()
+  const start = event.startTime.getTime()
+  const newer = db
+    .prepare('SELECT id FROM events WHERE (start_time > ? OR (start_time = ? AND id > ?)) ORDER BY start_time ASC, id ASC LIMIT 1')
+    .get(start, start, event.id) as { id: string } | undefined
+  const older = db
+    .prepare('SELECT id FROM events WHERE (start_time < ? OR (start_time = ? AND id < ?)) ORDER BY start_time DESC, id DESC LIMIT 1')
+    .get(start, start, event.id) as { id: string } | undefined
+  return { newerId: newer?.id ?? null, olderId: older?.id ?? null }
+}
+
+/**
+ * Rewrites the derived fields of stored events (type as `classifyEvent` sees
+ * it, severity, title, description, recommendation) with the current rules.
+ * Events are kept for 90 days but readings only for 30, so older rows cannot
+ * be re-detected; this keeps them consistent with new ones. Idempotent;
+ * returns how many rows changed.
+ */
+export function refreshStoredEvents(): number {
+  const db = getDb()
+  return db.transaction(() => {
+    const rows = (db.prepare(`SELECT ${EVENT_COLUMNS} FROM events`).all() as EventRow[]).map(rowToEvent)
+    const update = db.prepare(
+      'UPDATE events SET type = ?, severity = ?, title = ?, description = ?, recommendation = ?, confidence = ? WHERE id = ?',
+    )
+    let changed = 0
+    for (const e of rows) {
+      const next = rederiveEvent(e)
+      if (next.type === e.type && next.severity === e.severity && next.title === e.title &&
+          next.description === e.description && next.recommendation === e.recommendation) continue
+      update.run(next.type, next.severity, next.title, next.description, next.recommendation ?? null, next.confidence, e.id)
+      changed++
+    }
+    return changed
+  })()
+}
+
+// ─── Event traces ────────────────────────────────────────────────────────────
+
+const TRACE_PAD_MS = 15 * 60 * 1000
+const TRACE_POINTS = 60
+const TRACE_FIELDS = ['pm02', 'tvocIndex', 'noxIndex', 'rco2'] as const
+
+const round1 = (v: number) => Math.round(v * 10) / 10
+
+/**
+ * Builds the trace of an event from the stored readings (see `EventTrace`):
+ * up to 60 averaged buckets from 15 minutes before it to 15 minutes after,
+ * the time each reading peaked, and the minutes spent in each band. Returns
+ * null when the readings no longer cover the start of the event.
+ */
+export function computeEventTrace(event: AirQualityEvent, now = Date.now()): EventTrace | null {
+  const db = getDb()
+  const start = event.startTime.getTime()
+  const end = Math.max(start, event.endTime?.getTime() ?? now)
+  const L = SEVERITY_LIMITS
+  const stats = db.prepare(`
+    SELECT COUNT(*) AS n, MIN(timestamp) AS first, MAX(timestamp) AS last,
+      SUM(json_extract(data, '$.pm02') >= ?) AS pmS,
+      SUM(json_extract(data, '$.pm02') >= ?) AS pmU,
+      SUM(json_extract(data, '$.pm02') >= ?) AS pmV,
+      SUM(json_extract(data, '$.rco2') >= ?) AS c1,
+      SUM(json_extract(data, '$.rco2') >= ?) AS c2
+    FROM readings WHERE timestamp >= ? AND timestamp <= ?
+  `).get(L.pmSensitive, L.pmWarning, L.pmCritical, L.co2Warning, L.co2Critical, start, end) as {
+    n: number; first: number | null; last: number | null
+    pmS: number | null; pmU: number | null; pmV: number | null; c1: number | null; c2: number | null
+  }
+  if (!stats.n || stats.first == null || stats.last == null || stats.first > start + 5 * 60_000) return null
+
+  // Minutes in a band = readings in it × the spacing between readings.
+  const spacingMin = stats.n > 1 ? (stats.last - stats.first) / (stats.n - 1) / 60_000 : 1 / 6
+  const minutes = (count: number | null) => round1((count ?? 0) * spacingMin)
+
+  const peakAt = {} as EventTrace['peakAt']
+  for (const field of TRACE_FIELDS) {
+    const row = db.prepare(`
+      SELECT timestamp FROM readings WHERE timestamp >= ? AND timestamp <= ?
+      ORDER BY json_extract(data, '$.${field}') DESC, timestamp ASC LIMIT 1
+    `).get(start, end) as { timestamp: number }
+    peakAt[field] = row.timestamp
+  }
+
+  const from = start - TRACE_PAD_MS
+  const to = end + TRACE_PAD_MS
+  const stepMs = Math.max(60_000, Math.ceil((to - from) / TRACE_POINTS / 60_000) * 60_000)
+  const count = Math.ceil((to - from) / stepMs)
+  const series = Object.fromEntries(TRACE_FIELDS.map(f => [f, new Array<number | null>(count).fill(null)])) as
+    Record<typeof TRACE_FIELDS[number], (number | null)[]>
+  const buckets = db.prepare(`
+    SELECT (timestamp - ?) / ? AS b,
+      AVG(json_extract(data, '$.pm02')) AS pm02, AVG(json_extract(data, '$.tvocIndex')) AS tvocIndex,
+      AVG(json_extract(data, '$.noxIndex')) AS noxIndex, AVG(json_extract(data, '$.rco2')) AS rco2
+    FROM readings WHERE timestamp >= ? AND timestamp < ? GROUP BY b
+  `).all(from, stepMs, from, to) as ({ b: number } & Record<typeof TRACE_FIELDS[number], number | null>)[]
+  for (const row of buckets) {
+    if (row.b < 0 || row.b >= count) continue
+    for (const f of TRACE_FIELDS) {
+      const v = row[f]
+      series[f][row.b] = v == null ? null : f === 'rco2' ? Math.round(v) : round1(v)
+    }
+  }
+
+  return {
+    from, stepMs, ...series, peakAt,
+    minutes: {
+      pmSensitive: minutes(stats.pmS), pmUnhealthy: minutes(stats.pmU), pmVeryUnhealthy: minutes(stats.pmV),
+      co2High: minutes(stats.c1), co2VeryHigh: minutes(stats.c2),
+    },
+  }
+}
+
+/**
+ * Computes and saves the trace of a finished event. When the readings are
+ * gone the JSON value `null` is stored, so the row is not tried again.
+ */
+export function storeEventTrace(event: AirQualityEvent): EventTrace | null {
+  const trace = computeEventTrace(event)
+  getDb().prepare('UPDATE events SET trace = ? WHERE id = ? AND end_time IS NOT NULL').run(JSON.stringify(trace), event.id)
+  return trace
+}
+
+/** Saves traces for up to `limit` finished events that have none yet, newest first. Returns how many it handled. */
+export function backfillEventTraces(limit = 10): number {
+  const rows = getDb()
+    .prepare(`SELECT ${EVENT_COLUMNS} FROM events WHERE trace IS NULL AND end_time IS NOT NULL ORDER BY start_time DESC LIMIT ?`)
+    .all(limit) as EventRow[]
+  for (const row of rows) storeEventTrace(rowToEvent(row))
+  return rows.length
 }

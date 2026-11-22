@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { EventDetector, detectEvents, primeDetector } from '@/lib/eventDetection'
+import { EventDetector, detectEvents, primeDetector, rederiveEvent } from '@/lib/eventDetection'
 import type { AirGradientReading, AirQualityEvent } from '@/lib/eventTypes'
 
 // ─── Reading sequences ───────────────────────────────────────────────────────
@@ -99,16 +99,16 @@ describe('one incident is one event', () => {
     const events = detectEvents(readings).filter(e => e.type !== 'ventilation_poor')
     expect(summary(events)).toHaveLength(1)
     expect(events[0].type).toBe('combustion_exhaust')
-    expect(events[0].severity).toBe('critical')
+    expect(events[0].severity).toBe('warning')
     expect(events[0].peak.noxIndex).toBe(10)
   })
 
-  it('keeps a critical VOC event critical when particulate takes over', () => {
+  it('stays one VOC event when particulate takes over at the same severity', () => {
     const readings = sequence([60, CLEAN], [20, { tvocIndex: 450, pm02: 20 }], [20, { tvocIndex: 150, pm02: 30 }], [30, CLEAN])
     const events = detectEvents(readings)
     expect(summary(events)).toHaveLength(1)
     expect(events[0].type).toBe('voc_event')
-    expect(events[0].severity).toBe('critical')
+    expect(events[0].severity).toBe('notable')
   })
 
   it('reopens the same event when the source returns after a short clear spell', () => {
@@ -212,5 +212,90 @@ describe('server restart while an event is open', () => {
     const events = runLive(readings, [restartAt])
     expect(summary(events)).toHaveLength(1)
     expect(events[0].endTime!.getTime()).toBeGreaterThanOrEqual(T0 + 9 * HOUR + 50 * MIN)
+  })
+})
+
+// ─── Naming and severity ─────────────────────────────────────────────────────
+
+describe('severity follows how bad the air got', () => {
+  const only = (level: Level, minutes = 40) => {
+    const events = detectEvents(sequence([60, CLEAN], [minutes, level], [30, CLEAN]))
+    expect(events).toHaveLength(1)
+    return events[0]
+  }
+
+  it('never alerts on VOC alone, however high or long', () => {
+    const e = only({ tvocIndex: 500, pm02: 4 }, 4 * 60)
+    expect(e.type).toBe('fuel_vapor')
+    expect(e.severity).toBe('notable')
+    expect(e.title).toBe('VOC rise')
+    expect(only({ tvocIndex: 480, pm02: 20 }, 4 * 60).severity).toBe('notable')
+  })
+
+  it('scores a particle spike on the PM2.5 bands', () => {
+    expect(only({ pm02: 40 }).severity).toBe('notable')
+    expect(only({ pm02: 60 }).severity).toBe('warning')
+    expect(only({ pm02: 130 }).severity).toBe('critical')
+    expect(only({ pm02: 130 }).title).toBe('Particle spike')
+  })
+
+  it('calls a smoky VOC rise a particle spike once PM2.5 is unhealthy', () => {
+    // The VOC rule matches first throughout; the label follows the peaks.
+    const e = only({ tvocIndex: 450, pm02: 70 })
+    expect(e.id.startsWith('voc_event_')).toBe(true)
+    expect(e.type).toBe('particulate_spike')
+    expect(e.severity).toBe('warning')
+    expect(only({ tvocIndex: 450, pm02: 230 }).severity).toBe('critical')
+    // Below the unhealthy range it is still a VOC rise.
+    expect(only({ tvocIndex: 450, pm02: 45 }).type).toBe('voc_event')
+  })
+
+  it('makes combustion a warning at cooking levels and critical when NOx or smoke is high', () => {
+    expect(only(COMBUSTION).severity).toBe('warning')
+    expect(only({ ...COMBUSTION, noxIndex: 25 }).severity).toBe('critical')
+    expect(only({ ...COMBUSTION, pm02: 140 }).severity).toBe('critical')
+    expect(only(COMBUSTION).title).toBe('Combustion fumes')
+  })
+
+  it('scores CO₂ at 1500 and 2000 ppm', () => {
+    const co2 = (ppm: number) => only({ rco2: ppm }, 90)
+    expect(co2(1200).severity).toBe('notable')
+    expect(co2(1600).severity).toBe('warning')
+    expect(co2(2100).severity).toBe('critical')
+    expect(co2(1200).title).toBe('Stale air')
+  })
+
+  it('writes rounded numbers into the description', () => {
+    const e = only({ pm02: 119.17 })
+    expect(e.description).toBe('PM2.5 rose to 119 µg/m³, from 2 before.')
+    expect(only({ rco2: 1150.67 }, 90).description).toContain('peaked at 1,151 ppm')
+  })
+})
+
+describe('rederiveEvent', () => {
+  const legacy = (extra: Partial<AirQualityEvent>): AirQualityEvent => ({
+    id: 'fuel_vapor_1', type: 'fuel_vapor', severity: 'critical',
+    startTime: new Date(T0), endTime: new Date(T0 + 4 * HOUR), durationMinutes: 240,
+    peak: { noxIndex: 1, tvocIndex: 498, pm02: 12, rco2: 800 },
+    baseline: { noxIndex: 1, tvocIndex: 80, pm02: 3, rco2: 700 },
+    title: 'Fuel vapor detected', description: 'old', recommendation: 'old', confidence: 1, acknowledged: true,
+    ...extra,
+  })
+
+  it('rewrites an old "critical fuel vapor" row as a notable VOC rise', () => {
+    const e = rederiveEvent(legacy({}))
+    expect([e.type, e.severity, e.title]).toEqual(['fuel_vapor', 'notable', 'VOC rise'])
+    expect(e.description).toContain('VOC index rose to 498')
+    expect([e.id, e.acknowledged, e.durationMinutes, e.endTime?.getTime()]).toEqual(['fuel_vapor_1', true, 240, T0 + 4 * HOUR])
+  })
+
+  it('relabels an old VOC row with heavy smoke as a critical particle spike', () => {
+    const e = rederiveEvent(legacy({ peak: { noxIndex: 1, tvocIndex: 482, pm02: 226, rco2: 773 } }))
+    expect([e.type, e.severity, e.title]).toEqual(['particulate_spike', 'critical', 'Particle spike'])
+  })
+
+  it('is stable', () => {
+    const once = rederiveEvent(legacy({}))
+    expect(rederiveEvent(once)).toEqual(once)
   })
 })

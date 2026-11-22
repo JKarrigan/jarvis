@@ -1,4 +1,5 @@
-import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline, Severity } from './eventTypes'
+import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline } from './eventTypes'
+import { SEVERITY_RANK, classifyEvent, eventDescription, eventRecommendation, eventTitle, severityFor } from './eventInfo'
 
 /**
  * Air-quality event detection.
@@ -23,6 +24,12 @@ import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline, Sev
  * closed once nothing has matched for CLEAR_STEPS consecutive minutes, and
  * reopened, of any type, when matching readings return within
  * MERGE_WINDOW_MS of the last matching reading.
+ *
+ * The rules decide *when* an incident is open. What it is called, how serious
+ * it is and the sentences that describe it come from lib/eventInfo.ts
+ * (`buildEvent`): severity follows how bad the air got (PM2.5 and CO₂ bands),
+ * a VOC rise that also put PM2.5 in the Unhealthy range is a particle event
+ * (`classifyEvent`), and VOC alone never alerts.
  *
  * Cost: each reading is a push plus O(log n) binary searches; each one-minute
  * step looks only at its fixed-size windows, so detection is O(n) overall.
@@ -69,90 +76,29 @@ interface Sample {
   noxIndex: number
 }
 
-// ─── Text / scoring helpers ──────────────────────────────────────────────────
+// ─── Scoring helpers ─────────────────────────────────────────────────────────
 
 function generateId(type: EventType, startMs: number): string {
   return `${type}_${startMs}`
 }
 
-function eventTitle(type: EventType): string {
-  const titles: Record<EventType, string> = {
-    combustion_exhaust: 'Possible combustion exhaust',
-    fuel_vapor: 'Fuel vapor detected',
-    outdoor_drift: 'Outdoor pollution drift',
-    voc_event: 'VOC event',
-    particulate_spike: 'Particulate spike',
-    ventilation_poor: 'Poor ventilation',
-  }
-  return titles[type]
-}
-
-function eventDescription(type: EventType, peak: Peak): string {
-  switch (type) {
-    case 'combustion_exhaust':
-      return `NOx (${peak.noxIndex}), PM2.5 (${peak.pm02} μg/m³), and VOC rose together — a pattern consistent with combustion products entering the room.`
-    case 'fuel_vapor':
-      return `VOC index spiked to ${peak.tvocIndex} without a combustion signature, suggesting raw fuel evaporation (leak, spill, or refill).`
-    case 'outdoor_drift':
-      return `NOx and PM2.5 elevated with flat CO₂ — consistent with exhaust or pollution drifting in from outside.`
-    case 'voc_event':
-      return `VOC index reached ${peak.tvocIndex}. Common sources: cooking, cleaning products, or off-gassing materials.`
-    case 'particulate_spike':
-      return `PM2.5 spiked to ${peak.pm02} μg/m³. Possible sources: wildfire smoke, candles, dust, or cooking.`
-    case 'ventilation_poor':
-      return `CO₂ reached ${peak.rco2} ppm. The room has insufficient fresh air for current occupancy.`
-  }
-}
-
-function eventRecommendation(type: EventType, severity: Severity): string | null {
-  if (type === 'combustion_exhaust') return 'Check stove venting. Open windows. Check your CO detector.'
-  if (type === 'fuel_vapor') return 'Check for fuel leaks or spills. Ventilate the room immediately.'
-  if (type === 'outdoor_drift') return 'Close windows and set HVAC to recirculate.'
-  if (type === 'voc_event' && severity === 'critical') return 'Increase ventilation. Identify the source.'
-  if (type === 'particulate_spike' && (severity === 'warning' || severity === 'critical')) return 'Run an air purifier. Check for nearby fires or smoke sources.'
-  if (type === 'ventilation_poor') return 'Open a window or increase fresh air intake.'
-  return null
-}
-
-function defaultSeverity(type: EventType): Severity {
-  switch (type) {
-    case 'combustion_exhaust': return 'critical'
-    case 'fuel_vapor': return 'warning'
-    case 'outdoor_drift': return 'warning'
-    case 'voc_event': return 'notable'
-    case 'particulate_spike': return 'warning'
-    case 'ventilation_poor': return 'notable'
-  }
-}
-
-export const SEVERITY_RANK: Record<Severity, number> = { info: 0, notable: 1, warning: 2, critical: 3 }
+export { SEVERITY_RANK }
 
 /**
  * True when type `a` describes an incident more seriously than type `b`,
- * given the incident's peak and duration: higher escalated severity first
- * (so a critical VOC event, TVOC ≥ 400, outranks a warning-level particulate
- * spike), then the rule priority order (combustion before fuel vapour before
- * outdoor drift before VOC before particulate).
+ * given the incident's peak: higher severity first (so a particle spike in
+ * the Unhealthy range outranks a VOC rise), then the rule priority order
+ * (combustion before fuel vapour before outdoor drift before VOC before
+ * particulate).
  */
-export function moreSerious(a: EventType, b: EventType, peak: Peak, durationMs: number): boolean {
-  const sa = SEVERITY_RANK[escalatedSeverity(a, peak, durationMs)]
-  const sb = SEVERITY_RANK[escalatedSeverity(b, peak, durationMs)]
+export function moreSerious(a: EventType, b: EventType, peak: Peak): boolean {
+  const sa = SEVERITY_RANK[severityFor(a, peak)]
+  const sb = SEVERITY_RANK[severityFor(b, peak)]
   if (sa !== sb) return sa > sb
   return TYPE_ORDER.indexOf(a) < TYPE_ORDER.indexOf(b)
 }
 
-function escalatedSeverity(type: EventType, peak: Peak, durationMs: number): Severity {
-  const base = defaultSeverity(type)
-  if (base === 'critical') return 'critical'
-  if (type === 'fuel_vapor' && peak.tvocIndex >= 400 && durationMs >= 10 * 60 * 1000) return 'critical'
-  if (type === 'outdoor_drift' && peak.pm02 >= 35 && durationMs >= 15 * 60 * 1000) return 'critical'
-  if (type === 'voc_event' && peak.tvocIndex >= 400) return 'critical'
-  if (type === 'particulate_spike' && peak.pm02 >= 55) return 'critical'
-  if (type === 'ventilation_poor' && peak.rco2 >= 2000) return 'critical'
-  if (type === 'ventilation_poor' && peak.rco2 >= 1500) return 'warning'
-  return base
-}
-
+/** Stored with the row but no longer shown: it never dropped below 0.5, so it told nobody anything. */
 function computeConfidence(type: EventType, peak: Peak, baseline: LocalBaseline, durationMs: number): number {
   let score = 0.5
 
@@ -420,8 +366,7 @@ export class EventDetector {
         active.startMs = storedStart
         active.baseline = { ...stored.baseline }
         active.peak = maxPeak(active.peak, stored.peak)
-        const durationMs = Math.max(active.lastEvalMs, active.lastMatchMs) - active.startMs
-        if (moreSerious(stored.type, active.type, finitePeak(active.peak), durationMs)) active.type = stored.type
+        if (moreSerious(stored.type, active.type, finitePeak(active.peak))) active.type = stored.type
         continue
       }
       this.slots[key] = {
@@ -543,7 +488,7 @@ export class EventDetector {
         this.foldPeak(s, this.lowerBound(s.peakUntil), windowEnd)
         s.peakUntil = t
         s.lastEvalMs = t
-        if (moreSerious(match.rule.type, s.type, finitePeak(s.peak), t - s.startMs)) s.type = match.rule.type
+        if (moreSerious(match.rule.type, s.type, finitePeak(s.peak))) s.type = match.rule.type
         changes.push({ kind, event: this.snapshot(s) })
         return
       }
@@ -607,12 +552,17 @@ export class EventDetector {
   }
 }
 
-/** Assembles an event and its derived fields (severity, text, confidence). */
+/**
+ * Assembles an event and its derived fields (final type, severity, text,
+ * confidence). `ruleType` is what the rules called it; `classifyEvent` may
+ * rename it from the peaks.
+ */
 function buildEvent(
-  id: string, type: EventType, startMs: number, endMs: number | null, durationMs: number,
+  id: string, ruleType: EventType, startMs: number, endMs: number | null, durationMs: number,
   peak: Peak, baseline: LocalBaseline, acknowledged = false,
 ): AirQualityEvent {
-  const severity = escalatedSeverity(type, peak, durationMs)
+  const type = classifyEvent(ruleType, peak, baseline)
+  const severity = severityFor(type, peak)
   return {
     id,
     type,
@@ -623,11 +573,25 @@ function buildEvent(
     peak: { ...peak },
     baseline: { ...baseline },
     title: eventTitle(type),
-    description: eventDescription(type, peak),
+    description: eventDescription(type, peak, baseline),
     recommendation: eventRecommendation(type, severity),
     confidence: computeConfidence(type, peak, baseline, durationMs),
     acknowledged,
   }
+}
+
+/**
+ * The same event as the current rules would write it: type, severity and
+ * wording recomputed from its stored type, peak and baseline. Used at startup
+ * so rows written by older versions read like new ones (they outlive the
+ * readings they came from, so they cannot be re-detected).
+ */
+export function rederiveEvent(e: AirQualityEvent): AirQualityEvent {
+  const built = buildEvent(
+    e.id, e.type, e.startTime.getTime(), e.endTime?.getTime() ?? null, e.durationMinutes * 60000,
+    e.peak, e.baseline, e.acknowledged,
+  )
+  return { ...built, durationMinutes: e.durationMinutes }
 }
 
 function finitePeak(p: Peak): Peak {
@@ -723,7 +687,7 @@ export function mergeEvents(events: AirQualityEvent[]): { merged: AirQualityEven
         const durationMs = Math.max(0, lastMs - startMs)
         const peak = rest.reduce((p, e) => maxPeak(p, e.peak), first.peak)
         let type = first.type
-        for (const e of rest) if (moreSerious(e.type, type, peak, durationMs)) type = e.type
+        for (const e of rest) if (moreSerious(e.type, type, peak)) type = e.type
         const event = buildEvent(first.id, type, startMs, open ? null : lastMs, durationMs, peak, first.baseline)
         // Dismissed only if a dismissed row was already at this severity, so
         // folding in a later, worse part of the incident does not hide it.

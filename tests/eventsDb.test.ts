@@ -16,7 +16,7 @@ afterAll(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 beforeEach(() => {
-  db.getDb().exec('DELETE FROM events; DROP TABLE IF EXISTS events_premerge')
+  db.getDb().exec('DELETE FROM events; DELETE FROM readings; DROP TABLE IF EXISTS events_premerge')
 })
 
 const MIN = 60_000
@@ -52,7 +52,7 @@ describe('mergeDuplicateEvents', () => {
       ev('voc_event', 0, 6),
       ev('fuel_vapor', 4, 20, { peak: { noxIndex: 1, tvocIndex: 480, pm02: 4, rco2: 700 } }),
       ev('voc_event', 18, 40, { acknowledged: true }),
-      ev('combustion_exhaust', 38, 60, { peak: { noxIndex: 9, tvocIndex: 350, pm02: 60, rco2: 900 } }),
+      ev('combustion_exhaust', 38, 60, { peak: { noxIndex: 9, tvocIndex: 350, pm02: 130, rco2: 900 } }),
       ev('voc_event', 70, null), // 10 min after the last one ended: same incident, still open
       ev('voc_event', 200, 230), // a separate incident
       ev('ventilation_poor', 10, 90), // CO₂ is its own slot
@@ -68,8 +68,8 @@ describe('mergeDuplicateEvents', () => {
     expect(incident.endTime).toBeNull()
     // Only a notable part was dismissed; the merged incident is critical, so it alerts again.
     expect(incident.acknowledged).toBe(false)
-    expect(incident.peak).toEqual({ noxIndex: 9, tvocIndex: 480, pm02: 60, rco2: 900 })
-    expect(incident.title).toBe('Possible combustion exhaust')
+    expect(incident.peak).toEqual({ noxIndex: 9, tvocIndex: 480, pm02: 130, rco2: 900 })
+    expect(incident.title).toBe('Combustion fumes')
 
     const backup = db.getDb().prepare('SELECT COUNT(*) AS n FROM events_premerge').get() as { n: number }
     expect(backup.n).toBe(5)
@@ -91,23 +91,24 @@ describe('mergeDuplicateEvents', () => {
 
   it('keeps the dismissal when a dismissed row was already as severe', () => {
     db.upsertEvents([
-      ev('fuel_vapor', 0, 20, { severity: 'warning', acknowledged: true }),
+      ev('particulate_spike', 0, 20, { severity: 'warning', acknowledged: true, peak: { noxIndex: 1, tvocIndex: 150, pm02: 60, rco2: 700 } }),
       ev('voc_event', 18, 40),
     ])
     db.mergeDuplicateEvents()
-    const incident = db.getEventById(`fuel_vapor_${T0}`)!
+    const incident = db.getEventById(`particulate_spike_${T0}`)!
+    expect(incident.type).toBe('particulate_spike')
     expect(incident.severity).toBe('warning')
     expect(incident.acknowledged).toBe(true)
   })
 
-  it('does not downgrade a critical VOC row merged with a particulate spike', () => {
+  it('a VOC row merged with a smoky one becomes a particle spike at its severity', () => {
     db.upsertEvents([
-      ev('voc_event', 0, 20, { severity: 'critical', peak: { noxIndex: 1, tvocIndex: 450, pm02: 20, rco2: 700 } }),
-      ev('particulate_spike', 18, 40, { severity: 'warning', peak: { noxIndex: 1, tvocIndex: 150, pm02: 30, rco2: 700 } }),
+      ev('voc_event', 0, 20, { peak: { noxIndex: 1, tvocIndex: 450, pm02: 20, rco2: 700 } }),
+      ev('particulate_spike', 18, 40, { severity: 'critical', peak: { noxIndex: 1, tvocIndex: 150, pm02: 130, rco2: 700 } }),
     ])
     db.mergeDuplicateEvents()
     const incident = db.getEventById(`voc_event_${T0}`)!
-    expect(incident.type).toBe('voc_event')
+    expect(incident.type).toBe('particulate_spike')
     expect(incident.severity).toBe('critical')
   })
 
@@ -189,5 +190,111 @@ describe('event writes', () => {
     expect(ids()).toEqual([`voc_event_${T0}`, `voc_event_${T0 + 1001 * MIN}`])
     // The acknowledgement follows the overlapping re-detected event.
     expect(db.getEventById(`voc_event_${T0 + 1001 * MIN}`)!.acknowledged).toBe(true)
+  })
+})
+
+describe('stored events follow the current rules', () => {
+  it('re-derives type, severity and wording of rows written by older versions', () => {
+    db.upsertEvents([
+      ev('fuel_vapor', 0, 240, {
+        severity: 'critical', title: 'Fuel vapor detected', description: 'VOC index spiked to 498.33 without a combustion signature.',
+        recommendation: 'Check for fuel leaks or spills.', acknowledged: true,
+        peak: { noxIndex: 1, tvocIndex: 498.33, pm02: 12, rco2: 800 },
+      }),
+      ev('voc_event', 300, 400, { severity: 'critical', peak: { noxIndex: 1, tvocIndex: 482, pm02: 226, rco2: 773 } }),
+    ])
+    expect(db.refreshStoredEvents()).toBe(2)
+
+    const voc = db.getEventById(`fuel_vapor_${T0}`)!
+    expect([voc.type, voc.severity, voc.title]).toEqual(['fuel_vapor', 'notable', 'VOC rise'])
+    expect(voc.description).toContain('rose to 498,')
+    expect(voc.acknowledged).toBe(true)
+    const smoke = db.getEventById(`voc_event_${T0 + 300 * MIN}`)!
+    expect([smoke.type, smoke.severity, smoke.title]).toEqual(['particulate_spike', 'critical', 'Particle spike'])
+
+    expect(db.refreshStoredEvents()).toBe(0)
+  })
+})
+
+describe('event traces', () => {
+  /** One reading every 10 s from minute `from` to `to`; PM2.5 from `pm(minute)`. */
+  function readings(from: number, to: number, pm: (minute: number) => number, co2 = 700) {
+    const insert = db.getDb().prepare('INSERT INTO readings (timestamp, data) VALUES (?, ?)')
+    db.getDb().transaction(() => {
+      for (let ts = T0 + from * MIN; ts < T0 + to * MIN; ts += 10_000) {
+        const minute = (ts - T0) / MIN
+        insert.run(ts, JSON.stringify({ pm02: pm(minute), rco2: co2, tvocIndex: 100 + minute, noxIndex: 1, pm01: 1, pm10: 1, atmp: 21, rhum: 40 }))
+      }
+    })()
+  }
+  // 0–100: clean; 100–160 event: PM2.5 40, then 70 for minutes 120–140, peak 90 at minute 130.
+  const pm = (m: number) => (m < 100 || m >= 160 ? 2 : m >= 130 && m < 130 + 1 / 6 ? 90 : m >= 120 && m < 140 ? 70 : 40)
+
+  it('records buckets, peak times and minutes in each band', () => {
+    readings(0, 200, pm)
+    const trace = db.computeEventTrace(ev('particulate_spike', 100, 160))!
+    expect(trace.from).toBe(T0 + 85 * MIN)
+    expect(trace.stepMs).toBe(2 * MIN)
+    expect(trace.pm02).toHaveLength(45)
+    expect(trace.pm02[0]).toBe(2)          // before the event
+    expect(trace.pm02[10]).toBe(40)        // minute 105
+    expect(trace.pm02.at(-1)).toBe(2)      // after it
+    expect(trace.peakAt.pm02).toBe(T0 + 130 * MIN)
+    expect(trace.peakAt.tvocIndex).toBe(T0 + 160 * MIN)
+    expect(trace.minutes.pmSensitive).toBeCloseTo(60, 0)
+    expect(trace.minutes.pmUnhealthy).toBeCloseTo(20, 0)
+    expect(trace.minutes.pmVeryUnhealthy).toBe(0)
+    expect(trace.minutes.co2High).toBe(0)
+  })
+
+  it('is saved with a finished event, returned only on a single read, and dropped when the event changes', () => {
+    readings(0, 200, pm)
+    const event = ev('particulate_spike', 100, 160)
+    db.upsertEvents([event])
+    expect(db.getEventById(event.id)!.trace).toBeNull()
+    expect(db.backfillEventTraces()).toBe(1)
+    expect(db.getEventById(event.id)!.trace!.peakAt.pm02).toBe(T0 + 130 * MIN)
+    expect('trace' in db.getEvents()[0]).toBe(false)
+    expect(db.backfillEventTraces()).toBe(0)
+
+    // The incident reopens: the saved trace no longer describes it.
+    db.upsertEvents([{ ...event, endTime: null }])
+    expect(db.getEventById(event.id)!.trace).toBeNull()
+    expect(db.backfillEventTraces()).toBe(0) // open events are traced on demand
+  })
+
+  it('remembers that an old event has no readings left, and does not retry it', () => {
+    readings(500, 600, () => 2)
+    const old = ev('voc_event', 100, 160)
+    db.upsertEvents([old])
+    expect(db.computeEventTrace(old)).toBeNull()
+    expect(db.backfillEventTraces()).toBe(1)
+    expect(db.getEventById(old.id)!.trace).toBeNull()
+    expect(db.backfillEventTraces()).toBe(0)
+  })
+
+  it('traces an event that is still going up to now', () => {
+    readings(0, 130, pm)
+    const trace = db.computeEventTrace(ev('particulate_spike', 100, null), T0 + 130 * MIN)!
+    expect(trace.minutes.pmUnhealthy).toBeCloseTo(10, 0)
+    expect(trace.from + trace.pm02.length * trace.stepMs).toBeGreaterThanOrEqual(T0 + 145 * MIN)
+  })
+})
+
+describe('deleting and neighbours', () => {
+  it('deletes a finished event and refuses one that is still going', () => {
+    db.upsertEvents([ev('voc_event', 0, 20), ev('voc_event', 100, null)])
+    expect(db.deleteEvent(`voc_event_${T0}`)).toBe('deleted')
+    expect(db.deleteEvent(`voc_event_${T0}`)).toBe('missing')
+    expect(db.deleteEvent(`voc_event_${T0 + 100 * MIN}`)).toBe('open')
+    expect(ids()).toEqual([`voc_event_${T0 + 100 * MIN}`])
+  })
+
+  it('finds the events on either side in the log', () => {
+    const [a, b, c] = [ev('voc_event', 0, 20), ev('ventilation_poor', 50, 90), ev('voc_event', 200, 220)]
+    db.upsertEvents([a, b, c])
+    expect(db.getEventNeighbours(b)).toEqual({ newerId: c.id, olderId: a.id })
+    expect(db.getEventNeighbours(c)).toEqual({ newerId: null, olderId: b.id })
+    expect(db.getEventNeighbours(a)).toEqual({ newerId: b.id, olderId: null })
   })
 })

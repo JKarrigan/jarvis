@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import type { DeviceMeasures, HistoryEntry, DailySummary } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
 import {
@@ -14,8 +15,10 @@ import { Clock, DateLine } from './Clock'
 import { MetricCard, metricReading, type MetricReading } from './MetricCard'
 import { AqiSummary } from './AqiSummary'
 import { Card, EmptyState, Page, PageHeader, SectionTitle, Segmented, Spinner, btnCls } from './air/ui'
-import { EventBanner } from './EventBanner'
+import { EventBanner } from './events/EventBanner'
+import { EventRow } from './events/EventBits'
 import { reviveEvent } from './PollingProvider'
+import { useNowMinute } from '@/lib/useNow'
 
 type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d'
 
@@ -28,6 +31,9 @@ const RANGES: { key: RangeKey; label: string; ms: number }[] = [
   { key: '7d',  label: '7d',  ms: 7 * 24 * 60 * 60 * 1000 },
   { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
 ]
+
+/** Rows in "Events in this view"; the rest are one tap away in the log. */
+const EVENTS_SHOWN = 5
 
 /** Charts refetch their range this often so they keep moving on a kiosk. */
 const CHART_REFRESH_MS = 60_000
@@ -46,19 +52,10 @@ interface DashboardProps {
   pmBatchId: string | null
   outdoorAqi: number | null
   dailySummaries: DailySummary[]
-  activeEvents: AirQualityEvent[]
-  onAcknowledgeEvent: (id: string) => void
   /** Latest reading is old or the device is failing: grey the values. */
   stale: boolean
   banner?: React.ReactNode
   devControls?: DevControls
-}
-
-const EVENT_COLOR: Record<string, string> = {
-  critical: '#dc2626',
-  warning: '#f59e0b',
-  notable: '#3b82f6',
-  info: '#9ca3af',
 }
 
 export function toUnit(celsius: number, unit: 'C' | 'F'): number {
@@ -97,7 +94,8 @@ export function buildSeries(rows: HistoryEntry[], pmBatch: PmBatch | null, tempU
 
 const tempStatusFn = { C: tempStatus, F: (v: number) => tempStatus((v - 32) * 5 / 9) } as const
 
-export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, outdoorAqi, dailySummaries, activeEvents, onAcknowledgeEvent, stale, banner, devControls }: DashboardProps) {
+export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, outdoorAqi, dailySummaries, stale, banner, devControls }: DashboardProps) {
+  const nowMinute = useNowMinute()
   // Memoized so the compiler treats the batch as immutable for the series memos below.
   const pmBatch = useMemo(() => findPmBatch(pmBatchId), [pmBatchId])
   const pm02 = effectivePm25(measures, pmBatch)
@@ -139,14 +137,12 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
   const cards = useMemo(() => buildSeries(history, pmBatch, tempUnit), [history, pmBatch, tempUnit])
   const series = useMemo(() => buildSeries(chart?.rows ?? [], pmBatch, tempUnit), [chart, pmBatch, tempUnit])
   const chartEventsAll = chart?.events
-  const criticalEvents = useMemo(() => activeEvents.filter(e => e.severity === 'critical' && !e.acknowledged), [activeEvents])
 
   const chartEvents = useMemo(() => {
     const ts = series.ts
     const tMin = ts[0] ?? 0
     const tMax = ts[ts.length - 1] ?? 0
     return (chartEventsAll ?? []).filter(e => {
-      if (e.confidence < 0.5) return false
       const start = e.startTime.getTime()
       const end = e.endTime?.getTime() ?? tMax
       return end >= tMin && start <= tMax
@@ -188,9 +184,7 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
       </PageHeader>
 
       {banner}
-      {criticalEvents.length > 0 && (
-        <EventBanner events={criticalEvents} onAcknowledge={onAcknowledgeEvent} />
-      )}
+      <EventBanner />
 
       {/* AQI · 30-day heat map */}
       <div className="flex flex-col gap-4 lg:flex-row">
@@ -216,37 +210,20 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
         </div>
 
         {chartEvents.length > 0 && (
-          <Card className="overflow-hidden">
-            <p className="px-5 pb-2 pt-4 text-sm text-zinc-400">
-              <span className="font-medium text-zinc-200">Events in this view.</span> The shaded bands on the charts mark these periods.
-            </p>
-            <div className="divide-y divide-air-line">
-              {chartEvents.map(e => {
-                const eColor = EVENT_COLOR[e.severity]
-                const startStr = e.startTime.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                const endStr = e.endTime
-                  ? e.endTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : null
-                const dur = e.durationMinutes < 60
-                  ? `${Math.round(e.durationMinutes)} min`
-                  : `${(e.durationMinutes / 60).toFixed(1)} hr`
-                return (
-                  <div key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-3">
-                    <span
-                      className="shrink-0 rounded-md border px-1.5 py-0.5 text-xs font-semibold capitalize"
-                      style={{ color: eColor, borderColor: `${eColor}55`, backgroundColor: `${eColor}1a` }}
-                    >
-                      {e.severity}
-                    </span>
-                    <span className="text-sm font-medium text-zinc-100">{e.title}</span>
-                    <span className="text-sm text-zinc-400">
-                      {startStr}{endStr ? ` to ${endStr}` : ''} · {dur}
-                    </span>
-                    {!e.endTime && <span className="text-sm text-emerald-400">ongoing</span>}
-                  </div>
-                )
-              })}
+          <Card aria-label="Events in this view" className="overflow-hidden">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 px-4 pb-2 pt-4 md:px-5">
+              <p className="text-sm text-zinc-400">
+                <span className="font-medium text-zinc-200">Events in this view.</span> The shaded bands on the charts mark them.
+              </p>
+              {chartEvents.length > EVENTS_SHOWN && (
+                <Link href="/events" className="inline-flex min-h-8 items-center text-sm text-zinc-400 transition-colors hover:text-white">
+                  All {chartEvents.length}
+                </Link>
+              )}
             </div>
+            {chartEvents.slice(0, EVENTS_SHOWN).map(e => (
+              <EventRow key={e.id} event={e} now={nowMinute} showDay className="border-t border-air-line" />
+            ))}
           </Card>
         )}
 

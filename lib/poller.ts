@@ -1,8 +1,8 @@
 import 'server-only'
 import { lookup } from 'dns/promises'
 import {
-  getLatestReadingTimestamp, getOpenEvents, insertReading, iterateDetectorReadings,
-  reconcileOpenEvents, upsertEvents,
+  backfillEventTraces, getLatestReadingTimestamp, getOpenEvents, insertReading, iterateDetectorReadings,
+  reconcileOpenEvents, storeEventTrace, upsertEvents,
 } from './db'
 import { primeDetector, type DetectorChange, type EventDetector } from './eventDetection'
 import type { AirQualityEvent } from './eventTypes'
@@ -29,7 +29,7 @@ interface PollerState {
 }
 
 // Persist across hot reloads in dev via globalThis — same pattern as db.ts
-const g = globalThis as typeof globalThis & { __ag_poller?: PollerState }
+const g = globalThis as typeof globalThis & { __ag_poller?: PollerState; __ag_traceTimer?: ReturnType<typeof setTimeout> | null }
 
 function getState(): PollerState {
   if (!g.__ag_poller) {
@@ -64,12 +64,48 @@ export function normalizeDeviceHost(input: unknown): string | null {
 
 // ─── Event detection ─────────────────────────────────────────────────────────
 
-/** Latest snapshot per id, so one write per event per batch of changes. */
+/**
+ * Latest snapshot per id, so one write per event per batch of changes. An
+ * event that just ended also gets its trace saved, while its readings exist.
+ */
 function persistChanges(changes: DetectorChange[]): void {
   if (changes.length === 0) return
   const byId = new Map<string, AirQualityEvent>()
   for (const c of changes) byId.set(c.event.id, c.event)
   upsertEvents([...byId.values()])
+  for (const event of byId.values()) {
+    if (event.endTime === null) continue
+    try {
+      storeEventTrace(event)
+    } catch (err) {
+      console.error('[poller] event trace failed', err)
+    }
+  }
+}
+
+const TRACE_BATCH = 5
+const TRACE_BATCH_GAP_MS = 2_000
+
+/**
+ * Saves traces for finished events that have none (rows from before traces
+ * existed, events closed while the server was down, or everything after a
+ * reprocess), a few at a time so the event loop stays free.
+ */
+export function scheduleTraceBackfill(delayMs = TRACE_BATCH_GAP_MS): void {
+  if (g.__ag_traceTimer) return
+  const run = () => {
+    g.__ag_traceTimer = null
+    let handled = 0
+    try {
+      handled = backfillEventTraces(TRACE_BATCH)
+    } catch (err) {
+      console.error('[poller] event trace backfill failed', err)
+    }
+    if (handled === TRACE_BATCH) scheduleTraceBackfill()
+  }
+  const timer = setTimeout(run, delayMs)
+  timer.unref?.()
+  g.__ag_traceTimer = timer
 }
 
 /**

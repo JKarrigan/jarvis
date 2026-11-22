@@ -1,6 +1,6 @@
 import 'server-only'
-import { getSetting, mergeDuplicateEvents, pruneEvents, pruneReadings } from './db'
-import { initEventDetection, normalizeDeviceHost, startPoller } from './poller'
+import { getSetting, mergeDuplicateEvents, pruneEvents, pruneReadings, refreshStoredEvents } from './db'
+import { initEventDetection, normalizeDeviceHost, scheduleTraceBackfill, startPoller } from './poller'
 import { startPhotoScheduler } from './photos/scan'
 
 /**
@@ -41,10 +41,19 @@ function startAirGradient(): void {
     console.error('[startup] duplicate event cleanup failed', err)
   }
   try {
+    // Names, severity and wording of stored events follow the current rules.
+    const refreshed = refreshStoredEvents()
+    if (refreshed) console.log(`[startup] re-derived ${refreshed} stored events`)
+  } catch (err) {
+    console.error('[startup] stored event refresh failed', err)
+  }
+  try {
     initEventDetection()
   } catch (err) {
     console.error('[startup] event detection init failed', err)
   }
+  // Finished events without a saved trace get one while their readings exist.
+  scheduleTraceBackfill(5_000)
   const host = normalizeDeviceHost(getSetting(DEVICE_HOST_SETTING) ?? process.env.DEVICE_HOST ?? process.env.NEXT_PUBLIC_DEVICE_HOST)
   if (host) {
     startPoller(host)

@@ -3,12 +3,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { DeviceMeasures, HistoryEntry } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
+import { isAlert } from '@/lib/eventInfo'
 
 const HISTORY_MAX = 3600
 const POLL_MS = 10_000
 const EVENTS_POLL_MS = 30_000
 const OUTDOOR_POLL_MS = 15 * 60 * 1000
-const EVENTS_WINDOW_MS = 24 * 60 * 60 * 1000
+/** A week, so the Overview can say when the last event was on a quiet day. */
+const EVENTS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 /** A jump bigger than this between readings means we missed some (hidden tab, sleep). */
 const GAP_MS = 3 * POLL_MS
 
@@ -101,9 +103,16 @@ interface PollingState {
   handleIpSave: (ip: string) => Promise<string | null>
   /** Events detected by the server poller that are still open. */
   activeEvents: AirQualityEvent[]
-  /** Events from the last 24 h plus any still open, newest first. */
+  /** Events from the last 7 days plus any still open, newest first. */
   allEvents: AirQualityEvent[]
+  /** Open warnings and criticals nobody has dismissed: what the banner, toasts and badge show. */
+  alerts: AirQualityEvent[]
+  /** Dismisses an alert everywhere (stored on the server). */
   acknowledgeEvent: (id: string) => void
+  /** Re-reads the events now (after one was deleted, say). */
+  refreshEvents: () => void
+  /** Development only: made-up open events mixed into the lists above. */
+  setPreviewEvents: (events: AirQualityEvent[]) => void
 }
 
 const PollingContext = createContext<PollingState | null>(null)
@@ -122,6 +131,8 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [events, setEvents] = useState<AirQualityEvent[]>([])
+  const [previewEvents, setPreviewEvents] = useState<AirQualityEvent[]>([])
+  const [eventsTick, setEventsTick] = useState(0)
   const [outdoorAqi, setOutdoorAqi] = useState<number | null>(null)
 
   const [tempUnitRaw, setTempUnitRaw] = useLocalStorage('ag-temp-unit')
@@ -134,6 +145,8 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
 
   // Newest reading timestamp applied so far
   const lastTimestamp = useRef(0)
+  const previewEventIds = useRef(new Set<string>())
+  useEffect(() => { previewEventIds.current = new Set(previewEvents.map(e => e.id)) }, [previewEvents])
 
   // ── Device host: the server is the source of truth ─────────────────────────
   useEffect(() => {
@@ -271,7 +284,7 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [deviceIp])
+  }, [deviceIp, eventsTick])
 
   // ── Outdoor AQI ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -301,7 +314,13 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
     setOutdoorLon(loc?.lon ?? null)
   }, [setOutdoorLat, setOutdoorLon])
 
+  const refreshEvents = useCallback(() => setEventsTick(t => t + 1), [])
+
   const acknowledgeEvent = useCallback((id: string) => {
+    if (previewEventIds.current.has(id)) {
+      setPreviewEvents(prev => prev.filter(e => e.id !== id))
+      return
+    }
     setEvents(prev => prev.map(e => e.id === id ? { ...e, acknowledged: true } : e))
     fetch(`/api/events/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -335,7 +354,9 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
     () => (outdoorLat && outdoorLon ? { lat: outdoorLat, lon: outdoorLon } : null),
     [outdoorLat, outdoorLon],
   )
-  const activeEvents = useMemo(() => events.filter(e => e.endTime === null), [events])
+  const allEvents = useMemo(() => (previewEvents.length ? [...previewEvents, ...events] : events), [previewEvents, events])
+  const activeEvents = useMemo(() => allEvents.filter(e => e.endTime === null), [allEvents])
+  const alerts = useMemo(() => activeEvents.filter(e => isAlert(e.severity) && !e.acknowledged), [activeEvents])
 
   const value = useMemo<PollingState>(() => ({
     ready: hydrated && device.loaded,
@@ -345,11 +366,11 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
     pmBatchId, setPmBatchId,
     outdoorAqi, outdoorLocation, setOutdoorLocation,
     handleIpSave,
-    activeEvents, allEvents: events, acknowledgeEvent,
+    activeEvents, allEvents, alerts, acknowledgeEvent, refreshEvents, setPreviewEvents,
   }), [
     hydrated, device.loaded, deviceIp, measures, history, lastUpdated, error,
     tempUnit, setTempUnit, pmBatchId, setPmBatchId, outdoorAqi, outdoorLocation, setOutdoorLocation,
-    handleIpSave, activeEvents, events, acknowledgeEvent,
+    handleIpSave, activeEvents, allEvents, alerts, acknowledgeEvent, refreshEvents,
   ])
 
   return (
