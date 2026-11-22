@@ -38,27 +38,54 @@ export function Cover({
   )
 }
 
+/** A segment needs this share of the book before a label fits under it without crowding its neighbours. */
+const LABEL_MIN_SHARE = 0.035
+/** …and this much before the current chapter's full title fits rather than just its number. */
+const TITLE_MIN_SHARE = 0.09
+
 /**
  * Whole-book progress drawn as one segment per chapter, each sized by its length —
  * the shape of the book at a glance. `onSeek` makes the segments chapter jump targets.
+ * `labels` numbers the chapters under the bar and names the current one, so the bar
+ * reads as "where this chapter sits in the book" (now-playing screen on wide layouts).
  */
 export function ChapterSegments({
-  chapters, position, className = 'h-1.5', onSeek,
+  chapters, position, className = 'h-1.5', onSeek, labels = false,
 }: {
   chapters: AudiobookChapter[]
   position: number
   className?: string
   onSeek?: (chapterIndex: number) => void
+  labels?: boolean
 }) {
   // Past ~120 chapters the 2px gaps would eat the bar; drop them.
   const gap = chapters.length > 120 ? 'gap-0' : 'gap-[2px]'
+  const total = chapters.reduce((n, c) => n + (c.duration || 1), 0) || 1
+  const currentIndex = labels ? chapterAt(chapters, position)?.index : undefined
+  // A book of many short chapters has no segment wide enough for a label, so number
+  // every `step`-th one instead (every 2nd at 30 chapters, every 4th at 100).
+  const step = Math.max(1, Math.ceil(LABEL_MIN_SHARE * chapters.length))
   return (
-    <div className={`flex w-full ${gap} ${className}`} role="presentation">
+    <div className={`flex w-full ${gap} ${labels ? '' : className}`} role="presentation">
       {chapters.map(c => {
         const fill = Math.min(1, Math.max(0, (position - c.start) / (c.duration || 1)))
         const bar = (
           <span className="block h-full w-full overflow-hidden rounded-[2px] bg-white/15">
             <span className="block h-full bg-accent" style={{ width: `${fill * 100}%` }} />
+          </span>
+        )
+        const share = (c.duration || 1) / total
+        const isCurrent = c.index === currentIndex
+        // The current chapter is always labelled (by title when it fits); its immediate
+        // neighbours give way so the numbers never run together.
+        const nextToCurrent = currentIndex !== undefined && Math.abs(c.index - currentIndex) === 1
+        const fits = step === 1 ? share >= LABEL_MIN_SHARE : (c.index + 1) % step === 0 && !nextToCurrent
+        const label = !labels ? null
+          : isCurrent ? (share >= TITLE_MIN_SHARE ? c.title : String(c.index + 1))
+            : fits ? String(c.index + 1) : null
+        const caption = labels && (
+          <span aria-hidden="true" className={`mt-1.5 block h-4 whitespace-nowrap text-left text-[12px] leading-4 ${step === 1 ? 'truncate' : ''} ${isCurrent ? 'font-bold text-accent-soft' : 'text-white/60'}`}>
+            {label}
           </span>
         )
         return onSeek ? (
@@ -69,13 +96,17 @@ export function ChapterSegments({
             aria-label={`Go to ${c.title}`}
             onClick={() => onSeek(c.index)}
             // Tall invisible hit area around a thin bar.
-            className="-my-3 h-auto min-w-0 basis-0 py-3 transition-opacity hover:opacity-80"
+            className={`h-auto min-w-0 basis-0 transition-opacity hover:opacity-80 ${labels ? '-mt-3 pt-3' : '-my-3 py-3'}`}
             style={{ flexGrow: c.duration || 1 }}
           >
             <span className={`block ${className}`}>{bar}</span>
+            {caption}
           </button>
         ) : (
-          <span key={c.index} className="h-full min-w-0 basis-0" style={{ flexGrow: c.duration || 1 }}>{bar}</span>
+          <span key={c.index} className={`min-w-0 basis-0 ${labels ? '' : 'h-full'}`} style={{ flexGrow: c.duration || 1 }}>
+            {labels ? <span className={`block ${className}`}>{bar}</span> : bar}
+            {caption}
+          </span>
         )
       })}
     </div>
@@ -118,7 +149,7 @@ export function BookProgress({
 
 /** Chapter rows: finished ✓, current (speaker + time left), upcoming (number). */
 export function ChapterList({
-  chapters, position, rate = 1, started, onSelect, rowClass = 'h-[54px] px-3.5', followCurrent = false,
+  chapters, position, rate = 1, started, onSelect, rowClass = 'h-[54px] px-3.5', followCurrent = false, showProgress = false,
 }: {
   chapters: AudiobookChapter[]
   /** Book position in seconds. */
@@ -131,6 +162,8 @@ export function ChapterList({
   rowClass?: string
   /** Keep the current chapter scrolled into view (for the now-playing panel). */
   followCurrent?: boolean
+  /** Draw the current chapter's own progress along the bottom of its row. */
+  showProgress?: boolean
 }) {
   const current = started ? chapterAt(chapters, position) : undefined
   const currentRef = useRef<HTMLButtonElement>(null)
@@ -151,7 +184,7 @@ export function ChapterList({
             type="button"
             onClick={() => onSelect(c.index)}
             aria-current={isCurrent ? 'true' : undefined}
-            className={`flex w-full items-center gap-4 rounded-xl text-left transition-colors ${rowClass} ${isCurrent
+            className={`relative flex w-full items-center gap-4 rounded-xl text-left transition-colors ${rowClass} ${isCurrent
               ? 'bg-surface-2 text-accent-soft'
               : `hover:bg-white/5 ${done ? 'text-white/60' : 'text-ink'}`
               }`}
@@ -167,7 +200,12 @@ export function ChapterList({
                 {timeLeft(c.start + c.duration - position, rate)}
               </span>
             )}
-            <span className="w-14 shrink-0 text-right text-[13px] tabular-nums text-white/50">{clock(c.duration)}</span>
+            <span className="w-14 shrink-0 text-right text-[13px] tabular-nums text-white/60">{clock(c.duration)}</span>
+            {isCurrent && showProgress && (
+              <span aria-hidden="true" className="absolute inset-x-3 bottom-1 h-[3px] overflow-hidden rounded-full bg-white/15">
+                <span className="block h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.max(0, ((position - c.start) / (c.duration || 1)) * 100))}%` }} />
+              </span>
+            )}
           </button>
         )
       })}

@@ -11,7 +11,7 @@ import {
 } from '../icons'
 import { MIN_RATE, MAX_RATE, RATE_STEP, RATE_PRESETS, SLEEP_MINUTES, useAudiobookPlayer, useAudiobookTime, type SleepMode } from './AudiobookPlayer'
 import { Cover, ChapterList, ChapterSegments } from './parts'
-import { chapterAt, clock, timeLeft } from './format'
+import { chapterAt, clock, length, timeLeft } from './format'
 
 type SheetKind = 'speed' | 'sleep' | 'chapters' | null
 
@@ -167,9 +167,9 @@ function SpeedStepper({ onOpen, className, stepClass, labelClass, label }: {
   onOpen: () => void
   className: string
   stepClass: string
-  /** Fixed width so the − / + buttons don't shift as the value changes. */
+  /** Fixed width (or flex-1) so the − / + buttons don't shift as the value changes. */
   labelClass: string
-  label: (rate: number) => string
+  label: (rate: number) => React.ReactNode
 }) {
   const { rate, setRate } = useAudiobookPlayer()
   return (
@@ -294,7 +294,10 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
   const chapter = chapterAt(book.chapters, time)
   const multi = book.chapters.length > 1
   const canPlay = status === 'ready' || status === 'loading'
-  const pill = 'flex h-[46px] shrink-0 items-center gap-2 whitespace-nowrap rounded-[13px] border border-border px-4 text-[13.5px] font-bold transition-colors'
+  const bookPercent = book.duration > 0 ? Math.min(100, Math.max(0, Math.round((time / book.duration) * 100))) : 0
+  // `pillShape` has no display of its own, so a pill can also be `hidden md:flex`.
+  const pillShape = 'h-[46px] items-center gap-2 whitespace-nowrap rounded-[13px] border border-border px-4 text-[13.5px] font-bold transition-colors'
+  const pill = `flex ${pillShape}`
 
   // Shared horizontal gutter so the header, stage and timeline line up edge to edge.
   const gutter = 'px-5 md:px-[clamp(28px,4.2vw,84px)]'
@@ -351,8 +354,10 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
             className="mx-auto w-[min(70vw,34vh)] rounded-[20px] shadow-[0_40px_120px_rgba(0,0,0,0.65)] md:mx-0 md:w-[min(38vw,60vh)] md:rounded-[26px] xl:w-[min(30vw,62vh)]"
           />
 
-          <div className="mx-auto flex w-full min-w-0 max-w-[680px] flex-col gap-[clamp(20px,3.4vh,44px)] md:mx-0">
-            <div className="flex flex-col gap-2.5">
+          {/* One column, one width: the scrubber, transport and option rows share both edges.
+              Centred on phones, left-aligned beside the cover from md. */}
+          <div className="mx-auto flex w-full min-w-0 max-w-[560px] flex-col gap-[clamp(18px,3.2vh,40px)] md:mx-0">
+            <div className="flex flex-col items-center gap-2.5 text-center md:items-start md:text-left">
               {multi && chapter && (
                 <div className="text-[11.5px] font-bold uppercase tracking-[0.14em] text-accent-soft md:text-[12.5px]">
                   {/* "Track 20" already carries its number — don't print "Track 20 · 20 of 38". */}
@@ -370,13 +375,23 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
 
             <div className="flex flex-col gap-2">
               <ChapterScrubber showTimes={false} />
-              <div className="flex justify-between text-[13px] font-bold tabular-nums text-white/80 md:text-[14px]">
+              <div className="flex items-baseline justify-between text-[13px] font-bold tabular-nums text-white/80 md:text-[14px]">
                 <span>{clock(time - (chapter?.start ?? 0))}</span>
+                {multi && <span className="font-medium text-white/60">This chapter</span>}
                 <span>-{clock((chapter?.start ?? 0) + (chapter?.duration ?? book.duration) - time)}</span>
+              </div>
+              {/* Phones: the whole book sits directly under the chapter it belongs to.
+                  From md it is the numbered bar along the bottom edge instead. */}
+              <div className="mt-2 flex flex-col gap-2 md:hidden">
+                <ChapterSegments chapters={book.chapters} position={time} className="h-1.5" onSeek={multi ? goToChapter : undefined} />
+                <div className="flex items-baseline justify-between text-[13px] text-white/60">
+                  <span>Whole book · {bookPercent}%</span>
+                  <span className="font-bold text-accent-soft">{timeLeft(book.duration - time, rate)}</span>
+                </div>
               </div>
             </div>
 
-            <div className="flex w-full max-w-[480px] items-center justify-between">
+            <div className="flex w-full items-center justify-between">
               <button type="button" aria-label="Previous chapter" disabled={!canPlay} onClick={prevChapter} className={`${ROUND_BTN} h-12 w-12 text-white/80 md:h-14 md:w-14`}>
                 <PrevChapterIcon className="h-6 w-6 md:h-7 md:w-7" />
               </button>
@@ -401,19 +416,18 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
               </button>
             </div>
 
-            <div className="flex items-center gap-2.5">
+            <div className="flex w-full items-stretch gap-2.5">
               <SpeedStepper
                 onOpen={() => onSheet('speed')}
-                label={r => `${r.toFixed(2)}× speed`}
-                labelClass="w-[6.75rem]"
-                className={`${pill} gap-0.5 bg-black/30 px-1 py-1 text-white/85 backdrop-blur-xl`}
-                stepClass="h-full w-9 rounded-[10px] text-[18px]"
+                label={r => <>{r.toFixed(2)}×<span className="hidden sm:inline"> speed</span></>}
+                labelClass="min-w-0 flex-1"
+                className={`${pill} flex-1 gap-0.5 bg-black/30 px-1 py-1 text-white/85 backdrop-blur-xl`}
+                stepClass="h-full w-10 rounded-[10px] text-[18px]"
               />
-              <button type="button" onClick={() => onSheet('sleep')} className={`${pill} backdrop-blur-xl ${sleep.kind === 'off' ? 'bg-black/30 text-white/85 hover:bg-white/10' : 'bg-white/10 text-accent-soft'}`}>
+              <button type="button" onClick={() => onSheet('sleep')} className={`${pill} flex-1 justify-center backdrop-blur-xl ${sleep.kind === 'off' ? 'bg-black/30 text-white/85 hover:bg-white/10' : 'bg-white/10 text-accent-soft'}`}>
                 <MoonIcon className="h-[18px] w-[18px]" />{sleepLabel(sleep)}
               </button>
-              <div className="hidden w-2 shrink md:block" />
-              <div className="hidden min-w-[96px] max-w-[190px] flex-1 items-center gap-2.5 text-white/80 md:flex">
+              <div className={`${pillShape} hidden min-w-0 flex-1 gap-2.5 bg-black/30 text-white/85 backdrop-blur-xl md:flex`}>
                 <VolumeIcon className="h-5 w-5 shrink-0" />
                 <Slider ariaLabel="Volume" fraction={volume} onChange={setVolume} />
               </div>
@@ -421,23 +435,29 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
           </div>
 
           {multi && (
-            <section className="hidden h-full min-h-0 flex-col gap-3.5 xl:flex">
-              <h2 className="shrink-0 text-[20px] font-bold tracking-[-0.01em] text-ink">Chapters</h2>
-              <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-white/10 bg-black/35 p-2 backdrop-blur-2xl">
-                <ChapterList chapters={book.chapters} position={time} rate={rate} started followCurrent rowClass="h-[52px] px-3" onSelect={goToChapter} />
+            <section aria-label="Chapters" className="hidden h-full min-h-0 flex-col overflow-hidden rounded-[22px] border border-white/10 bg-black/35 backdrop-blur-2xl xl:flex">
+              <div className="flex shrink-0 items-baseline justify-between px-5 pb-2.5 pt-[18px]">
+                <h2 className="text-[18px] font-bold tracking-[-0.01em] text-ink">Chapters</h2>
+                <span className="text-[13px] text-white/60">{book.chapters.length} · {length(book.duration)}</span>
+              </div>
+              <div className="scrollbar-hide min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+                <ChapterList chapters={book.chapters} position={time} rate={rate} started followCurrent showProgress rowClass="h-[52px] px-3" onSelect={goToChapter} />
               </div>
             </section>
           )}
         </main>
 
-        {/* The whole book, edge to edge: one segment per chapter, each a jump target. */}
-        <footer className={`flex shrink-0 flex-col gap-2.5 pb-[max(22px,env(safe-area-inset-bottom))] md:pb-[max(30px,env(safe-area-inset-bottom))] ${gutter}`}>
-          <div className="flex items-baseline justify-between text-[12.5px] text-white/55 md:text-[13.5px]">
-            <span>Whole book</span>
+        {/* The whole book, edge to edge: one segment per chapter, each a jump target,
+            numbered so it reads as the same position as the scrubber at book scale. */}
+        <footer className={`hidden shrink-0 flex-col gap-2.5 md:flex md:pb-[max(24px,env(safe-area-inset-bottom))] ${gutter}`}>
+          <div className="flex items-baseline justify-between text-[13.5px] text-white/60">
+            <span>Whole book · {bookPercent}% through</span>
             <span className="font-bold text-accent-soft">{timeLeft(book.duration - time, rate)}</span>
           </div>
-          <ChapterSegments chapters={book.chapters} position={time} className="h-2 md:h-2.5" onSeek={multi ? goToChapter : undefined} />
+          <ChapterSegments chapters={book.chapters} position={time} className="h-2.5" labels={multi} onSeek={multi ? goToChapter : undefined} />
         </footer>
+        {/* Phones have no footer bar; keep the bottom safe area clear. */}
+        <div aria-hidden="true" className="h-[max(18px,env(safe-area-inset-bottom))] shrink-0 md:hidden" />
       </div>
     </motion.div>
   )
