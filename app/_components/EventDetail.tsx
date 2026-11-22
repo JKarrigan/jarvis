@@ -1,13 +1,13 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
 import type { AirQualityEvent, Severity } from '@/lib/eventTypes'
 import type { HistoryEntry } from '@/lib/types'
 import { findPmBatch } from '@/lib/pmCalibration'
 import { Chart } from './Chart'
 import { buildSeries } from './Dashboard'
 import { reviveEvent, usePolling } from './PollingProvider'
+import { EmptyState, Page, PageHeader, PageState, SectionTitle, Spinner } from './air/ui'
 import {
   co2Status, pm25Status, pm1Status, pm10Status,
   tempStatus, humidityStatus, tvocStatus, noxStatus,
@@ -24,7 +24,7 @@ const SEVERITY_BORDER: Record<Severity, string> = {
   critical: 'border-red-500/20',
   warning: 'border-amber-500/20',
   notable: 'border-blue-500/20',
-  info: 'border-zinc-800',
+  info: 'border-air-line',
 }
 
 function fmtDateTime(d: Date) {
@@ -67,17 +67,13 @@ export function EventDetail({ id }: { id: string }) {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
-        <p className="text-sm text-zinc-500">{error}</p>
-      </div>
+      <PageState><p className="text-sm text-zinc-300">{error}</p></PageState>
     )
   }
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
-        <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
-      </div>
+      <PageState><Spinner /></PageState>
     )
   }
 
@@ -93,59 +89,43 @@ export function EventDetail({ id }: { id: string }) {
   const isOngoing = !event.endTime
 
   return (
-    <div className="min-h-screen bg-zinc-950 p-6">
-      <div className="max-w-4xl mx-auto space-y-6">
-        {/* Back nav */}
-        <Link href="/events" className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-            <polyline points="8 2 4 6 8 10" />
-          </svg>
-          All events
-        </Link>
+    <Page>
+      <PageHeader
+        title={event.title}
+        back={{ href: '/events', label: 'All events' }}
+        subtitle={(
+          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <span className={`rounded-md border px-2 py-0.5 text-xs font-semibold capitalize ${SEVERITY_STYLES[event.severity]}`}>{event.severity}</span>
+            <span>{fmtDateTime(event.startTime)}{event.endTime ? ` to ${fmtDateTime(event.endTime)}` : ''}</span>
+            <span aria-hidden="true">·</span>
+            <span>{fmtDuration(event.durationMinutes)}</span>
+            <span aria-hidden="true">·</span>
+            <span>{Math.round(event.confidence * 100)}% confidence</span>
+            {isOngoing && <span className="text-emerald-400">ongoing</span>}
+          </span>
+        )}
+      />
 
-        {/* Event header */}
-        <div className={`rounded-xl border bg-zinc-900/40 px-5 py-4 space-y-3 ${SEVERITY_BORDER[event.severity]}`}>
-          <div className="flex items-start justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <span className={`text-xs font-semibold px-2 py-0.5 rounded-md border ${SEVERITY_STYLES[event.severity]}`}>
-                  {event.severity}
-                </span>
-                <h1 className="text-lg font-semibold text-zinc-100">{event.title}</h1>
-              </div>
-              <div className="flex items-center gap-2.5 text-xs text-zinc-500">
-                <span>{fmtDateTime(event.startTime)}</span>
-                {event.endTime && (
-                  <><span className="text-zinc-500">→</span><span>{fmtDateTime(event.endTime)}</span></>
-                )}
-                <span className="text-zinc-500">·</span>
-                <span>{fmtDuration(event.durationMinutes)}</span>
-                <span className="text-zinc-500">·</span>
-                <span>{Math.round(event.confidence * 100)}% confidence</span>
-                {isOngoing && <span className="text-emerald-500 animate-pulse">ongoing</span>}
-              </div>
-            </div>
-          </div>
-
-          <p className="text-sm text-zinc-300 leading-relaxed">{event.description}</p>
+        <div className={`space-y-4 rounded-2xl border bg-air-card px-5 py-5 md:px-6 ${SEVERITY_BORDER[event.severity]}`}>
+          <p className="max-w-[90ch] text-[15px] leading-relaxed text-zinc-200">{event.description}</p>
           {event.recommendation && (
-            <p className="text-sm text-zinc-500 italic">{event.recommendation}</p>
+            <p className="max-w-[90ch] text-sm text-zinc-400">{event.recommendation}</p>
           )}
 
           {/* Peak vs baseline */}
-          <div className="grid grid-cols-2 gap-3 pt-1">
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2.5 space-y-1.5">
-              <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Peak</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2 rounded-xl border border-air-line bg-air-raised px-4 py-3">
+              <p className="text-sm font-semibold text-zinc-200">Peak</p>
+              <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm tabular-nums">
                 <span className="text-zinc-400">NOx <span className="text-zinc-200">{event.peak.noxIndex}</span></span>
                 <span className="text-zinc-400">VOC <span className="text-zinc-200">{event.peak.tvocIndex}</span></span>
                 <span className="text-zinc-400">PM2.5 <span className="text-zinc-200">{event.peak.pm02.toFixed(1)}</span></span>
                 <span className="text-zinc-400">CO₂ <span className="text-zinc-200">{event.peak.rco2}</span></span>
               </div>
             </div>
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2.5 space-y-1.5">
-              <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Baseline (pre-event)</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono">
+            <div className="space-y-2 rounded-xl border border-air-line bg-air-raised px-4 py-3">
+              <p className="text-sm font-semibold text-zinc-200">Baseline (pre-event)</p>
+              <div className="flex flex-wrap gap-x-5 gap-y-1 text-sm tabular-nums">
                 <span className="text-zinc-400">NOx <span className="text-zinc-300">{event.baseline.noxIndex}</span></span>
                 <span className="text-zinc-400">VOC <span className="text-zinc-300">{event.baseline.tvocIndex}</span></span>
                 <span className="text-zinc-400">PM2.5 <span className="text-zinc-300">{event.baseline.pm02.toFixed(1)}</span></span>
@@ -157,13 +137,11 @@ export function EventDetail({ id }: { id: string }) {
 
         {/* Charts */}
         {readings.length > 1 ? (
-          <section className="space-y-3">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500 px-1">
-              Sensor readings during event
-              <span className="ml-2 font-normal normal-case tracking-normal text-zinc-500">
-                ± 15 min context
-              </span>
-            </h2>
+          <section className="mt-2 flex flex-col gap-4">
+            <SectionTitle className="text-lg">
+              Readings during the event
+              <span className="ml-2 text-sm font-normal text-zinc-400">with 15 minutes either side</span>
+            </SectionTitle>
             <Chart label="CO₂" unit="ppm" values={series.co2} timestamps={series.ts} status={co2Status(lastReading?.rco2 ?? 0)} statusFn={co2Status} events={events} />
             <Chart label="PM2.5" unit="μg/m³" values={series.pm25} timestamps={series.ts} status={pm25Status(pm02)} statusFn={pm25Status} events={events} />
             <Chart label="TVOC" unit="idx" values={series.tvoc} timestamps={series.ts} status={tvocStatus(lastReading?.tvocIndex ?? 0)} statusFn={tvocStatus} events={events} />
@@ -174,11 +152,8 @@ export function EventDetail({ id }: { id: string }) {
             <Chart label="Humidity" unit="%" values={series.hum} timestamps={series.ts} status={humidityStatus(hum)} statusFn={humidityStatus} />
           </section>
         ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center">
-            <p className="text-sm text-zinc-500">No sensor readings found for this event window.</p>
-          </div>
+          <EmptyState title="No sensor readings found for this event window" />
         )}
-      </div>
-    </div>
+    </Page>
   )
 }

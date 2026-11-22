@@ -5,11 +5,10 @@ import { usePolling } from './PollingProvider'
 import { HomeDashboard, type HomeLightsState } from './HomeDashboard'
 import { SetupScreen } from './SetupScreen'
 import { StaleBanner } from './StaleBanner'
-import { STALE_AFTER_MS } from './DashboardShell'
 import { Toast, useToast } from './Toast'
 import { useHueLights } from './lights/useHueLights'
 import type { LightState } from './HueControls'
-import { useIsOlderThan } from '@/lib/useNow'
+import { STALE_AFTER_MS, useIsOlderThan } from '@/lib/useNow'
 
 export function HomeDashboardShell() {
   const { ready, deviceIp, measures, history, lastUpdated, error, tempUnit, pmBatchId, outdoorAqi, handleIpSave, allEvents } = usePolling()
@@ -53,7 +52,7 @@ export function HomeDashboardShell() {
 
   if (!ready) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="flex min-h-[60vh] items-center justify-center">
         <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" aria-label="Loading" />
       </div>
     )
@@ -65,12 +64,12 @@ export function HomeDashboardShell() {
 
   if (!displayMeasures || !displayLastUpdated) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="flex min-h-[60vh] items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-zinc-400" role="status">
           <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
           <span className="text-sm">Connecting to {deviceIp}…</span>
           {error && (
-            <span className="text-xs text-red-400">{error} · retrying in 10s</span>
+            <span className="text-sm text-red-400">{error}. Retrying in 10 s.</span>
           )}
         </div>
       </div>

@@ -15,14 +15,14 @@ export default function AirError({
   }, [error])
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
+    <div className="flex min-h-[60vh] items-center justify-center p-6">
       <div role="alert" className="w-full max-w-md rounded-2xl border border-red-500/30 bg-zinc-900/60 p-8 space-y-4">
         <div className="space-y-1">
           <h1 className="text-lg font-semibold text-zinc-100">Something went wrong</h1>
           <p className="text-sm text-zinc-400">
             This page hit an unexpected error. The sensor keeps logging in the background — nothing was lost.
           </p>
-          {error.digest && <p className="text-xs font-mono text-zinc-500">Ref {error.digest}</p>}
+          {error.digest && <p className="text-xs font-mono text-zinc-400">Ref {error.digest}</p>}
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -33,7 +33,7 @@ export default function AirError({
             Try again
           </button>
           <Link href="/" className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
-            Back to dashboard
+            Back to overview
           </Link>
         </div>
       </div>

@@ -38,7 +38,7 @@ export function AlbumDetail({ id }: { id: string }) {
 
   if (a?.status === 404) {
     return (
-      <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8">
+      <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-5 md:pt-8">
         <BackPill href="/media/photos/albums" label="Albums" />
         <div className="rounded-[22px] border border-border bg-surface px-6 py-14 text-center">
           <h1 className="text-[22px] font-bold text-ink">Album not found</h1>
@@ -75,7 +75,7 @@ export function AlbumDetail({ id }: { id: string }) {
   }
 
   return (
-    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8">
+    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-5 md:pt-8">
       <BackPill href="/media/photos/albums" label="Albums" />
       <header className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
         <div className="w-full min-w-0 sm:w-auto sm:flex-1">

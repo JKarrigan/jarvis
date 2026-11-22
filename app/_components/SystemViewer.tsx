@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { EmptyState, Page, PageHeader } from './air/ui'
 
 interface SystemStats {
   pi: {
@@ -57,11 +58,11 @@ function BarRow({ label, value, max, display }: { label: string; value: number; 
   const barColor = pct > 85 ? 'bg-red-500' : pct > 65 ? 'bg-amber-500' : 'bg-emerald-500'
   return (
     <div className="space-y-1">
-      <div className="flex justify-between text-xs text-zinc-400">
+      <div className="flex justify-between text-sm text-zinc-400">
         <span>{label}</span>
         <span className="tabular-nums text-zinc-300">{display}</span>
       </div>
-      <div className="h-1.5 rounded-full bg-zinc-800">
+      <div className="h-1.5 rounded-full bg-air-active">
         <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -70,17 +71,17 @@ function BarRow({ label, value, max, display }: { label: string; value: number; 
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex justify-between gap-4 text-xs py-1.5 border-b border-zinc-800/60 last:border-0">
-      <span className="text-zinc-500 shrink-0">{label}</span>
-      <span className="text-zinc-300 text-right font-mono break-all">{value}</span>
+    <div className="flex justify-between gap-4 border-b border-air-line py-2 text-sm last:border-0">
+      <span className="shrink-0 text-zinc-400">{label}</span>
+      <span className="break-all text-right tabular-nums text-zinc-200">{value}</span>
     </div>
   )
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-3">
-      <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
+    <div className="space-y-3 rounded-2xl border border-air-line bg-air-card p-5 md:p-6">
+      <h2 className="text-base font-semibold text-zinc-100">{title}</h2>
       {children}
     </div>
   )
@@ -119,34 +120,29 @@ export function SystemViewer() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-zinc-950 p-6">
-      <div className="max-w-4xl mx-auto space-y-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-zinc-100">System</h1>
-          {lastFetched && (
-            <span className="text-xs text-zinc-600">
-              Updated {lastFetched.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-            </span>
-          )}
-        </div>
+    <Page>
+      <PageHeader
+        title="System"
+        subtitle={lastFetched
+          ? `Updated ${lastFetched.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+          : 'The Raspberry Pi, the sensor and this app'}
+      />
 
         {!data ? (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center">
-            <p className="text-sm text-zinc-500">Loading…</p>
-          </div>
+          <EmptyState title="Loading…" />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Pi Hardware */}
-            <Card title="Pi Hardware">
+            <Card title="Raspberry Pi">
               <div className="flex items-center gap-2 pb-1">
                 {data.pi.cpuTemp !== null ? (
                   <span className={`text-sm font-semibold px-2.5 py-1 rounded-lg border tabular-nums ${tempColor(data.pi.cpuTemp)}`}>
                     {data.pi.cpuTemp.toFixed(1)}°C
                   </span>
                 ) : (
-                  <span className="text-sm px-2.5 py-1 rounded-lg border border-zinc-800 text-zinc-600 bg-zinc-900">N/A</span>
+                  <span className="text-sm px-2.5 py-1 rounded-lg border border-air-line text-zinc-400 bg-zinc-900">N/A</span>
                 )}
-                <span className="text-xs text-zinc-500">CPU temp</span>
+                <span className="text-sm text-zinc-400">CPU temperature</span>
               </div>
 
               <BarRow
@@ -169,7 +165,7 @@ export function SystemViewer() {
               })()}
 
               <div className="space-y-1 pt-1">
-                <p className="text-xs text-zinc-500 pb-0.5">{data.pi.cpu.model} · {data.pi.cpu.cores.length} cores</p>
+                <p className="pb-0.5 text-sm text-zinc-400">{data.pi.cpu.model} · {data.pi.cpu.cores.length} cores</p>
                 {data.pi.cpu.cores.map(core => (
                   <BarRow
                     key={core.id}
@@ -181,7 +177,7 @@ export function SystemViewer() {
                 ))}
               </div>
 
-              <div className="pt-1 divide-y divide-zinc-800/60">
+              <div className="pt-1 divide-y divide-air-line">
                 <Row label="Load avg" value={`${data.pi.loadAvg[0].toFixed(2)} · ${data.pi.loadAvg[1].toFixed(2)} · ${data.pi.loadAvg[2].toFixed(2)}`} />
                 <Row label="Uptime" value={fmtUptime(data.pi.uptime)} />
                 <Row label="OS" value={`${data.pi.hostname} · ${data.pi.platform} · ${data.pi.arch}`} />
@@ -207,7 +203,7 @@ export function SystemViewer() {
                       />
                     )
                   })()}
-                  <div className="pt-1 divide-y divide-zinc-800/60">
+                  <div className="pt-1 divide-y divide-air-line">
                     <Row label="Serial" value={data.sensor.serialno ?? '—'} />
                     <Row label="Model" value={data.sensor.model ?? '—'} />
                     <Row label="Firmware" value={data.sensor.firmware ?? '—'} />
@@ -220,12 +216,12 @@ export function SystemViewer() {
                   </div>
                 </>
               ) : (
-                <p className="text-sm text-zinc-500 py-2">No sensor data yet — waiting for first reading.</p>
+                <p className="text-sm text-zinc-400 py-2">No sensor data yet — waiting for first reading.</p>
               )}
             </Card>
 
             {/* Poller & App */}
-            <Card title="Poller & App">
+            <Card title="Poller and app">
               <div className="flex items-center gap-2 pb-1">
                 {data.poller.error ? (
                   <span className="text-xs px-2.5 py-1 rounded-lg border border-red-500/30 bg-red-500/10 text-red-400">
@@ -241,7 +237,7 @@ export function SystemViewer() {
                   </span>
                 )}
               </div>
-              <div className="divide-y divide-zinc-800/60">
+              <div className="divide-y divide-air-line">
                 <Row label="Device IP" value={data.poller.ip ?? '—'} />
                 <Row label="Readings stored" value={data.db.readingCount.toLocaleString()} />
                 <Row label="Node.js" value={data.app.nodeVersion} />
@@ -249,7 +245,6 @@ export function SystemViewer() {
             </Card>
           </div>
         )}
-      </div>
-    </div>
+    </Page>
   )
 }

@@ -191,10 +191,10 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
     : color
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 pt-4 pb-2">
+    <div className="rounded-2xl border border-air-line bg-air-card px-4 pb-2 pt-4 md:px-5">
       <div className="flex items-center gap-2 mb-1 flex-wrap">
-        <span className="text-xs font-semibold uppercase tracking-widest text-zinc-400">{label}</span>
-        <span className="text-xs text-zinc-500">{unit}</span>
+        <span className="text-base font-semibold text-zinc-100">{label}</span>
+        <span className="text-sm text-zinc-400">{unit}</span>
         <span
           className="text-xs font-medium px-1.5 py-0.5 rounded-md border"
           style={{ color, borderColor: `${color}40`, backgroundColor: `${color}18` }}
@@ -208,8 +208,8 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
               onClick={() => setColorMode(m => m === 'uniform' ? 'by-range' : 'uniform')}
               aria-pressed={colorMode === 'by-range'}
               className={`text-xs px-2 py-0.5 rounded-md border transition-colors ${colorMode === 'by-range'
-                ? 'bg-zinc-700 border-zinc-600 text-zinc-200'
-                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                ? 'bg-air-active border-transparent text-white'
+                : 'bg-air-raised border-air-line text-zinc-400 hover:text-white'
                 }`}
             >
               {colorMode === 'by-range' ? 'By Range' : 'Uniform'}

@@ -146,7 +146,7 @@ export function PhotosTimeline() {
   const filtered = kind !== 'all' || period != null || tag != null
 
   return (
-    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8">
+    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-5 md:pt-8">
       <header className="mb-5 flex flex-wrap items-end gap-x-6 gap-y-3">
         <div className="w-full min-w-0 sm:w-auto sm:flex-1">
           <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">Family library</p>

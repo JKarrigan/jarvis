@@ -10,7 +10,7 @@ interface HueStatus {
 
 type ConnectState = 'idle' | 'waiting' | 'success' | 'timeout' | 'error'
 
-const inputCls = 'rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-mono text-zinc-100 placeholder-zinc-600 focus:border-amber-500 focus:outline-none transition-colors disabled:opacity-50'
+const inputCls = 'min-h-10 rounded-xl border border-white/10 bg-air-raised px-3 text-sm text-zinc-100 placeholder-zinc-500 transition-colors focus:border-amber-400 focus:outline-none disabled:opacity-50'
 
 const REGISTER_TIMEOUT_MS = 30_000
 const REGISTER_INTERVAL_MS = 2_000
@@ -106,24 +106,24 @@ export function HueBridgeSection() {
   }
 
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
-      <div className="px-5 py-3 border-b border-zinc-800/60">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Hue Bridge</h2>
+    <section className="overflow-hidden rounded-2xl border border-air-line bg-air-card">
+      <div className="px-5 pb-1 pt-5 md:px-6">
+        <h2 className="text-base font-semibold text-zinc-100">Hue bridge</h2>
       </div>
-      <div className="p-5 space-y-5">
+      <div className="space-y-5 p-5 md:px-6">
         {status === null ? (
           <div className="h-8 w-40 rounded bg-zinc-800 animate-pulse" />
         ) : (
           <>
             <div className="flex items-center justify-between gap-6">
               <div className="min-w-0">
-                <p className="text-sm text-zinc-200">Bridge Status</p>
-                <p className="text-xs text-zinc-500 mt-0.5">
+                <p className="text-sm font-medium text-zinc-100">Bridge status</p>
+                <p className="mt-0.5 text-sm text-zinc-400">
                   {!status.configured
                     ? 'Not connected'
                     : status.reachable
-                    ? `Connected — ${status.ip}`
-                    : `Unreachable — ${status.ip}`}
+                    ? `Connected at ${status.ip}`
+                    : `Unreachable at ${status.ip}`}
                 </p>
               </div>
               <span aria-hidden className={`shrink-0 h-2 w-2 rounded-full ${
@@ -133,7 +133,7 @@ export function HueBridgeSection() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="hue-bridge-ip" className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Bridge IP Address</label>
+              <label htmlFor="hue-bridge-ip" className="text-sm font-medium text-zinc-100">Bridge IP address</label>
               <div className="flex gap-2">
                 <input
                   id="hue-bridge-ip"
@@ -151,7 +151,7 @@ export function HueBridgeSection() {
                     type="button"
                     onClick={handleConnect}
                     disabled={!ipInput.trim()}
-                    className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="min-h-10 rounded-xl bg-amber-400 px-4 text-sm font-semibold text-zinc-950 transition-colors hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Connect
                   </button>
@@ -159,7 +159,7 @@ export function HueBridgeSection() {
                   <button
                     type="button"
                     onClick={handleReset}
-                    className="px-4 py-2 rounded-lg border border-zinc-700 text-zinc-400 text-sm transition-colors hover:text-zinc-200"
+                    className="min-h-10 rounded-xl border border-air-line bg-air-raised px-4 text-sm text-zinc-200 transition-colors hover:text-white"
                   >
                     Cancel
                   </button>
@@ -170,14 +170,14 @@ export function HueBridgeSection() {
             {connectState === 'waiting' && (
               <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
                 <p className="text-sm text-amber-300 font-medium">Press the button on your Hue Bridge now</p>
-                <p className="text-xs text-amber-400/70 mt-1">Waiting up to 30 seconds…</p>
+                <p className="mt-1 text-sm text-amber-200/80">Waiting up to 30 seconds…</p>
               </div>
             )}
             {connectState === 'success' && (
               <p role="status" className="text-sm text-emerald-400">Bridge connected successfully.</p>
             )}
             {connectState === 'timeout' && (
-              <p role="alert" className="text-sm text-red-400">Timed out — try again and press the button within 30 seconds.</p>
+              <p role="alert" className="text-sm text-red-400">Timed out. Try again and press the button within 30 seconds.</p>
             )}
             {connectState === 'error' && errorMsg && (
               <p role="alert" className="text-sm text-red-400">{errorMsg}</p>

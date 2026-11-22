@@ -21,6 +21,16 @@
   --color-border: var(--border);
   --color-ink: var(--ink);
   --color-ink-on-accent: var(--ink-on-accent);
+
+  /* Home (air) surfaces: page, sidebar, card, raised control, hover, selected, hairline.
+     One neutral ramp so every Home page is built from the same five greys. */
+  --color-air-bg: #0a0a0b;
+  --color-air-panel: #0e0e10;
+  --color-air-card: #111113;
+  --color-air-raised: #17171a;
+  --color-air-hover: #1c1c20;
+  --color-air-active: #2a2a2f;
+  --color-air-line: rgba(255, 255, 255, 0.07);
 }
 
 
@@ -207,6 +217,12 @@ body {
   --gx: 56px;        /* right page gutter */
   --navpad: 0px;     /* bottom padding that clears the mobile tab bar */
   --grid-min: 206px; /* minmax() minimum for auto-fill poster grids */
+}
+/* From xl the rail becomes the 232px labelled sidebar (MediaRail), so the gutter grows with it. */
+@media (min-width: 1280px) {
+  .reel-root {
+    --rail: 264px;
+  }
 }
 @media (max-width: 767px) {
   .reel-root {

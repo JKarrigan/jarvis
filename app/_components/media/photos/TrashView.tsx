@@ -54,7 +54,7 @@ export function TrashView() {
   const count = summary?.trashCount ?? b.items.length
 
   return (
-    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8">
+    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-5 md:pt-8">
       <BackPill href="/media/photos" label="Photos" />
       <header className="mb-6 flex flex-wrap items-end gap-x-6 gap-y-3">
         <div className="w-full min-w-0 sm:w-auto sm:flex-1">

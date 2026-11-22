@@ -3,7 +3,10 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { AnimatePresence } from 'framer-motion'
+import { AppSwitch } from '../AppSwitch'
 import { useMediaProfile, useTitleState } from './MediaProvider'
+import { Sheet } from './Sheet'
 import {
   HomeIcon, FilmIcon, TvIcon, HeartIcon, CollectionsIcon, DieIcon,
   ListIcon, GearIcon, SearchIcon, HeadphonesIcon, PhotoIcon, FolderIcon,
@@ -12,33 +15,33 @@ import {
 interface NavItem {
   href: string
   label: string
-  /** Shorter label for the 10px mobile tab. */
+  /** Shorter label for the 11px phone tab. */
   short?: string
   Icon: (p: { className?: string }) => React.ReactElement
   exact?: boolean
   /** Extra path prefixes that also light this item up. */
   also?: string[]
-  /** Also a slot in the mobile bottom tab bar. */
-  mobile?: boolean
 }
 
-/** The one navigation config. Desktop rail shows every entry in this order; the mobile
-    tab bar shows the `mobile` ones, then Search and Settings / Picker list. */
-const NAV: NavItem[] = [
-  { href: '/media', label: 'Home', Icon: HomeIcon, exact: true, mobile: true },
+/** The sections: the sidebar's first group and, in this order, the phone tab bar. */
+const SECTIONS: NavItem[] = [
+  { href: '/media', label: 'Home', Icon: HomeIcon, exact: true },
   { href: '/media/movies', label: 'Movies', Icon: FilmIcon },
-  { href: '/media/tv', label: 'TV Shows', Icon: TvIcon },
-  { href: '/media/photos', label: 'Photos', Icon: PhotoIcon, mobile: true },
-  { href: '/media/documents', label: 'Documents', Icon: FolderIcon, mobile: true },
-  { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon, also: ['/media/books'], mobile: true },
-  { href: '/media/favorites', label: 'Favorites', Icon: HeartIcon },
-  { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
-  // Desktop rail and the Home page only: the phone tab bar has no room for a sixth tab.
-  { href: '/media/picker', label: 'Movie Picker', short: 'Picker', Icon: DieIcon },
+  { href: '/media/tv', label: 'TV shows', short: 'TV', Icon: TvIcon },
+  { href: '/media/audiobooks', label: 'Books', Icon: HeadphonesIcon, also: ['/media/books'] },
+  { href: '/media/photos', label: 'Photos', Icon: PhotoIcon },
+  { href: '/media/documents', label: 'Documents', short: 'Files', Icon: FolderIcon },
 ]
 
+/** "Your library": the sidebar's second group; on phones it lives behind the top bar's More button. */
+const LIBRARY: NavItem[] = [
+  { href: '/media/favorites', label: 'Favorites', Icon: HeartIcon },
+  { href: '/media/collections', label: 'Collections', Icon: CollectionsIcon },
+  { href: '/media/picker', label: 'Movie picker', Icon: DieIcon },
+]
+
+const PICK_LIST: NavItem = { href: '/media/picklist', label: 'Picker list', Icon: ListIcon }
 const SETTINGS: NavItem = { href: '/media/settings', label: 'Settings', Icon: GearIcon }
-const PICK_LIST: NavItem = { href: '/media/picklist', label: 'Picker list', short: 'List', Icon: ListIcon }
 
 function isActive(pathname: string, item: { href: string; exact?: boolean; also?: string[] }) {
   if (item.exact) return pathname === item.href
@@ -54,7 +57,7 @@ function CountBadge({ count, className }: { count: number; className: string }) 
 }
 
 /**
- * A rail/tab link to the section you're already in (e.g. Documents while inside a
+ * A nav link to the section you're already in (e.g. Documents while inside a
  * subfolder, or Photos with the viewer open) resets that section to its top level. Done
  * with the History API so it works even when Next's router considers the route current.
  */
@@ -66,102 +69,166 @@ function onSamePageClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
   window.scrollTo({ top: 0 })
 }
 
+const glassBtn = 'grid h-[54px] w-[54px] shrink-0 place-items-center rounded-[14px] border border-white/[0.08] bg-white/[0.04] text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
+
+/**
+ * Media chrome, the same shape as the Home app's: from md a sidebar (74px icon rail
+ * until xl, the 232px labelled sidebar from there; pages follow through `--rail`), and
+ * on phones a top bar that scrolls with the page (app switch, Search, More) plus a fixed
+ * bottom tab bar with every section.
+ */
 export function MediaRail({ onSearch }: { onSearch: () => void }) {
   const pathname = usePathname()
   const { pickList } = useTitleState()
   const { activeProfile } = useMediaProfile()
   const pickCount = pickList.length
+  const [moreOpen, setMoreOpen] = useState(false)
   // Shortcut hint resolves after mount — the platform sniff would mismatch SSR markup.
-  const [searchLabel, setSearchLabel] = useState('Search')
+  const [shortcut, setShortcut] = useState('')
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    setSearchLabel(`Search (${/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'}K)`)
+    setShortcut(/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K')
   }, [])
   /* eslint-enable react-hooks/set-state-in-effect */
+  const searchLabel = shortcut ? `Search (${shortcut})` : 'Search'
 
-  const railLink = (item: NavItem, badge?: number) => {
+  const sideLink = (item: NavItem, badge?: number) => {
     const active = isActive(pathname, item)
     return (
       <Link
         key={item.href}
         href={item.href}
         onClick={e => onSamePageClick(e, item.href)}
-        aria-label={badge ? `${item.label} (${badge})` : item.label}
+        aria-label={badge ? `${item.label} (${badge})` : undefined}
         aria-current={active ? 'page' : undefined}
         title={item.label}
-        className={`relative grid place-items-center h-11 w-11 rounded-xl transition-colors ${active
-          ? 'bg-surface-2 text-accent'
-          : 'text-white/60 hover:text-white hover:bg-white/5'
-          }`}
+        className={`relative flex h-11 items-center justify-center gap-3 rounded-[10px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent xl:justify-start ${
+          active ? 'bg-surface-2 font-bold text-accent-soft' : 'font-semibold text-white/65 hover:bg-white/5 hover:text-white'
+        }`}
       >
-        <item.Icon className="h-5 w-5" />
-        {badge ? <CountBadge count={badge} className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 text-[10px]" /> : null}
+        <item.Icon className="h-5 w-5 shrink-0" />
+        <span className="sr-only flex-1 xl:not-sr-only">{item.label}</span>
+        {badge ? <CountBadge count={badge} className="absolute right-1 top-1 h-[18px] min-w-[18px] px-1 text-[10px] xl:static" /> : null}
       </Link>
     )
   }
 
-  const tabClass = (active: boolean) =>
-    `relative flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 ${active ? 'text-accent' : 'text-white/55'}`
+  const tabCls = (active: boolean) =>
+    `relative flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[11px] ${active ? 'font-bold text-accent' : 'font-semibold text-white/60'}`
 
-  const tab = (item: NavItem, badge?: number) => {
-    const active = isActive(pathname, item)
-    return (
-      <Link
-        key={item.href}
-        href={item.href}
-        onClick={e => onSamePageClick(e, item.href)}
-        aria-current={active ? 'page' : undefined}
-        aria-label={badge ? `${item.label} (${badge})` : item.label}
-        className={tabClass(active)}
-      >
-        <item.Icon className="h-5 w-5" />
-        <span className="max-w-full truncate text-[10px] font-medium">{item.short ?? item.label}</span>
-        {badge ? <CountBadge count={badge} className="absolute top-0.5 left-1/2 ml-1.5 min-w-[16px] h-4 px-1 text-[9px]" /> : null}
-      </Link>
-    )
-  }
+  const moreActive = [...LIBRARY, PICK_LIST, SETTINGS].some(item => isActive(pathname, item))
 
   return (
     <>
-      {/* ── Desktop icon rail ── */}
-      <nav aria-label="Media" className="hidden md:flex fixed left-0 top-0 z-40 h-screen w-[74px] flex-col items-center gap-1 pt-16 pb-4 bg-black/30 backdrop-blur-xl backdrop-saturate-150">
+      {/* ── Phone top bar (in flow: it scrolls away with the page) ── */}
+      <div className="flex items-center gap-2 px-4 pt-3 md:hidden">
+        <AppSwitch current="media" className="flex-1" />
+        <button type="button" onClick={onSearch} aria-label="Search" className={glassBtn}>
+          <SearchIcon className="h-5 w-5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setMoreOpen(true)}
+          aria-label={pickCount > 0 ? `Library and settings (${pickCount} in picker list)` : 'Library and settings'}
+          aria-haspopup="dialog"
+          aria-expanded={moreOpen}
+          className={`relative ${glassBtn} ${moreActive ? 'text-accent' : ''}`}
+        >
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M5 12h.01M12 12h.01M19 12h.01" /></svg>
+          {pickCount > 0 && <CountBadge count={pickCount} className="absolute right-1.5 top-1.5 h-4 min-w-4 px-1 text-[9px]" />}
+        </button>
+      </div>
+
+      {/* ── Sidebar ── */}
+      <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[74px] flex-col gap-4 overflow-y-auto border-r border-border bg-black/35 px-3 py-4 backdrop-blur-xl backdrop-saturate-150 md:flex xl:w-[232px]">
+        <AppSwitch current="media" layout="rail" />
+
         <button
           type="button"
           onClick={onSearch}
           aria-label={searchLabel}
           title={searchLabel}
-          className="grid place-items-center h-11 w-11 rounded-xl text-white/60 hover:text-white hover:bg-white/5 transition-colors"
+          className="flex h-11 shrink-0 items-center justify-center gap-3 rounded-[10px] border border-white/[0.08] bg-white/[0.04] px-3 text-sm font-semibold text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent xl:justify-start"
         >
-          <SearchIcon className="h-5 w-5" />
+          <SearchIcon className="h-5 w-5 shrink-0" />
+          <span className="hidden flex-1 text-left xl:inline">Search</span>
+          {shortcut && <kbd className="hidden rounded-md bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white/70 xl:inline">{shortcut}</kbd>}
         </button>
-        <div className="my-1 h-px w-7 bg-white/10" />
-        {NAV.map(item => railLink(item))}
-        {pickCount > 0 && railLink(PICK_LIST, pickCount)}
 
-        <div className="flex-1" />
-        {railLink(SETTINGS)}
+        <nav aria-label="Media" className="flex flex-col gap-0.5">
+          {SECTIONS.map(item => sideLink(item))}
+        </nav>
+
+        <nav aria-label="Your library" className="flex flex-col gap-0.5">
+          <div aria-hidden="true" className="mx-3 mb-2 h-px bg-white/10 xl:hidden" />
+          <p className="hidden px-3 pb-1.5 text-xs text-white/60 xl:block">Your library</p>
+          {LIBRARY.map(item => sideLink(item))}
+          {pickCount > 0 && sideLink(PICK_LIST, pickCount)}
+        </nav>
+
         <Link
           href="/media/settings"
-          aria-label={`Profile ${activeProfile}`}
-          title={`Profile ${activeProfile}`}
-          className="grid place-items-center h-11 w-11 mt-1 rounded-full bg-surface-2 text-sm font-semibold text-white/80 hover:text-white transition-colors"
+          aria-label={`Profile ${activeProfile} and settings`}
+          aria-current={isActive(pathname, SETTINGS) ? 'page' : undefined}
+          title="Profile and settings"
+          className={`mt-auto flex h-[52px] shrink-0 items-center justify-center gap-3 rounded-xl border border-white/[0.08] px-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent xl:justify-start xl:px-2.5 ${
+            isActive(pathname, SETTINGS) ? 'bg-surface-2 text-accent-soft' : 'bg-white/[0.04] text-white/75 hover:bg-white/[0.08] hover:text-white'
+          }`}
         >
-          {activeProfile}
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 text-sm font-bold text-accent-soft">{activeProfile}</span>
+          <span className="hidden flex-1 truncate xl:inline">Settings</span>
+          <GearIcon className="hidden h-[18px] w-[18px] text-white/50 xl:block" />
         </Link>
-      </nav>
+      </aside>
 
-      {/* ── Mobile bottom tab bar ── */}
+      {/* ── Phone bottom tab bar ── */}
       <nav
         aria-label="Media"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 flex min-h-[calc(64px+env(safe-area-inset-bottom))] items-stretch justify-around px-1 pb-[env(safe-area-inset-bottom)] bg-black/55 backdrop-blur-xl backdrop-saturate-150 border-t border-white/10"
+        className="fixed inset-x-0 bottom-0 z-40 flex min-h-[calc(64px+env(safe-area-inset-bottom))] items-stretch justify-around border-t border-white/10 bg-black/55 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl backdrop-saturate-150 md:hidden"
       >
-        {NAV.filter(item => item.mobile).map(item => tab(item))}
-        <button type="button" onClick={onSearch} aria-label="Search" className={tabClass(false)}>
-          <SearchIcon className="h-5 w-5" />
-          <span className="text-[10px] font-medium">Search</span>
-        </button>
-        {pickCount > 0 ? tab(PICK_LIST, pickCount) : tab(SETTINGS)}
+        {SECTIONS.map(item => {
+          const active = isActive(pathname, item)
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              onClick={e => onSamePageClick(e, item.href)}
+              aria-current={active ? 'page' : undefined}
+              aria-label={item.label}
+              className={tabCls(active)}
+            >
+              <item.Icon className="h-5 w-5" />
+              <span className="max-w-full truncate">{item.short ?? item.label}</span>
+            </Link>
+          )
+        })}
       </nav>
+
+      <AnimatePresence>
+        {moreOpen && (
+          <Sheet onClose={() => setMoreOpen(false)} label="Library and settings">
+            <nav aria-label="Library and settings" className="flex flex-col gap-0.5 px-3 pb-4 pt-2">
+              {[...LIBRARY, PICK_LIST, SETTINGS].map(item => {
+                const active = isActive(pathname, item)
+                const badge = item === PICK_LIST ? pickCount : 0
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMoreOpen(false)}
+                    aria-current={active ? 'page' : undefined}
+                    className={`flex h-12 items-center gap-3 rounded-xl px-3 text-[15px] transition-colors ${active ? 'bg-white/10 font-bold text-white' : 'font-semibold text-zinc-200 hover:bg-white/[0.06]'}`}
+                  >
+                    <item.Icon className={`h-5 w-5 ${active ? 'text-accent' : 'text-zinc-400'}`} />
+                    <span className="flex-1">{item.label}</span>
+                    {badge > 0 && <CountBadge count={badge} className="h-5 min-w-5 px-1.5 text-[11px]" />}
+                  </Link>
+                )
+              })}
+            </nav>
+          </Sheet>
+        )}
+      </AnimatePresence>
     </>
   )
 }

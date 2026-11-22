@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation'
 import Link from 'next/link'
 import { METRICS, metricValue } from '@/lib/metrics'
 import { STATUS_COLORS } from '@/lib/statusColors'
+import { Card, EmptyState, Page, PageHeader, PageState, SectionTitle, Segmented, Spinner, StatusDot, cardCls } from '@/app/_components/air/ui'
 import { Chart } from '@/app/_components/Chart'
 import { usePolling } from '@/app/_components/PollingProvider'
 import type { HistoryEntry } from '@/lib/types'
@@ -18,6 +19,8 @@ const RANGES: { key: RangeKey; label: string; ms: number }[] = [
   { key: '7d',  label: '7d',  ms: 7 * 24 * 60 * 60 * 1000 },
   { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
 ]
+
+const TEMP_UNITS = [{ key: 'C', label: '°C' }, { key: 'F', label: '°F' }] as const
 
 function celsiusToF(c: number) {
   return c * 9 / 5 + 32
@@ -85,120 +88,114 @@ export default function MetricDetailPage() {
 
   if (!config || !statusFn) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-zinc-400 text-sm">Unknown metric</p>
-          <Link href="/" className="mt-3 inline-block text-xs text-zinc-500 hover:text-zinc-300 transition-colors">← Back to overview</Link>
-        </div>
-      </div>
+      <PageState>
+        <p className="text-sm text-zinc-300">Unknown metric</p>
+        <Link href="/air-quality" className="text-sm text-zinc-400 transition-colors hover:text-white">Back to Air quality</Link>
+      </PageState>
     )
   }
 
   const unit = config.isTempLike ? `°${tempUnit}` : config.unit
   const { decimals, description } = config
-  const currentStatus = stats ? statusFn(stats.latest) : 'good'
-  const fmtStat = (v: number | undefined) => (v !== undefined ? `${v.toFixed(decimals)} ${unit}` : null)
+  const currentStatus = stats ? statusFn(stats.latest) : null
+  const fmtStat = (v: number | undefined) => (v !== undefined ? v.toFixed(decimals) : null)
 
   const statRows: { label: string; value: string | null }[] = [
     { label: 'Latest',  value: fmtStat(stats?.latest) },
     { label: 'Average', value: fmtStat(stats?.avg) },
-    { label: 'Min',     value: fmtStat(stats?.min) },
-    { label: 'Max',     value: fmtStat(stats?.max) },
+    { label: 'Lowest',  value: fmtStat(stats?.min) },
+    { label: 'Highest', value: fmtStat(stats?.max) },
   ]
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex flex-col">
-      <main className="flex-1 p-6 space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="text-zinc-500 hover:text-zinc-400 transition-colors text-sm">←</Link>
-            <h1 className="text-base font-semibold text-zinc-100 tracking-tight">{config.label}</h1>
-            <span className="text-xs text-zinc-500">{unit}</span>
-          </div>
-          {config.isTempLike && (
-            <button
-              onClick={() => setTempUnit(tempUnit === 'C' ? 'F' : 'C')}
-              className="px-2 py-1 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors font-mono text-xs"
-            >
-              °C / °F
-            </button>
-          )}
-        </div>
-        {/* Description */}
-        <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
-          <div className="space-y-1">
-            <p className="text-sm text-zinc-200 font-medium">{description.what}</p>
-            <p className="text-xs text-zinc-500 leading-relaxed">{description.method}</p>
-          </div>
-          <p className="text-xs text-zinc-400 leading-relaxed">{description.significance}</p>
-          <div>
-            <p className="text-xs uppercase tracking-widest text-zinc-500 mb-2">Reference ranges</p>
-            <div className="flex flex-wrap gap-2">
-              {description.ranges.map(r => (
-                <span
-                  key={r.label}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium ${STATUS_COLORS[r.color].badgeClass}`}
-                >
-                  {r.label}
-                  <span className="opacity-80 font-normal">{r.range}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        </section>
+    <Page>
+      <PageHeader title={config.label} subtitle={description.what} back={{ href: '/air-quality', label: 'Air quality' }}>
+        {config.isTempLike && (
+          <Segmented options={TEMP_UNITS} value={tempUnit} onChange={setTempUnit} label="Temperature unit" />
+        )}
+      </PageHeader>
 
-        {/* Analytics */}
-        <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {statRows.map(s => (
-            <div key={s.label} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3">
-              <p className="text-xs text-zinc-500 uppercase tracking-widest mb-1">{s.label}</p>
-              <p className="text-lg font-mono font-semibold text-zinc-100">
-                {loading ? <span className="text-zinc-500">—</span> : (s.value ?? '—')}
-              </p>
-            </div>
-          ))}
-        </section>
-
-        {/* Date range filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-zinc-500 uppercase tracking-widest mr-1">Range</span>
-          {RANGES.map(r => (
-            <button
-              key={r.key}
-              onClick={() => setRange(r.key)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${
-                range === r.key
-                  ? 'bg-zinc-700 text-zinc-100'
-                  : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+      {/* The other metrics, one tap away (they are no longer in the sidebar). */}
+      <nav aria-label="Metrics" className="scrollbar-hide -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
+        {METRICS.map(m => {
+          const active = m.slug === config.slug
+          return (
+            <Link
+              key={m.slug}
+              href={`/measurement/${m.slug}`}
+              aria-current={active ? 'page' : undefined}
+              className={`inline-flex min-h-10 shrink-0 items-center rounded-full border px-4 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                active ? 'border-transparent bg-zinc-100 font-semibold text-zinc-950' : 'border-air-line bg-air-raised text-zinc-300 hover:text-white'
               }`}
             >
-              {r.label}
-            </button>
-          ))}
-        </div>
+              {m.label}
+            </Link>
+          )
+        })}
+      </nav>
 
-        {/* Chart */}
-        <section>
-          {loading ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 h-48 flex items-center justify-center">
-              <div className="w-5 h-5 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
-            </div>
-          ) : values.length < 2 ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 h-48 flex items-center justify-center">
-              <p className="text-sm text-zinc-500">No data for this period</p>
-            </div>
-          ) : (
-            <Chart
-              label={config.label}
-              unit={unit}
-              values={values}
-              timestamps={timestamps}
-              status={currentStatus}
-              statusFn={statusFn}
-            />
-          )}
-        </section>
-      </main>
-    </div>
+      <section aria-label="Statistics for this range" className="grid grid-cols-2 gap-3 md:gap-4 lg:grid-cols-4">
+        {statRows.map((s, i) => (
+          <div key={s.label} className={`${cardCls} flex flex-col gap-2 px-4 py-4 md:px-5`}>
+            <p className="text-sm text-zinc-400">{s.label}</p>
+            <p className="flex items-baseline gap-1.5">
+              <span className="text-[30px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-zinc-50 md:text-4xl">
+                {loading ? '—' : (s.value ?? '—')}
+              </span>
+              <span className="text-sm text-zinc-400">{unit}</span>
+            </p>
+            {i === 0 && currentStatus && !loading && (
+              <p className={`flex items-center gap-2 text-sm font-medium ${STATUS_COLORS[currentStatus].textClass}`}>
+                <StatusDot status={currentStatus} />
+                {description.ranges.find(r => r.color === currentStatus)?.label ?? STATUS_COLORS[currentStatus].label}
+              </p>
+            )}
+          </div>
+        ))}
+      </section>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <SectionTitle className="text-lg">History</SectionTitle>
+        <Segmented options={RANGES} value={range} onChange={setRange} label="History range" />
+      </div>
+
+      {loading ? (
+        <div className={`${cardCls} flex h-48 items-center justify-center`}><Spinner className="h-5 w-5" /></div>
+      ) : values.length < 2 ? (
+        <EmptyState title="No data for this period" />
+      ) : (
+        <Chart
+          label={config.label}
+          unit={unit}
+          values={values}
+          timestamps={timestamps}
+          status={currentStatus ?? 'good'}
+          statusFn={statusFn}
+        />
+      )}
+
+      <Card className="mt-2 grid gap-x-10 gap-y-6 px-5 py-6 md:px-7 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <div className="flex flex-col gap-3">
+          <SectionTitle>About {config.label}</SectionTitle>
+          <p className="text-sm leading-relaxed text-zinc-300">{description.significance}</p>
+          <p className="text-sm leading-relaxed text-zinc-400">{description.method}</p>
+        </div>
+        <div className="flex flex-col gap-3">
+          <SectionTitle>Reference ranges</SectionTitle>
+          <ul className="flex flex-col">
+            {description.ranges.map(r => {
+              const here = !loading && currentStatus === r.color
+              return (
+                <li key={r.label} className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm ${here ? 'bg-white/[0.06]' : ''}`}>
+                  <StatusDot status={r.color} />
+                  <span className={here ? 'font-semibold text-zinc-50' : 'text-zinc-200'}>{r.label}</span>
+                  <span className="ml-auto text-right text-zinc-400">{r.range}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      </Card>
+    </Page>
   )
 }

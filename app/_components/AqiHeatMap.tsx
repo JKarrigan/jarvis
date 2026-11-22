@@ -62,7 +62,7 @@ export const AqiHeatMap = memo(function AqiHeatMap({ summaries }: { summaries: D
           <div
             key={`label-${i}`}
             style={{ gridColumn: 1, gridRow: i + 1, height: 8 }}
-            className="flex items-center justify-center text-[9px] text-zinc-500 leading-none"
+            className="flex items-center justify-center text-[9px] text-zinc-400 leading-none"
           >
             {i % 2 !== 0 ? label : ''}
           </div>
@@ -106,7 +106,7 @@ export const AqiHeatMap = memo(function AqiHeatMap({ summaries }: { summaries: D
               Avg <span className="text-zinc-200">{tooltip.summary.avgAqi}</span>
               {' · '}Peak <span className="text-zinc-200">{tooltip.summary.peakAqi}</span> at {new Date(tooltip.summary.peakTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
             </div>
-            <div className="text-zinc-500">{tooltip.summary.hoursAbove}h above Good</div>
+            <div className="text-zinc-400">{tooltip.summary.hoursAbove}h above Good</div>
           </div>
         )}
       </div>

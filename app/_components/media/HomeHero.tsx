@@ -53,7 +53,7 @@ function HeroDots({
   }, [paused, index, onComplete])
 
   return (
-    <div className="absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2">
+    <div className="absolute bottom-5 right-[var(--gx)] z-10 flex items-center gap-2">
       {Array.from({ length: count }).map((_, i) => {
         const active = i === index
         return (
@@ -96,7 +96,7 @@ export function HomeHero({ titles }: { titles: ReelTitle[] }) {
 
   return (
     <section
-      className="relative -mt-px h-[80vh] min-h-[420px] w-full overflow-hidden"
+      className="relative -mt-px h-[62vh] max-h-[660px] min-h-[420px] w-full overflow-hidden"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
@@ -119,7 +119,7 @@ export function HomeHero({ titles }: { titles: ReelTitle[] }) {
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40" style={{ background: 'linear-gradient(180deg, transparent, #0a0810)' }} />
 
       {/* Left-weighted content */}
-      <div className="relative flex h-full max-w-[640px] flex-col justify-end pb-10 pl-[var(--rail)] pr-[var(--gx)]">
+      <div className="relative flex h-full max-w-[calc(var(--rail)+680px)] flex-col justify-end pb-14 pl-[var(--rail)] pr-[var(--gx)]">
         <AnimatePresence mode="wait">
           <motion.div
             key={title.id}
@@ -128,13 +128,13 @@ export function HomeHero({ titles }: { titles: ReelTitle[] }) {
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.4, ease: [0.2, 0.7, 0.2, 1] }}
           >
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">
+            <p className="mb-3 text-[13px] font-bold text-accent-soft">
               Featured · {title.type === 'tv' ? 'TV Series' : 'Film'}
             </p>
-            <h1 className="font-[800] leading-[0.98] tracking-[-0.025em] text-ink" style={{ fontSize: 'clamp(30px, 7vw, 54px)' }}>
+            <h1 className="font-[800] leading-[0.92] tracking-[-0.035em] text-ink [text-wrap:balance]" style={{ fontSize: 'clamp(38px, 6.4vw, 92px)' }}>
               {title.title}
             </h1>
-            <p className="mt-3 flex flex-wrap items-center gap-1.5 text-sm text-white/70">
+            <p className="mt-4 flex flex-wrap items-center gap-1.5 text-[15px] text-white/75">
               {title.imdb != null && (
                 <span className="inline-flex items-center gap-1 font-semibold text-white">
                   <StarIcon className="h-3.5 w-3.5" style={{ color: 'var(--star)' }} />
@@ -145,21 +145,21 @@ export function HomeHero({ titles }: { titles: ReelTitle[] }) {
               <span>{meta(title)}</span>
             </p>
             {title.synopsis && (
-              <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70 [text-wrap:pretty] line-clamp-3">
+              <p className="mt-3 max-w-[560px] text-[15px] leading-[1.6] text-white/75 [text-wrap:pretty] line-clamp-2">
                 {title.synopsis}
               </p>
             )}
             <div className="mt-6 flex flex-wrap gap-3">
               <Link
                 href={`${detailHref(title)}?play=1`}
-                className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold text-ink-on-accent shadow-[0_12px_34px_var(--glow)] transition hover:brightness-[1.06]"
+                className="inline-flex h-12 items-center gap-2 rounded-full px-7 text-[15px] font-bold text-ink-on-accent shadow-[0_12px_34px_var(--glow)] transition hover:brightness-[1.06]"
                 style={{ background: 'var(--accent)' }}
               >
                 <PlayIcon className="h-4 w-4" /> Play
               </Link>
               <Link
                 href={detailHref(title)}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-ink backdrop-blur-md transition hover:bg-white/10"
+                className="inline-flex h-12 items-center gap-2 rounded-full border border-white/15 bg-white/[0.08] px-6 text-[15px] font-bold text-ink backdrop-blur-md transition hover:bg-white/15"
               >
                 More info
               </Link>

@@ -8,11 +8,9 @@ import { StaleBanner } from './StaleBanner'
 import { Toast, useToast } from './Toast'
 import type { DailySummary } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
-import { useIsOlderThan } from '@/lib/useNow'
+import { STALE_AFTER_MS, useIsOlderThan } from '@/lib/useNow'
 
 const DEV = process.env.NODE_ENV === 'development'
-/** Values are shown as stale when the newest reading is older than this. */
-export const STALE_AFTER_MS = 60_000
 const SUMMARY_REFRESH_MS = 15 * 60 * 1000
 /** Event ids already toasted, so a reload doesn't toast them again (bounded). */
 const NOTIFIED_KEY = 'aq-notified'
@@ -144,7 +142,7 @@ export function DashboardShell() {
 
   if (!ready) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="flex min-h-[60vh] items-center justify-center">
         <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" aria-label="Loading" />
       </div>
     )
@@ -156,12 +154,12 @@ export function DashboardShell() {
 
   if (!displayMeasures || !displayLastUpdated) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="flex min-h-[60vh] items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-zinc-400" role="status">
           <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
           <span className="text-sm">Connecting to {deviceIp}…</span>
           {error && (
-            <span className="text-xs text-red-400">{error} · retrying in 10s</span>
+            <span className="text-sm text-red-400">{error}. Retrying in 10 s.</span>
           )}
         </div>
       </div>
@@ -174,7 +172,7 @@ export function DashboardShell() {
         measures={displayMeasures}
         history={history}
         tempUnit={tempUnit}
-        onTempToggle={() => setTempUnit(tempUnit === 'C' ? 'F' : 'C')}
+        onTempUnit={setTempUnit}
         pmBatchId={pmBatchId}
         outdoorAqi={outdoorAqi}
         dailySummaries={dailySummaries}

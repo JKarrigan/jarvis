@@ -3,7 +3,7 @@ import { GridSkeleton } from './PhotoGrid'
 /** Shimmer placeholder for the Photos pages (route loading state + Suspense fallback). */
 export function PhotosSkeleton({ title = true }: { title?: boolean }) {
   return (
-    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8" aria-busy="true" aria-label="Loading photos">
+    <div className="pb-24 pl-[var(--rail)] pr-[var(--gx)] pt-5 md:pt-8" aria-busy="true" aria-label="Loading photos">
       {title && (
         <div className="mb-6 space-y-3">
           <div className="reel-shimmer h-3 w-28 rounded-full" />

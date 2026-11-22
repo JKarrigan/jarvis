@@ -101,18 +101,18 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
   for (let t = firstTick; t <= windowEnd; t += interval) ticks.push(t)
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 pt-4 pb-3 space-y-3">
+    <div className="rounded-2xl border border-air-line bg-air-card px-4 pb-3 pt-4 space-y-3 md:px-5">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Event Timeline</span>
+        <h2 className="text-base font-semibold text-zinc-100">Timeline</h2>
         <div className="flex items-center gap-1.5">
           {TIMELINE_RANGES.map(r => (
             <button
               key={r.key}
               onClick={() => onRangeChange(r.key)}
-              className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-colors ${
+              className={`min-h-8 rounded-lg px-3 text-sm transition-colors ${
                 range === r.key
-                  ? 'bg-zinc-700 text-zinc-100'
-                  : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800'
+                  ? 'bg-air-active font-semibold text-white'
+                  : 'bg-air-raised text-zinc-400 hover:text-white'
               }`}
             >
               {r.label}
@@ -122,7 +122,7 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
       </div>
 
       {rowTypes.length === 0 ? (
-        <p className="text-xs text-zinc-500 py-6 text-center">No events in this window</p>
+        <p className="text-xs text-zinc-400 py-6 text-center">No events in this window</p>
       ) : (
         <svg
           viewBox={`0 0 ${VW} ${totalH}`}
@@ -246,14 +246,14 @@ export function EventTimeline({ events, range, onRangeChange }: Props) {
         </svg>
       )}
 
-      <div className="flex items-center gap-4 pt-1 border-t border-zinc-800/60">
+      <div className="flex items-center gap-4 pt-1 border-t border-air-line">
         {(['critical', 'warning', 'notable'] as Severity[]).map(s => (
           <div key={s} className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: EVENT_COLOR[s] }} />
-            <span className="text-xs text-zinc-500 capitalize">{s}</span>
+            <span className="text-xs text-zinc-400 capitalize">{s}</span>
           </div>
         ))}
-        <span className="text-xs text-zinc-500 ml-auto">hover for details · click to open</span>
+        <span className="text-xs text-zinc-400 ml-auto">hover for details · click to open</span>
       </div>
     </div>
   )

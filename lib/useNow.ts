@@ -69,3 +69,6 @@ export function useIsOlderThan(sinceMs: number | null, thresholdMs: number): boo
     () => false,
   )
 }
+
+/** Readings older than this are shown as stale (greyed values, banner, sidebar status). */
+export const STALE_AFTER_MS = 60_000

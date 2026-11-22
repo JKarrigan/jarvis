@@ -40,7 +40,7 @@ export function DocumentsGridSkeleton({ view = 'grid' }: { view?: 'grid' | 'list
 /** Route loading state + Suspense fallback for /media/documents. */
 export function DocumentsSkeleton() {
   return (
-    <div className="pb-28 pl-[var(--rail)] pr-[var(--gx)] pt-16 md:pt-8" aria-busy="true" aria-label="Loading documents">
+    <div className="pb-28 pl-[var(--rail)] pr-[var(--gx)] pt-5 md:pt-8" aria-busy="true" aria-label="Loading documents">
       <div className="mb-6 space-y-3">
         <div className="reel-shimmer h-3 w-24 rounded-full" />
         <div className="reel-shimmer h-10 w-56 rounded-[12px]" />

@@ -15,13 +15,14 @@ import {
 } from '@/app/_components/HueControls'
 import { useHueLights } from '@/app/_components/lights/useHueLights'
 import { Toast, useToast } from '@/app/_components/Toast'
+import { EmptyState, Page, PageHeader, PageState, SectionTitle, cardCls } from '@/app/_components/air/ui'
 
 /**
  * Card layout: the whole card is a real <button> stretched underneath the
  * content (so it is focusable and announced), with the switch and slider
  * layered above it — interactive elements can't be nested inside a button.
  */
-const stretchedButtonCls = 'absolute inset-0 rounded-xl cursor-pointer disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400'
+const stretchedButtonCls = 'absolute inset-0 rounded-2xl cursor-pointer disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400'
 
 function RoomCard({
   group,
@@ -36,7 +37,7 @@ function RoomCard({
 }) {
   const lightCount = `${group.lightIds.length} light${group.lightIds.length !== 1 ? 's' : ''}`
   return (
-    <div className="relative rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3 hover:border-zinc-700 transition-colors">
+    <div className={`relative space-y-3 rounded-2xl border p-4 transition-colors md:p-5 ${group.on ? 'border-amber-400/40 bg-[#1c170c]' : 'border-air-line bg-air-card hover:border-white/20'}`}>
       <button
         type="button"
         onClick={() => onSelect(group.id)}
@@ -46,8 +47,8 @@ function RoomCard({
       />
       <div className="relative flex items-center justify-between gap-4 pointer-events-none">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-zinc-100 truncate">{group.name}</p>
-          <p className="text-xs text-zinc-500 mt-0.5">{group.type} · {lightCount}</p>
+          <p className="truncate text-base font-semibold text-zinc-50">{group.name}</p>
+          <p className="mt-0.5 text-sm text-zinc-400">{group.type} · {lightCount}{group.on ? ` · ${briPct(group.brightness)}` : ' · off'}</p>
         </div>
         <div className="pointer-events-auto">
           <Toggle on={group.on} disabled={false} onToggle={() => onToggle(group.id, !group.on)} label={`${group.name} lights`} />
@@ -75,14 +76,14 @@ function LightCard({
 }) {
   return (
     <div
-      className={`relative rounded-xl border p-4 flex flex-col gap-3 transition-colors ${
+      className={`relative flex min-h-[104px] flex-col gap-3 rounded-2xl border p-4 transition-colors ${
         !light.reachable
-          ? 'border-zinc-800/50 bg-zinc-900/30 opacity-50'
+          ? 'border-air-line bg-air-card opacity-50'
           : selected
           ? 'border-amber-400/70 bg-amber-500/10'
           : light.on
           ? ''
-          : 'border-zinc-800 bg-zinc-900/40 hover:border-zinc-700'
+          : 'border-air-line bg-air-card hover:border-white/20'
       }`}
       style={light.on && !selected && light.reachable ? {
         borderColor: lightDisplayColor(light, 0.65),
@@ -99,8 +100,8 @@ function LightCard({
       />
       <div className="relative flex items-start justify-between gap-2 pointer-events-none">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-zinc-100 truncate">{light.name}</p>
-          <p className="text-xs text-zinc-500 mt-0.5 truncate">{light.type}</p>
+          <p className="truncate text-sm font-semibold text-zinc-50">{light.name}</p>
+          <p className="mt-0.5 truncate text-[13px] text-zinc-400">{light.type}</p>
         </div>
         <div className="pointer-events-auto">
           <Toggle
@@ -111,9 +112,9 @@ function LightCard({
           />
         </div>
       </div>
-      {!light.reachable && <p className="relative pointer-events-none text-xs text-zinc-600">Unreachable</p>}
+      {!light.reachable && <p className="pointer-events-none relative mt-auto text-sm text-zinc-400">Unreachable</p>}
       {light.on && light.reachable && lightHasBrightness(light) && (
-        <p className="relative pointer-events-none text-xs text-zinc-500 font-mono">{briPct(light.brightness)}</p>
+        <p className="pointer-events-none relative mt-auto text-sm tabular-nums text-zinc-300">{briPct(light.brightness)}</p>
       )}
     </div>
   )
@@ -152,71 +153,71 @@ export default function LightsPage() {
   const handleGroupBrightness = (id: string, brightness: number) => setGroup(id, { brightness })
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex flex-col">
-      <main className="p-6 space-y-8 max-w-2xl mx-auto w-full">
-        {notConfigured ? (
-          <div className="text-center space-y-3 pt-12">
-            <p className="text-zinc-400 text-sm">Hue Bridge not configured.</p>
-            <Link href="/settings" className="inline-block text-xs text-amber-400 hover:text-amber-300 transition-colors">
-              Go to Settings to connect your Bridge →
-            </Link>
-          </div>
-        ) : error && data === null ? (
-          <div className="text-center pt-12 space-y-1" role="alert">
-            <p className="text-red-400 text-sm">{error}</p>
-            <p className="text-zinc-500 text-xs">Retrying automatically…</p>
-          </div>
-        ) : data === null ? (
-          <div className="space-y-8" aria-busy="true" aria-label="Loading lights">
-            <div className="space-y-3">
-              <div className="h-3 w-16 rounded bg-zinc-800 animate-pulse" />
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="rounded-xl border border-zinc-800 bg-zinc-900/40 h-20 animate-pulse" />
-              ))}
+    <>
+      <Page>
+        <PageHeader
+          title="Lights"
+          subtitle={data && data.lights.length > 0 ? `${data.lights.filter(l => l.on).length} of ${data.lights.length} on` : undefined}
+        >
+          {data && data.lights.length > 0 && (
+            <div className="flex min-h-11 items-center gap-3 rounded-xl border border-air-line bg-air-card pl-4 pr-3 text-sm font-medium text-zinc-200">
+              <span aria-hidden="true">All lights</span>
+              <Toggle on={data.lights.some(l => l.on)} disabled={false} onToggle={toggleAll} label="All lights" />
             </div>
-            <div className="space-y-3">
-              <div className="h-3 w-24 rounded bg-zinc-800 animate-pulse" />
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {[...Array(6)].map((_, i) => (
-                  <div key={i} className="rounded-xl border border-zinc-800 bg-zinc-900/40 h-24 animate-pulse" />
-                ))}
-              </div>
+          )}
+        </PageHeader>
+
+        {notConfigured ? (
+          <EmptyState title="No Hue bridge connected yet">
+            <Link href="/settings" className="mt-2 text-sm font-medium text-amber-300 transition-colors hover:text-amber-200">
+              Connect your bridge in Settings
+            </Link>
+          </EmptyState>
+        ) : error && data === null ? (
+          <PageState>
+            <div role="alert" className="space-y-1">
+              <p className="text-sm text-red-400">{error}</p>
+              <p className="text-sm text-zinc-400">Retrying automatically.</p>
+            </div>
+          </PageState>
+        ) : data === null ? (
+          <div className="flex flex-col gap-4" aria-busy="true" aria-label="Loading lights">
+            <div className="grid gap-3 md:grid-cols-2 md:gap-4">
+              {[...Array(4)].map((_, i) => <div key={i} className={`${cardCls} h-[92px] animate-pulse`} />)}
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4">
+              {[...Array(8)].map((_, i) => <div key={i} className={`${cardCls} h-[104px] animate-pulse`} />)}
             </div>
           </div>
         ) : (
           <>
             {connection === 'reconnecting' && (
-              <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-                {error ? `${error} — ` : ''}Reconnecting… values shown may be out of date.
+              <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
+                {error ? `${error}. ` : ''}Reconnecting. Values shown may be out of date.
               </p>
             )}
 
-            {data.lights.length > 0 && (
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-zinc-100">All Lights</p>
-                <Toggle on={data.lights.some(l => l.on)} disabled={false} onToggle={toggleAll} label="All lights" />
-              </div>
-            )}
-
             {data.groups.length > 0 && (
-              <section className="space-y-3">
-                <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Rooms</h2>
-                {data.groups.map(g => (
-                  <RoomCard
-                    key={g.id}
-                    group={g}
-                    onToggle={handleGroupToggle}
-                    onBrightness={handleGroupBrightness}
-                    onSelect={id => setSelectedGroupId(id)}
-                  />
-                ))}
+              <section className="flex flex-col gap-3">
+                <SectionTitle>Rooms</SectionTitle>
+                <div className="grid gap-3 md:grid-cols-2 md:gap-4">
+                  {data.groups.map(g => (
+                    <RoomCard
+                      key={g.id}
+                      group={g}
+                      onToggle={handleGroupToggle}
+                      onBrightness={handleGroupBrightness}
+                      onSelect={id => setSelectedGroupId(id)}
+                    />
+                  ))}
+                </div>
               </section>
             )}
 
             {data.lights.length > 0 && (
-              <section className="space-y-3">
-                <h2 className="text-xs font-semibold uppercase tracking-widest text-zinc-500">All Lights</h2>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <section className="mt-2 flex flex-col gap-3">
+                <SectionTitle>All lights</SectionTitle>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4">
                   {data.lights.map(l => (
                     <LightCard
                       key={l.id}
@@ -231,11 +232,11 @@ export default function LightsPage() {
             )}
 
             {data.groups.length === 0 && data.lights.length === 0 && (
-              <p className="text-zinc-500 text-sm text-center pt-12">No lights found on your Bridge.</p>
+              <EmptyState title="No lights found on your bridge" />
             )}
           </>
         )}
-      </main>
+      </Page>
 
       <AnimatePresence>
         {selectedGroup && (
@@ -266,6 +267,6 @@ export default function LightsPage() {
       </AnimatePresence>
 
       <Toast toast={toast} onDismiss={dismissToast} />
-    </div>
+    </>
   )
 }

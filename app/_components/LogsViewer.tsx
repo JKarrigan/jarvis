@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { EmptyState, Page, PageHeader, btnCls, cardCls } from './air/ui'
 import type { HttpLogEntry } from '@/lib/httpLog'
 
 const SOURCE_STYLES: Record<HttpLogEntry['source'], string> = {
@@ -18,7 +19,7 @@ const SOURCE_LABEL: Record<HttpLogEntry['source'], string> = {
 type Filter = 'all' | HttpLogEntry['source']
 
 function statusClass(status: number | null): string {
-  if (status === null) return 'text-zinc-500'
+  if (status === null) return 'text-zinc-400'
   if (status < 300) return 'text-emerald-400'
   if (status < 400) return 'text-blue-400'
   if (status < 500) return 'text-amber-400'
@@ -85,48 +86,40 @@ export function LogsViewer() {
   const visible = filter === 'all' ? logs : logs.filter(e => e.source === filter)
 
   return (
-    <div className="min-h-screen bg-zinc-950 p-6">
-      <div className="max-w-5xl mx-auto space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <h1 className="text-lg font-semibold text-zinc-100">HTTP Activity</h1>
-          <div className="flex items-center gap-2 flex-wrap">
-            {(['all', 'air-gradient', 'hue', 'outdoor-aqi'] as Filter[]).map(f => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
-                  filter === f
-                    ? 'bg-zinc-700 border-zinc-600 text-zinc-100'
-                    : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
-                }`}
-              >
-                {f === 'all' ? 'All' : SOURCE_LABEL[f as HttpLogEntry['source']]}
-              </button>
-            ))}
-            <span className="text-zinc-800">|</span>
+    <Page>
+      <PageHeader title="Logs" subtitle={`Outbound HTTP requests made by the server. ${visible.length} shown.`}>
+        <div role="group" aria-label="Source" className="inline-flex flex-wrap gap-1 rounded-xl bg-air-raised p-1">
+          {(['all', 'air-gradient', 'hue', 'outdoor-aqi'] as Filter[]).map(f => (
             <button
-              onClick={() => setPaused(p => !p)}
-              className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
-                paused
-                  ? 'border-amber-700/60 bg-amber-900/20 text-amber-400'
-                  : 'border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              aria-pressed={filter === f}
+              className={`min-h-8 rounded-lg px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
+                filter === f ? 'bg-air-active font-semibold text-white' : 'text-zinc-400 hover:text-white'
               }`}
             >
-              {paused ? 'Paused' : 'Live'}
+              {f === 'all' ? 'All' : SOURCE_LABEL[f as HttpLogEntry['source']]}
             </button>
-            <span className="text-xs text-zinc-700">{visible.length} entries</span>
-          </div>
+          ))}
         </div>
+        <button
+          type="button"
+          onClick={() => setPaused(p => !p)}
+          aria-pressed={paused}
+          className={paused ? `${btnCls} border-amber-500/40 bg-amber-500/10 text-amber-200` : btnCls}
+        >
+          <span aria-hidden="true" className={`h-2 w-2 rounded-full ${paused ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+          {paused ? 'Paused' : 'Live'}
+        </button>
+      </PageHeader>
 
         {visible.length === 0 ? (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-10 text-center">
-            <p className="text-sm text-zinc-500">No requests logged yet.</p>
-            <p className="text-xs text-zinc-700 mt-1">Logs appear as the server makes outbound HTTP calls.</p>
-          </div>
+          <EmptyState title="No requests logged yet" hint="Entries appear as the server calls the sensor, the Hue bridge and the outdoor air service." />
         ) : (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 overflow-hidden">
-            <div className="grid grid-cols-[80px_100px_48px_1fr_56px_64px_20px] gap-x-3 px-4 py-2 border-b border-zinc-800 text-xs font-semibold uppercase tracking-widest text-zinc-600">
+          <div className={`${cardCls} overflow-x-auto`}>
+            <div className="min-w-[720px]">
+            <div className="grid grid-cols-[80px_100px_48px_1fr_56px_64px_20px] gap-x-3 border-b border-air-line px-4 py-3 text-[13px] font-medium text-zinc-400 md:px-5">
               <span>Time</span>
               <span>Source</span>
               <span>Method</span>
@@ -135,7 +128,7 @@ export function LogsViewer() {
               <span className="text-right">Duration</span>
               <span />
             </div>
-            <div className="divide-y divide-zinc-800/50">
+            <div className="divide-y divide-air-line">
               {visible.map(entry => {
                 const isOpen = expanded.has(entry.id)
                 const hasData = !!entry.data
@@ -143,9 +136,9 @@ export function LogsViewer() {
                   <div key={entry.id}>
                     <div
                       onClick={() => hasData && toggleExpand(entry.id)}
-                      className={`grid grid-cols-[80px_100px_48px_1fr_56px_64px_20px] gap-x-3 px-4 py-2 items-start text-xs font-mono transition-colors ${hasData ? 'cursor-pointer hover:bg-zinc-800/40' : 'hover:bg-zinc-800/20'}`}
+                      className={`grid grid-cols-[80px_100px_48px_1fr_56px_64px_20px] gap-x-3 px-4 py-2.5 items-start text-xs font-mono transition-colors md:px-5 ${hasData ? 'cursor-pointer hover:bg-white/[0.04]' : ''}`}
                     >
-                      <span className="text-zinc-600 tabular-nums">{fmtTime(entry.ts)}</span>
+                      <span className="text-zinc-400 tabular-nums">{fmtTime(entry.ts)}</span>
                       <span>
                         <span className={`px-1.5 py-0.5 rounded border text-[10px] font-sans font-semibold ${SOURCE_STYLES[entry.source]}`}>
                           {SOURCE_LABEL[entry.source]}
@@ -161,8 +154,8 @@ export function LogsViewer() {
                       <span className={`tabular-nums ${statusClass(entry.status)}`}>
                         {entry.status ?? '—'}
                       </span>
-                      <span className="text-zinc-500 tabular-nums text-right">{fmtMs(entry.durationMs)}</span>
-                      <span className="flex items-center justify-center text-zinc-700">
+                      <span className="text-zinc-400 tabular-nums text-right">{fmtMs(entry.durationMs)}</span>
+                      <span className="flex items-center justify-center text-zinc-400">
                         {hasData && (
                           <svg
                             className={`w-3 h-3 transition-transform ${isOpen ? 'rotate-90' : ''}`}
@@ -175,7 +168,7 @@ export function LogsViewer() {
                     </div>
 
                     {isOpen && entry.data && (
-                      <div className="px-4 pb-3 pt-1 bg-zinc-900/60 border-t border-zinc-800/60">
+                      <div className="border-t border-air-line bg-air-raised px-4 pb-3 pt-2 md:px-5">
                         <pre className="text-[11px] font-mono text-zinc-400 whitespace-pre-wrap break-all leading-relaxed max-h-64 overflow-y-auto">
                           {tryPrettyJson(entry.data)}
                         </pre>
@@ -185,9 +178,9 @@ export function LogsViewer() {
                 )
               })}
             </div>
+            </div>
           </div>
         )}
-      </div>
-    </div>
+    </Page>
   )
 }

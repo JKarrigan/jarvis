@@ -31,29 +31,29 @@ export function SetupScreen({ onSave }: SetupScreenProps) {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 space-y-6">
+    <div className="flex min-h-[60vh] items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-2xl border border-air-line bg-air-card p-8 space-y-6">
         <div>
           <h1 className="text-xl font-semibold text-zinc-100">Connect your AirGradient</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <p className="mt-1 text-sm text-zinc-400">
             Enter the IP address or mDNS hostname of your AirGradient One.
           </p>
         </div>
 
         <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">How to connect</p>
+          <p className="text-sm font-semibold text-zinc-200">How to connect</p>
           <ul className="space-y-2 text-sm text-zinc-400">
             <li className="flex gap-2">
-              <span className="text-zinc-500 shrink-0">1.</span>
+              <span className="text-zinc-400 shrink-0">1.</span>
               Try the mDNS hostname first — it&apos;s on the device label or shown on its display:{' '}
               <code className="font-mono text-zinc-300">airgradient_SERIALNO.local</code>
             </li>
             <li className="flex gap-2">
-              <span className="text-zinc-500 shrink-0">2.</span>
+              <span className="text-zinc-400 shrink-0">2.</span>
               If that doesn&apos;t work, find the IP in your router&apos;s admin panel under &ldquo;Connected Devices.&rdquo;
             </li>
             <li className="flex gap-2">
-              <span className="text-zinc-500 shrink-0">3.</span>
+              <span className="text-zinc-400 shrink-0">3.</span>
               Not on your network yet? Hold the button until the device creates a hotspot, then configure Wi-Fi via the captive portal.
             </li>
           </ul>
@@ -61,7 +61,7 @@ export function SetupScreen({ onSave }: SetupScreenProps) {
 
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label htmlFor="device-host" className="block text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-1.5">
+            <label htmlFor="device-host" className="block text-sm font-semibold text-zinc-200 mb-1.5">
               IP Address or Hostname
             </label>
             <input

@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Manrope, Schibsted_Grotesk } from "next/font/google";
 import { MotionConfig } from "framer-motion";
 import "./globals.css";
-import { AppSwitcher } from "./_components/AppSwitcher";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -58,7 +57,6 @@ export default function RootLayout({
     >
       <body className="h-full">
         <MotionConfig reducedMotion="user">
-          <AppSwitcher />
           {children}
         </MotionConfig>
       </body>
