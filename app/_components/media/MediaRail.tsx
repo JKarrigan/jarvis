@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
 import { AppSwitch } from '../AppSwitch'
+import { SidebarToggle } from '../SidebarToggle'
 import { useMediaProfile, useTitleState } from './MediaProvider'
 import { Sheet } from './Sheet'
 import {
@@ -102,13 +103,13 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
         aria-label={badge ? `${item.label} (${badge})` : undefined}
         aria-current={active ? 'page' : undefined}
         title={item.label}
-        className={`relative flex h-11 items-center justify-center gap-3 rounded-[10px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent xl:justify-start ${
+        className={`relative flex h-11 items-center justify-center gap-3 rounded-[10px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent wide:justify-start ${
           active ? 'bg-surface-2 font-bold text-accent-soft' : 'font-semibold text-white/65 hover:bg-white/5 hover:text-white'
         }`}
       >
         <item.Icon className="h-5 w-5 shrink-0" />
-        <span className="sr-only flex-1 xl:not-sr-only">{item.label}</span>
-        {badge ? <CountBadge count={badge} className="absolute right-1 top-1 h-[18px] min-w-[18px] px-1 text-[10px] xl:static" /> : null}
+        <span className="sr-only flex-1 wide:not-sr-only">{item.label}</span>
+        {badge ? <CountBadge count={badge} className="absolute right-1 top-1 h-[18px] min-w-[18px] px-1 text-[10px] wide:static" /> : null}
       </Link>
     )
   }
@@ -140,7 +141,7 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
       </div>
 
       {/* ── Sidebar ── */}
-      <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[74px] flex-col gap-4 overflow-y-auto border-r border-border bg-black/35 px-3 py-4 backdrop-blur-xl backdrop-saturate-150 md:flex xl:w-[232px]">
+      <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[74px] flex-col gap-4 overflow-y-auto border-r border-border bg-black/35 px-3 py-4 backdrop-blur-xl backdrop-saturate-150 md:flex wide:w-[232px]">
         <AppSwitch current="media" layout="rail" />
 
         <button
@@ -148,11 +149,11 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
           onClick={onSearch}
           aria-label={searchLabel}
           title={searchLabel}
-          className="flex h-11 shrink-0 items-center justify-center gap-3 rounded-[10px] border border-white/[0.08] bg-white/[0.04] px-3 text-sm font-semibold text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent xl:justify-start"
+          className="flex h-11 shrink-0 items-center justify-center gap-3 rounded-[10px] border border-white/[0.08] bg-white/[0.04] px-3 text-sm font-semibold text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent wide:justify-start"
         >
           <SearchIcon className="h-5 w-5 shrink-0" />
-          <span className="hidden flex-1 text-left xl:inline">Search</span>
-          {shortcut && <kbd className="hidden rounded-md bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white/70 xl:inline">{shortcut}</kbd>}
+          <span className="hidden flex-1 text-left wide:inline">Search</span>
+          {shortcut && <kbd className="hidden rounded-md bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white/70 wide:inline">{shortcut}</kbd>}
         </button>
 
         <nav aria-label="Media" className="flex flex-col gap-0.5">
@@ -160,24 +161,28 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
         </nav>
 
         <nav aria-label="Your library" className="flex flex-col gap-0.5">
-          <div aria-hidden="true" className="mx-3 mb-2 h-px bg-white/10 xl:hidden" />
-          <p className="hidden px-3 pb-1.5 text-xs text-white/60 xl:block">Your library</p>
+          <div aria-hidden="true" className="mx-3 mb-2 h-px bg-white/10 wide:hidden" />
+          <p className="hidden px-3 pb-1.5 text-xs text-white/60 wide:block">Your library</p>
           {LIBRARY.map(item => sideLink(item))}
           {pickCount > 0 && sideLink(PICK_LIST, pickCount)}
         </nav>
+
+        <div className="mt-auto flex flex-col">
+          <SidebarToggle tone="media" />
+        </div>
 
         <Link
           href="/media/settings"
           aria-label={`Profile ${activeProfile} and settings`}
           aria-current={isActive(pathname, SETTINGS) ? 'page' : undefined}
           title="Profile and settings"
-          className={`mt-auto flex h-[52px] shrink-0 items-center justify-center gap-3 rounded-xl border border-white/[0.08] px-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent xl:justify-start xl:px-2.5 ${
+          className={`flex h-[52px] shrink-0 items-center justify-center gap-3 rounded-xl border border-white/[0.08] px-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent wide:justify-start wide:px-2.5 ${
             isActive(pathname, SETTINGS) ? 'bg-surface-2 text-accent-soft' : 'bg-white/[0.04] text-white/75 hover:bg-white/[0.08] hover:text-white'
           }`}
         >
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 text-sm font-bold text-accent-soft">{activeProfile}</span>
-          <span className="hidden flex-1 truncate xl:inline">Settings</span>
-          <GearIcon className="hidden h-[18px] w-[18px] text-white/50 xl:block" />
+          <span className="hidden flex-1 truncate wide:inline">Settings</span>
+          <GearIcon className="hidden h-[18px] w-[18px] text-white/50 wide:block" />
         </Link>
       </aside>
 

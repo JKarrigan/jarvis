@@ -9,7 +9,7 @@ import { recommendations, type UserView } from './selectors'
 import { HomeHero } from './HomeHero'
 import { PosterCard, CollectionCard, Row, SectionHeader } from './ReelCards'
 import { ContinueCard } from './ContinueCard'
-import { useFilteredLibrary, LibraryFilterBar, LibraryGridInner } from './library'
+import { useFilteredLibrary, LibrarySection } from './library'
 import { ListenCard } from './audiobooks/ListenCard'
 import { BookCard } from './books/BooksView'
 
@@ -124,11 +124,7 @@ export function HomeBody({
           </section>
         )}
 
-        <section>
-          <SectionHeader title={showRows ? 'Your library' : 'Movies & shows'} />
-          <LibraryFilterBar lib={lib} />
-          <LibraryGridInner titles={lib.result} />
-        </section>
+        <LibrarySection lib={lib} title={showRows ? 'Your library' : 'Movies & shows'} heading="h2" />
       </div>
     </div>
   )

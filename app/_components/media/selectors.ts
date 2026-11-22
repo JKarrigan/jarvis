@@ -168,16 +168,68 @@ export function matchesQuery(t: ReelTitle, needle: string): boolean {
   return t.title.toLowerCase().includes(needle) || (t.people ?? []).some(c => c.name.toLowerCase().includes(needle))
 }
 
-export function sortTitles(list: ReelTitle[], sort: LibrarySort): ReelTitle[] {
-  const arr = [...list]
+export type SortDir = 'asc' | 'desc'
+
+/** The direction each sort starts in: newest, highest and A to Z first, shortest first. */
+export const SORT_DEFAULT_DIR: Record<LibrarySort, SortDir> = {
+  added: 'desc', title: 'asc', year: 'desc', rating: 'desc', runtime: 'asc',
+}
+
+/** The value a sort orders by; null when the title has none (those always sort last). */
+function sortKey(t: ReelTitle, sort: LibrarySort): number | null {
   switch (sort) {
-    case 'title': return arr.sort((a, b) => a.title.localeCompare(b.title))
-    case 'year': return arr.sort((a, b) => (b.year ?? 0) - (a.year ?? 0))
-    case 'rating': return arr.sort((a, b) => (b.imdb ?? 0) - (a.imdb ?? 0))
-    case 'runtime': return arr.sort((a, b) => effectiveRuntime(a) - effectiveRuntime(b))
-    case 'added':
-    default: return arr.sort((a, b) => (b.addedAt ?? -Infinity) - (a.addedAt ?? -Infinity))
+    case 'year': return t.year ?? null
+    case 'rating': return t.imdb ?? null
+    case 'runtime': return effectiveRuntime(t)
+    case 'added': return t.addedAt ?? null
+    default: return null
   }
+}
+
+/**
+ * Sorted copy. `dir` defaults to the sort's natural direction. Titles missing the sorted
+ * value go last in either direction, and ties fall back to the title so the order is stable.
+ */
+export function sortTitles(list: ReelTitle[], sort: LibrarySort, dir: SortDir = SORT_DEFAULT_DIR[sort]): ReelTitle[] {
+  const sign = dir === 'asc' ? 1 : -1
+  const byTitle = (a: ReelTitle, b: ReelTitle) => a.title.localeCompare(b.title)
+  if (sort === 'title') return [...list].sort((a, b) => sign * byTitle(a, b))
+  return [...list].sort((a, b) => {
+    const ka = sortKey(a, sort)
+    const kb = sortKey(b, sort)
+    if (ka === null || kb === null) return ka === kb ? byTitle(a, b) : ka === null ? 1 : -1
+    return ka === kb ? byTitle(a, b) : sign * (ka - kb)
+  })
+}
+
+/** The first directing credit on a title, for the list view's Director column. */
+export function firstDirector(t: ReelTitle): string | undefined {
+  return t.people?.find(c => c.director)?.name
+}
+
+const ADDED_DATE = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
+const ADDED_DATE_YEAR = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+
+/**
+ * "Today", "Yesterday", "5d ago" for the first 30 days, then a date ("Oct 17", with the
+ * year once it is a different one). Dates are in the viewer's time zone, so only call
+ * this on the client (the list passes a clock that is null during server rendering).
+ */
+export function addedLabel(days: number | undefined, addedAt: number | undefined, nowMs: number): string {
+  if (days == null) return ''
+  if (days <= 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days <= 30 || addedAt == null) return `${days}d ago`
+  const sameYear = new Date(addedAt).getFullYear() === new Date(nowMs).getFullYear()
+  return (sameYear ? ADDED_DATE : ADDED_DATE_YEAR).format(addedAt)
+}
+
+/** "2h 9m" for movies, "3 seasons" for shows. */
+export function lengthLabel(t: ReelTitle): string {
+  if (t.type === 'tv') return t.seasons ? `${t.seasons} season${t.seasons === 1 ? '' : 's'}` : ''
+  if (!t.runtime) return ''
+  const h = Math.floor(t.runtime / 60)
+  return h > 0 ? `${h}h ${t.runtime % 60}m` : `${t.runtime}m`
 }
 
 export function applyShow(list: ReelTitle[], show: LibraryShow, view: UserView): ReelTitle[] {

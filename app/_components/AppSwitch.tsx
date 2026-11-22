@@ -41,7 +41,7 @@ export function AppSwitch({ current, layout = 'row', className = '' }: {
   return (
     <nav
       aria-label="Apps"
-      className={`flex gap-1 rounded-[14px] border border-white/[0.08] bg-white/[0.04] p-1 ${rail ? 'flex-col xl:flex-row' : ''} ${className}`}
+      className={`flex gap-1 rounded-[14px] border border-white/[0.08] bg-white/[0.04] p-1 ${rail ? 'flex-col wide:flex-row' : ''} ${className}`}
     >
       {APPS.map(app => {
         const active = app.key === current
@@ -58,7 +58,7 @@ export function AppSwitch({ current, layout = 'row', className = '' }: {
             <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-md text-zinc-900 ${app.chip} ${active ? '' : 'opacity-80'}`}>
               <app.Glyph />
             </span>
-            <span className={rail ? 'sr-only xl:not-sr-only' : ''}>{app.label}</span>
+            <span className={rail ? 'sr-only wide:not-sr-only' : ''}>{app.label}</span>
           </Link>
         )
       })}

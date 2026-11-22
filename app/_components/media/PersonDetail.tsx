@@ -5,7 +5,9 @@ import Link from 'next/link'
 import { motion } from 'framer-motion'
 import type { ReelPerson } from './types'
 import { avatar, backdropFallback } from './artwork'
-import { Poster, PosterCard } from './ReelCards'
+import { Poster } from './ReelCards'
+import { useMediaProfile } from './MediaProvider'
+import { GridSizeControl, LibraryResults, ViewControl } from './library'
 import { BackPill } from './BackPill'
 
 /** Bio line-height in px (15px type × 1.7) and how many lines show before "More". */
@@ -59,6 +61,7 @@ function Bio({ text }: { text: string }) {
 }
 
 export function PersonDetail({ person }: { person: ReelPerson }) {
+  const { libraryView, setLibraryView, gridSize, setGridSize } = useMediaProfile()
   return (
     <div className="relative pb-20">
       <BackPill fallbackHref="/media" />
@@ -82,10 +85,14 @@ export function PersonDetail({ person }: { person: ReelPerson }) {
       {/* Movies & shows */}
       {person.filmography.length > 0 && (
         <section className="mt-12">
-          <h2 className="mb-4 pl-[var(--rail)] pr-[var(--gx)] text-[20px] font-bold text-ink">Movies &amp; shows</h2>
-          <div className="grid gap-x-5 gap-y-7 pl-[var(--rail)] pr-[var(--gx)]" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(var(--grid-min), 1fr))' }}>
-            {person.filmography.map(t => <PosterCard key={t.id} title={t} width="w-full" overlays />)}
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 pl-[var(--rail)] pr-[var(--gx)]">
+            <h2 className="text-[20px] font-bold text-ink">Movies &amp; shows</h2>
+            <div className="flex items-center gap-2">
+              {libraryView === 'grid' && <GridSizeControl value={gridSize} onChange={setGridSize} />}
+              <ViewControl value={libraryView} onChange={setLibraryView} />
+            </div>
           </div>
+          <LibraryResults titles={person.filmography} viewMode={libraryView} gridSize={gridSize} />
         </section>
       )}
 

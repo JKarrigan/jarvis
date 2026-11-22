@@ -14,7 +14,7 @@ export function PickListView({ catalog }: { catalog: ReelTitle[] }) {
   const titles = pickList.map(id => byId.get(id)).filter((t): t is ReelTitle => Boolean(t))
 
   return (
-    <div className="mx-auto max-w-[1000px] px-[var(--rail)] py-12 md:px-[var(--gx)]">
+    <div className="mx-auto max-w-[calc(1000px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] py-12">
       <h1 className="text-[clamp(34px,7vw,52px)] font-[800] tracking-[-0.025em] text-ink">Your picker list</h1>
       <p className="mt-2 text-white/55">Queue up contenders, then run the roundup to narrow them down.</p>
 

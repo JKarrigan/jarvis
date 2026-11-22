@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { THEMES, type ThemeName } from './themeTokens'
+import type { GridSize, LibraryViewMode } from './libraryQuery'
 import type { ReelTitle } from './types'
 import type { UserView } from './selectors'
 
@@ -50,6 +51,9 @@ interface ProfileState {
   pickList: string[]
   /** Keyed by Jellyfin episode Id. */
   epWatched: OverrideMap
+  /** Library preferences. Optional, so profiles saved before they existed need no migration. */
+  libraryView?: LibraryViewMode
+  gridSize?: GridSize
 }
 
 interface PersistShape {
@@ -102,6 +106,11 @@ interface ProfileContextValue {
   switchProfile: () => void
   theme: ThemeName
   setTheme: (t: ThemeName) => void
+  /** Library pages: grid or list, and the poster size in the grid. */
+  libraryView: LibraryViewMode
+  setLibraryView: (v: LibraryViewMode) => void
+  gridSize: GridSize
+  setGridSize: (s: GridSize) => void
 }
 
 interface TitleStateValue {
@@ -227,7 +236,11 @@ export function MediaProvider({ children }: { children: React.ReactNode }) {
       }),
     theme: profile.theme,
     setTheme: (t) => updateProfile(p => ({ ...p, theme: t })),
-  }), [ready, state.activeProfile, state.profiles, profile.theme, updateProfile])
+    libraryView: profile.libraryView ?? 'grid',
+    setLibraryView: (v) => updateProfile(p => ({ ...p, libraryView: v })),
+    gridSize: profile.gridSize ?? 'comfortable',
+    setGridSize: (g) => updateProfile(p => ({ ...p, gridSize: g })),
+  }), [ready, state.activeProfile, state.profiles, profile.theme, profile.libraryView, profile.gridSize, updateProfile])
 
   const { favorites, watched, epWatched, watchlist, pickList, ratings, notes } = profile
 

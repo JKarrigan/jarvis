@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono, Manrope, Schibsted_Grotesk } from "next/font/google";
 import { MotionConfig } from "framer-motion";
 import "./globals.css";
+import { SIDEBAR_INIT_SCRIPT } from "@/lib/sidebar";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -51,10 +52,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    // suppressHydrationWarning: the script below may add data-sidebar to <html> before React hydrates.
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} ${manrope.variable} ${schibstedGrotesk.variable} h-full antialiased dark`}
     >
+      <head>
+        {/* Before first paint: restore a collapsed sidebar so the layout never jumps. */}
+        <script dangerouslySetInnerHTML={{ __html: SIDEBAR_INIT_SCRIPT }} />
+      </head>
       <body className="h-full">
         <MotionConfig reducedMotion="user">
           {children}

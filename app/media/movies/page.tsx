@@ -6,8 +6,8 @@ export const metadata: Metadata = { title: 'Movies' }
 
 export const dynamic = 'force-dynamic'
 
-export default async function MoviesPage({ searchParams }: { searchParams: Promise<{ genre?: string; tag?: string }> }) {
-  const { genre, tag } = await searchParams
+// Filters, sort and view live in the URL and are read on the client (useFilteredLibrary).
+export default async function MoviesPage() {
   const catalog = await getCatalog()
-  return <LibraryView catalog={catalog} title="Movies" base="movie" initialGenre={genre} initialTag={tag} />
+  return <LibraryView catalog={catalog} title="Movies" base="movie" />
 }

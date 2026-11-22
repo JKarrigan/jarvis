@@ -16,7 +16,7 @@ function CollectionRow({
 }: { id: string; name: string; hue: number; count: number; titles: ReelTitle[] }) {
   return (
     <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
-      <div className="shrink-0 md:w-[340px] md:pl-[var(--rail)]">
+      <div className="shrink-0 md:w-[calc(var(--rail)+244px)] md:pl-[var(--rail)]">
         <p className="text-[11px] font-bold uppercase tracking-[0.16em]" style={{ color: collColor(hue) }}>Collection</p>
         <h2 className="mt-1 text-[clamp(24px,4vw,32px)] font-[800] leading-[1.05] tracking-[-0.02em] text-ink [text-wrap:balance]">{name}</h2>
         <Link href={`/media/collections/${id}`} className="mt-1 inline-flex items-center gap-1 text-sm text-white/55 transition hover:text-white">

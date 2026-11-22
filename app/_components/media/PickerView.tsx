@@ -236,7 +236,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   // ---- Setup ----
   if (stage === 'setup') {
     return (
-      <div className="mx-auto flex w-full max-w-[1280px] items-start gap-10 px-[var(--rail)] py-16 md:px-[var(--gx)]">
+      <div className="mx-auto flex w-full max-w-[calc(1280px+var(--rail)-var(--gx))] items-start gap-10 pl-[var(--rail)] pr-[var(--gx)] py-16">
         <motion.div
           layout
           transition={{ duration: 0.45, ease: [0.2, 0.7, 0.2, 1] }}
@@ -338,7 +338,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
         {/* Banner floats over the detail hero's backdrop (its content is bottom-anchored,
             so the top of the artwork is free) instead of pushing the hero down. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 z-30">
-          <div className="mx-auto max-w-[880px] px-[var(--rail)] pt-16 md:px-[var(--gx)]" style={{ animation: 'winnerPop 0.6s ease' }}>
+          <div className="mx-auto max-w-[calc(880px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] pt-16" style={{ animation: 'winnerPop 0.6s ease' }}>
             <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">★ Tonight&rsquo;s pick</p>
             <h1 className="mt-2 text-[clamp(40px,10vw,72px)] font-[800] leading-[0.98] tracking-[-0.025em] text-ink [text-shadow:0_2px_24px_rgba(0,0,0,0.55)]">{w.title}</h1>
             <div className="mt-6">
@@ -353,7 +353,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
               <DetailView detail={winner.detail} media={winner.media} similar={winner.similar} hideBack />
             </motion.div>
           ) : winnerError ? (
-            <motion.div key="fallback" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 pt-64 md:px-[var(--gx)]">
+            <motion.div key="fallback" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="relative z-10 mx-auto max-w-[calc(880px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] pb-20 pt-64">
               <p className="text-white/65">{metaLine(w)}</p>
               {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
               <div className="mt-7 flex flex-wrap gap-3">
@@ -362,7 +362,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
               </div>
             </motion.div>
           ) : (
-            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative z-10 mx-auto max-w-[880px] px-[var(--rail)] pb-20 pt-64 md:px-[var(--gx)]">
+            <motion.div key="loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative z-10 mx-auto max-w-[calc(880px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] pb-20 pt-64">
               <p className="text-white/65">{metaLine(w)}</p>
               {w.synopsis && <p className="mt-4 max-w-[620px] text-[15px] leading-[1.6] text-white/70">{w.synopsis}</p>}
               <div className="mt-8 h-[40vh] animate-pulse rounded-3xl bg-white/[0.04]" />
@@ -376,7 +376,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
   // ---- Results / shortlist ----
   if (done) {
     return (
-      <div className="mx-auto max-w-[1000px] px-[var(--rail)] py-16 md:px-[var(--gx)]">
+      <div className="mx-auto max-w-[calc(1000px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] py-16">
         <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">Shortlist</p>
         <h1 className="mt-2 text-[clamp(30px,6vw,46px)] font-[800] tracking-[-0.02em] text-ink">{kept.length ? `${kept.length} kept` : 'Nothing kept'}</h1>
         {kept.length > 0 ? (
@@ -470,7 +470,7 @@ export function PickerView({ catalog, collections = [], startFromList = false }:
                   : { opacity: 0, x: dir === 'keep' ? 140 : -140, rotate: dir === 'keep' ? 3 : -3, transition: { duration: 0.27 } },
               }}
               initial="initial" animate="animate" exit="exit"
-              className="w-full max-w-[880px] cursor-grab px-[var(--rail)] text-center active:cursor-grabbing md:px-[var(--gx)]"
+              className="w-full max-w-[calc(880px+var(--rail)-var(--gx))] cursor-grab pl-[var(--rail)] pr-[var(--gx)] text-center active:cursor-grabbing"
             >
               <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">{current.type === 'tv' ? 'TV Series' : 'Film'}</p>
               <h1 className="mt-2 font-[800] leading-[0.98] tracking-[-0.025em] text-ink" style={{ fontSize: 'clamp(36px, 9vw, 62px)' }}>{current.title}</h1>

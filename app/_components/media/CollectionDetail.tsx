@@ -5,31 +5,22 @@ import { useRouter, notFound } from 'next/navigation'
 import { AnimatePresence } from 'framer-motion'
 import { Sheet } from './Sheet'
 import { BackPill } from './BackPill'
-import { useTitleState } from './MediaProvider'
 import type { ReelTitle, CollectionSummary } from './types'
-import { BACKDROP_WIDTHS, collArt, collColor, backdropFallback, imageSrcSet, resizeImage } from './artwork'
+import { BACKDROP_WIDTHS, collArt, collColor, imageSrcSet } from './artwork'
 import { effectiveRuntime } from './selectors'
-import { HOVER_REVEAL, Poster, detailHref } from './ReelCards'
-import { StarIcon, CheckIcon, PlayIcon, PencilIcon, TrashIcon } from './icons'
+import { Poster } from './ReelCards'
+import { TitleRowWide } from './LibraryList'
+import { PencilIcon, TrashIcon } from './icons'
 import { deleteCollection, renameCollection } from './collectionsApi'
 
 function totalHours(titles: ReelTitle[]): number {
   return Math.round(titles.reduce((s, t) => s + effectiveRuntime(t), 0) / 60)
 }
 
-function meta(t: ReelTitle): string {
-  const bits: string[] = []
-  if (t.year) bits.push(String(t.year))
-  if (t.type === 'movie' && t.runtime) bits.push(`${Math.floor(t.runtime / 60)}h ${t.runtime % 60}m`)
-  if (t.type === 'tv' && t.seasons) bits.push(`${t.seasons} Season${t.seasons > 1 ? 's' : ''}`)
-  return bits.join(' · ')
-}
-
 export function CollectionDetail({
   catalog, collection,
 }: { catalog: ReelTitle[]; collection: CollectionSummary | null }) {
   const router = useRouter()
-  const { isWatched, toggleWatched } = useTitleState()
   const [deleting, setDeleting] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -90,7 +81,7 @@ export function CollectionDetail({
           )}
         </div>
         <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.4), rgba(8,6,13,0.6) 55%, #0a0810)' }} />
-        <div className="absolute inset-x-0 bottom-0 max-w-[760px] pb-9 pl-[var(--rail)] pr-[var(--gx)]">
+        <div className="absolute inset-x-0 bottom-0 max-w-[calc(var(--rail)+664px)] pb-9 pl-[var(--rail)] pr-[var(--gx)]">
           <p className="text-[11px] font-bold uppercase tracking-[0.16em]" style={{ color: collColor(collection.hue) }}>Collection</p>
           {collection.logoUrl ? (
             <>
@@ -135,53 +126,8 @@ export function CollectionDetail({
         {titles.length === 0 ? (
           <p className="pl-[var(--rail)] pr-[var(--gx)] text-sm text-white/45">This collection is empty.</p>
         ) : (
-          <div className="space-y-3 pl-[var(--rail)] pr-[var(--gx)]">
-            {titles.map(t => {
-              const watched = isWatched(t.id, t.watched)
-              return (
-                <div
-                  key={t.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => router.push(detailHref(t))}
-                  onKeyDown={(ev) => { if (ev.key === 'Enter') router.push(detailHref(t)) }}
-                  className="group flex cursor-pointer items-center gap-5 rounded-2xl p-2 transition hover:bg-surface"
-                >
-                  <div className="relative aspect-video w-[220px] shrink-0 overflow-hidden rounded-xl sm:w-[340px]">
-                    <Poster gradient={t.backdropUrl ? t.backdropColor : backdropFallback(t.hue)} src={resizeImage(t.backdropUrl, 960)} srcSet={imageSrcSet(t.backdropUrl, [480, 720, 960])} sizes="(min-width: 640px) 340px, 220px" alt={t.title} className="h-full w-full" />
-                    <button
-                      type="button"
-                      aria-label={`Play ${t.title}`}
-                      onClick={(ev) => { ev.stopPropagation(); router.push(`${detailHref(t)}?play=1`) }}
-                      className={`absolute inset-0 grid place-items-center bg-black/30 transition-opacity duration-200 ${HOVER_REVEAL}`}
-                    >
-                      <span className="grid h-12 w-12 place-items-center rounded-full bg-black/55 text-white backdrop-blur-sm"><PlayIcon className="h-5 w-5" /></span>
-                    </button>
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-ink">{t.title}</p>
-                    <p className="mt-0.5 flex items-center gap-1.5 text-xs text-white/45">
-                      {t.imdb != null && <span className="inline-flex items-center gap-1"><StarIcon className="h-3.5 w-3.5" style={{ color: 'var(--star)' }} />{t.imdb.toFixed(1)}</span>}
-                      <span>{meta(t)}</span>
-                    </p>
-                    {t.synopsis && <p className="mt-1.5 line-clamp-2 text-[13px] leading-snug text-white/55 [text-wrap:pretty]">{t.synopsis}</p>}
-                  </div>
-
-                  <button
-                    type="button"
-                    aria-label={watched ? 'Mark unwatched' : 'Mark watched'}
-                    onClick={(ev) => { ev.stopPropagation(); toggleWatched(t.id, t.watched) }}
-                    className="grid h-9 w-9 shrink-0 place-items-center self-center rounded-full border transition"
-                    style={watched
-                      ? { background: 'var(--accent)', borderColor: 'transparent', color: 'var(--ink-on-accent)' }
-                      : { borderColor: 'rgba(255,255,255,0.2)', color: 'rgba(255,255,255,0.5)' }}
-                  >
-                    <CheckIcon className="h-4 w-4" />
-                  </button>
-                </div>
-              )
-            })}
+          <div className="space-y-2 pl-[var(--rail)] pr-[var(--gx)]">
+            {titles.map((t, i) => <TitleRowWide key={t.id} title={t} index={i + 1} />)}
           </div>
         )}
       </section>

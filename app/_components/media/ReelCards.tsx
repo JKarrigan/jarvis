@@ -86,8 +86,14 @@ function metaLine(t: ReelTitle): string {
  * (watched check, favorite-heart button, type badge).
  */
 export function PosterCard({
-  title, width = 'w-[178px]', overlays = false, showAddedDays = false,
-}: { title: ReelTitle; width?: string; overlays?: boolean; showAddedDays?: boolean }) {
+  title, width = 'w-[178px]', overlays = false, showAddedDays = false, dense = false, sizes,
+}: {
+  title: ReelTitle; width?: string; overlays?: boolean; showAddedDays?: boolean
+  /** Compact grid: title only under the poster, and no hover lift. */
+  dense?: boolean
+  /** Overrides the `sizes` hint derived from `width` (library grids know their cell size). */
+  sizes?: string
+}) {
   const { isWatched, isFavorite, toggleFavorite, inPickList, togglePickList } = useTitleState()
   const watched = isWatched(title.id, title.watched)
   const favorite = isFavorite(title.id, title.favorite)
@@ -96,12 +102,12 @@ export function PosterCard({
 
   return (
     <Link href={detailHref(title)} className={`group flex shrink-0 flex-col gap-2 ${width}`}>
-      <div className="relative aspect-[2/3] w-full transition-transform duration-200 group-hover:-translate-y-1">
+      <div className={`relative aspect-[2/3] w-full ${dense ? '' : 'transition-transform duration-200 group-hover:-translate-y-1'}`}>
         <Poster
           gradient={title.posterColor}
           src={title.posterUrl}
           srcSet={imageSrcSet(title.posterUrl, POSTER_WIDTHS)}
-          sizes={posterSizes(width)}
+          sizes={sizes ?? posterSizes(width)}
           width={360}
           height={540}
           alt={title.title}
@@ -174,8 +180,8 @@ export function PosterCard({
       </div>
 
       <div className="min-w-0">
-        <p className="truncate text-[13.5px] font-semibold text-ink">{title.title}</p>
-        <p className="truncate text-[11.5px] text-white/45">{metaLine(title)}</p>
+        <p className={`truncate font-semibold text-ink ${dense ? 'text-[12.5px]' : 'text-[13.5px]'}`}>{title.title}</p>
+        {!dense && <p className="truncate text-[11.5px] text-white/60">{metaLine(title)}</p>}
       </div>
     </Link>
   )

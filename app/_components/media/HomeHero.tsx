@@ -131,7 +131,11 @@ export function HomeHero({ titles }: { titles: ReelTitle[] }) {
             <p className="mb-3 text-[13px] font-bold text-accent-soft">
               Featured · {title.type === 'tv' ? 'TV Series' : 'Film'}
             </p>
-            <h1 className="font-[800] leading-[0.92] tracking-[-0.035em] text-ink [text-wrap:balance]" style={{ fontSize: 'clamp(38px, 6.4vw, 92px)' }}>
+            <h1
+              className="line-clamp-3 pb-[0.08em] font-[800] leading-[0.94] tracking-[-0.035em] text-ink [text-wrap:balance]"
+              // Long titles step down a size so three lines never outgrow the hero.
+              style={{ fontSize: title.title.length > 36 ? 'clamp(30px, 3.6vw, 52px)' : title.title.length > 18 ? 'clamp(34px, 4.6vw, 68px)' : 'clamp(38px, 6.4vw, 92px)' }}
+            >
               {title.title}
             </h1>
             <p className="mt-4 flex flex-wrap items-center gap-1.5 text-[15px] text-white/75">

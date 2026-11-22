@@ -9,7 +9,7 @@ export default function MediaSettingsPage() {
   const current = THEMES.find(t => t.key === theme)
 
   return (
-    <div className="mx-auto max-w-[920px] px-[var(--rail)] py-10 md:px-[var(--gx)]">
+    <div className="mx-auto max-w-[calc(920px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] py-10">
       <h1 className="mb-7 text-[40px] font-[800] tracking-[-0.02em] text-ink">Settings</h1>
 
       {/* Profile */}

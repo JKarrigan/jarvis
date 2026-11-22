@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* `wide:` = the sidebar is in its labelled form: xl and up, and the user has not collapsed
+   it (SidebarToggle sets html[data-sidebar="collapsed"], before first paint). Both
+   sidebars and AppSwitch use it where they would otherwise say `xl:`. */
+@custom-variant wide {
+  @media (min-width: 80rem) {
+    &:where(:root:not([data-sidebar="collapsed"]) *) {
+      @slot;
+    }
+  }
+}
+
 :root {
   color-scheme: dark;
 }
@@ -218,9 +229,10 @@ body {
   --navpad: 0px;     /* bottom padding that clears the mobile tab bar */
   --grid-min: 206px; /* minmax() minimum for auto-fill poster grids */
 }
-/* From xl the rail becomes the 232px labelled sidebar (MediaRail), so the gutter grows with it. */
+/* From xl the rail becomes the 232px labelled sidebar (MediaRail) unless it is collapsed,
+   so the gutter grows with it. Same condition as the `wide:` variant above. */
 @media (min-width: 1280px) {
-  .reel-root {
+  :root:not([data-sidebar="collapsed"]) .reel-root {
     --rail: 264px;
   }
 }
@@ -233,6 +245,17 @@ body {
   }
 }
 
+
+/* Library poster grid. The grid sets the two custom properties inline (one per poster
+   size); the breakpoint picks which applies, so phones keep a sensible column count. */
+.lib-grid {
+  --lib-min: var(--lib-min-desktop, 168px);
+}
+@media (max-width: 767px) {
+  .lib-grid {
+    --lib-min: var(--lib-min-phone, 150px);
+  }
+}
 
 [data-reel-theme] h1,
 [data-reel-theme] h2,

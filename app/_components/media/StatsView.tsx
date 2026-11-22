@@ -28,7 +28,7 @@ export function StatsView({ catalog }: { catalog: ReelTitle[] }) {
   const maxGenre = stats.topGenres[0]?.[1] ?? 1
 
   return (
-    <div className="mx-auto max-w-[920px] px-[var(--rail)] py-12 md:px-[var(--gx)]">
+    <div className="mx-auto max-w-[calc(920px+var(--rail)-var(--gx))] pl-[var(--rail)] pr-[var(--gx)] py-12">
       <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-accent-soft">Your year in film</p>
       <h1 className="mt-2 text-[clamp(34px,7vw,52px)] font-[800] tracking-[-0.025em] text-ink">The numbers so far</h1>
 

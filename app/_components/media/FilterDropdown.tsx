@@ -13,7 +13,7 @@ export interface DropdownOption<T extends string> {
 }
 
 export function FilterDropdown<T extends string>({
-  label, value, options, onChange, searchable,
+  label, value, options, onChange, searchable, size = 'sm', active: highlighted = false, block = false,
 }: {
   label: string
   value: T
@@ -21,6 +21,12 @@ export function FilterDropdown<T extends string>({
   onChange: (v: T) => void
   /** Long lists (people) get a type-to-filter box at the top of the menu. */
   searchable?: boolean
+  /** `md` is the 40px control used on library pages; `sm` is the compact original. */
+  size?: 'sm' | 'md'
+  /** Tint the trigger: the value is narrowing the list. */
+  active?: boolean
+  /** Fill the container's width (inside the Filters popover). */
+  block?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -40,16 +46,20 @@ export function FilterDropdown<T extends string>({
   }, [open])
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className={`relative ${block ? 'w-full' : ''}`}>
       <button
         type="button"
         aria-haspopup="true"
         aria-expanded={open}
+        aria-label={block || size === 'md' ? `${label}: ${active?.label ?? value}` : undefined}
         onClick={() => { setQ(''); setOpen(o => !o) }}
-        className="flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-border bg-white/5 px-3 py-1.5 text-[13px] text-ink backdrop-blur-md transition hover:bg-white/10"
+        className={`flex items-center gap-1.5 whitespace-nowrap rounded-xl border text-ink backdrop-blur-md transition ${
+          size === 'md' ? 'h-10 px-3.5 text-sm' : 'px-3 py-1.5 text-[13px]'
+        } ${block ? 'w-full' : ''} ${highlighted ? 'border-accent/60 bg-accent/10 hover:bg-accent/15' : 'border-border bg-white/5 hover:bg-white/10'}`}
       >
-        <span className="text-white/45">{label}:</span>
-        <span className="font-medium">{active?.label ?? value}</span>
+        {/* A block dropdown sits under its own visible label (Filters popover), so the prefix would repeat it. */}
+        {!block && <span className={`${highlighted ? 'text-accent-soft' : 'text-white/60'} ${size === 'md' ? 'hidden sm:inline' : ''}`}>{label}:</span>}
+        <span className={`font-medium ${block ? 'flex-1 truncate text-left' : ''}`}>{active?.label ?? value}</span>
         <svg className={`text-white/40 transition-transform ${open ? 'rotate-180' : ''}`} width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 7.5l5 5 5-5" /></svg>
       </button>
 
