@@ -1,6 +1,6 @@
 import 'server-only'
-import { getSetting, mergeDuplicateEvents, pruneEvents, pruneReadings, refreshStoredEvents } from './db'
-import { initEventDetection, normalizeDeviceHost, scheduleTraceBackfill, startPoller } from './poller'
+import { getSetting, mergeDuplicateEvents, pruneEvents, pruneReadings, pruneRollups, refreshStoredEvents } from './db'
+import { initEventDetection, normalizeDeviceHost, scheduleRollup, scheduleTraceBackfill, startPoller } from './poller'
 import { startPhotoScheduler } from './photos/scan'
 
 /**
@@ -13,6 +13,8 @@ import { startPhotoScheduler } from './photos/scan'
  */
 
 const READINGS_KEEP_MS = 30 * 24 * 60 * 60 * 1000
+/** Five-minute rollups (`readings_5m`): what charts longer than 30 days read. */
+const ROLLUPS_KEEP_MS = 400 * 24 * 60 * 60 * 1000
 const EVENTS_KEEP_MS = 90 * 24 * 60 * 60 * 1000
 const PRUNE_EVERY_MS = 60 * 60 * 1000
 
@@ -23,9 +25,11 @@ const g = globalThis as typeof globalThis & { __ag_jobs?: { started: boolean; pr
 
 function prune(): void {
   try {
+    // Never deletes raw readings that are not rolled up yet.
     const readings = pruneReadings(READINGS_KEEP_MS)
+    const rollups = pruneRollups(ROLLUPS_KEEP_MS)
     const events = pruneEvents(EVENTS_KEEP_MS)
-    if (readings || events) console.log(`[startup] pruned ${readings} readings, ${events} events`)
+    if (readings || rollups || events) console.log(`[startup] pruned ${readings} readings, ${rollups} rollup rows, ${events} events`)
   } catch (err) {
     console.error('[startup] prune failed', err)
   }
@@ -54,6 +58,8 @@ function startAirGradient(): void {
   }
   // Finished events without a saved trace get one while their readings exist.
   scheduleTraceBackfill(5_000)
+  // Five-minute rollups of the readings: catches up (weeks, on the first start) a day per run.
+  scheduleRollup(3_000)
   const host = normalizeDeviceHost(getSetting(DEVICE_HOST_SETTING) ?? process.env.DEVICE_HOST ?? process.env.NEXT_PUBLIC_DEVICE_HOST)
   if (host) {
     startPoller(host)

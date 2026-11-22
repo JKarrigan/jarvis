@@ -48,4 +48,14 @@ describe('events table from an older version', () => {
     expect(db.backfillEventTraces()).toBe(1)
     expect(db.backfillEventTraces()).toBe(0)
   })
+
+  it('gains the five-minute rollup table', async () => {
+    const db = await import('@/lib/db')
+    const columns = (db.getDb().prepare('PRAGMA table_info(readings_5m)').all() as { name: string; pk: number }[])
+    expect(columns.find(c => c.pk === 1)?.name).toBe('bucket')
+    const names = columns.map(c => c.name)
+    expect(names).toEqual(expect.arrayContaining(['n', 't_avg', 'rco2_avg', 'rco2_min', 'rco2_max', 'pm02Compensated_max', 'wifi_avg']))
+    expect(names).toHaveLength(3 + 13 * 3)
+    expect(db.getLastRollupBucket()).toBeNull()
+  })
 })

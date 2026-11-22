@@ -45,9 +45,10 @@ export function HomeDashboardShell() {
   const closeGroup = useCallback(() => { setSelectedGroupId(null); setSelectedLightId(null) }, [])
   const closeLight = useCallback(() => setSelectedLightId(null), [])
 
-  const lastHistoryEntry = history.length > 0 ? history[history.length - 1] : null
-  const displayMeasures = measures ?? lastHistoryEntry?.measures ?? null
-  const displayLastUpdated = lastUpdated ?? (lastHistoryEntry ? new Date(lastHistoryEntry.timestamp) : null)
+  // The current reading is always a raw one from /api/latest: history entries
+  // are minute averages (fractional, without model or firmware).
+  const displayMeasures = measures
+  const displayLastUpdated = lastUpdated
   const old = useIsOlderThan(displayLastUpdated?.getTime() ?? null, STALE_AFTER_MS)
 
   if (!ready) {

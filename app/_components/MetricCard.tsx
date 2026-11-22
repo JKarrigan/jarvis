@@ -8,15 +8,33 @@ import { metricStatusLabel } from '@/lib/metrics'
 import { cardCls, StatusDot } from './air/ui'
 import { Sparkline } from './Sparkline'
 
-const TREND_WINDOW = 6
+/** The trend compares the latest value with the one about a minute earlier. */
+const TREND_WINDOW_MS = 60_000
+/** Minute averages are stamped with their last reading, so "a minute earlier" may be a few seconds short. */
+const TREND_SLACK_MS = 5_000
 const TREND_THRESHOLD = 0.02
 
-function getTrend(history: number[]): 'up' | 'down' | 'flat' {
-  const vals = history.filter(Number.isFinite)
-  if (vals.length < TREND_WINDOW + 1) return 'flat'
-  const latest = vals[vals.length - 1]
-  const baseline = vals[vals.length - 1 - TREND_WINDOW]
-  if (baseline === 0) return 'flat'
+/**
+ * Time-based, so it means the same whether the points are live 10 s readings
+ * or the one-minute averages a page is hydrated with. Without timestamps it
+ * falls back to six points back (10 s readings).
+ */
+function getTrend(history: number[], timestamps?: number[]): 'up' | 'down' | 'flat' {
+  let last = history.length - 1
+  while (last >= 0 && !Number.isFinite(history[last])) last--
+  if (last < 0) return 'flat'
+  const latest = history[last]
+  let baseline: number | undefined
+  if (timestamps) {
+    const cutoff = timestamps[last] - TREND_WINDOW_MS + TREND_SLACK_MS
+    for (let i = last - 1; i >= 0; i--) {
+      if (timestamps[i] <= cutoff && Number.isFinite(history[i])) { baseline = history[i]; break }
+    }
+  } else {
+    const vals = history.filter(Number.isFinite)
+    baseline = vals.length > 6 ? vals[vals.length - 7] : undefined
+  }
+  if (baseline === undefined || baseline === 0) return 'flat'
   const delta = (latest - baseline) / Math.abs(baseline)
   if (delta > TREND_THRESHOLD) return 'up'
   if (delta < -TREND_THRESHOLD) return 'down'
@@ -35,11 +53,15 @@ export interface MetricReading {
   /** Word shown next to the value so status isn't conveyed by colour alone. Defaults to the generic label. */
   statusLabel?: string
   history: number[]
+  /** Times of `history` (the sparkline and the trend are time-based when given). */
+  timestamps?: number[]
 }
 
 /** One reading for a tile or strip, with the status word taken from that metric's own ranges. */
-export function metricReading(slug: string, label: string, value: number | string, unit: string, status: StatusColor, history: number[]): MetricReading {
-  return { slug, label, value, unit, status, statusLabel: metricStatusLabel(slug, status), history }
+export function metricReading(
+  slug: string, label: string, value: number | string, unit: string, status: StatusColor, history: number[], timestamps?: number[],
+): MetricReading {
+  return { slug, label, value, unit, status, statusLabel: metricStatusLabel(slug, status), history, timestamps }
 }
 
 function display(value: number | string): string {
@@ -51,11 +73,11 @@ function display(value: number | string): string {
  * whole tile only takes a tint when the reading has left its good range, so the one
  * thing that needs attention is the one thing that stands out.
  */
-export const MetricCard = memo(function MetricCard({ slug, label, value, unit, status, statusLabel, history, stale = false }: MetricReading & {
+export const MetricCard = memo(function MetricCard({ slug, label, value, unit, status, statusLabel, history, timestamps, stale = false }: MetricReading & {
   /** Data is old: grey everything instead of showing a status colour. */
   stale?: boolean
 }) {
-  const trend = useMemo(() => getTrend(history), [history])
+  const trend = useMemo(() => getTrend(history, timestamps), [history, timestamps])
   const style = STATUS_COLORS[status]
   const tinted = !stale && status !== 'good'
   return (
@@ -76,7 +98,7 @@ export const MetricCard = memo(function MetricCard({ slug, label, value, unit, s
           <span className="text-sm text-zinc-400">{unit}</span>
         </div>
         <div className="hidden w-24 shrink-0 sm:block">
-          <Sparkline values={history} status={status} muted={stale} width={120} height={32} />
+          <Sparkline values={history} timestamps={timestamps} status={status} muted={stale} width={120} height={32} />
         </div>
       </div>
       <div className={`flex items-center gap-2 text-sm font-medium ${stale ? 'text-zinc-400' : style.textClass}`}>

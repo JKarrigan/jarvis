@@ -44,14 +44,25 @@ export interface ComputedAqi {
   color: StatusColor
 }
 
+/** The numeric fields history is averaged over (`NUMERIC_FIELDS` in lib/db.ts). */
+export type NumericMeasureKey =
+  | 'rco2' | 'pm01' | 'pm02' | 'pm10' | 'pm02Compensated' | 'pm003Count'
+  | 'atmp' | 'atmpCompensated' | 'rhum' | 'rhumCompensated' | 'tvocIndex' | 'noxIndex' | 'wifi'
+
+/** Per-field extremes of a downsampled bucket (only the fields its rows had). */
+export type MeasureExtremes = Partial<Pick<DeviceMeasures, NumericMeasureKey>>
+
 /**
  * One point of history. For ranges longer than 6 h `/api/history` returns
- * downsampled buckets: numeric fields are averages (non-integer) and
- * non-numeric fields such as `serialno` are absent.
+ * downsampled buckets: numeric fields are averages (non-integer), non-numeric
+ * fields such as `serialno` are absent, and `min` / `max` hold the extremes
+ * of the readings in the bucket. Raw readings never have `min` / `max`.
  */
 export interface HistoryEntry {
   timestamp: number
   measures: DeviceMeasures
+  min?: MeasureExtremes
+  max?: MeasureExtremes
 }
 
 export interface DailySummary {

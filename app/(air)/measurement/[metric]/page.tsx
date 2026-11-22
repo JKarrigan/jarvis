@@ -10,7 +10,7 @@ import { Chart } from '@/app/_components/Chart'
 import { usePolling } from '@/app/_components/PollingProvider'
 import type { HistoryEntry } from '@/lib/types'
 
-type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d'
+type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d' | '90d' | '1y'
 
 const RANGES: { key: RangeKey; label: string; ms: number }[] = [
   { key: '1h',  label: '1h',  ms: 60 * 60 * 1000 },
@@ -18,6 +18,8 @@ const RANGES: { key: RangeKey; label: string; ms: number }[] = [
   { key: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
   { key: '7d',  label: '7d',  ms: 7 * 24 * 60 * 60 * 1000 },
   { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
+  { key: '90d', label: '90d', ms: 90 * 24 * 60 * 60 * 1000 },
+  { key: '1y',  label: '1y',  ms: 365 * 24 * 60 * 60 * 1000 },
 ]
 
 const TEMP_UNITS = [{ key: 'C', label: '°C' }, { key: 'F', label: '°F' }] as const
@@ -54,32 +56,42 @@ export default function MetricDetailPage() {
   const isTemp = !!config?.isTempLike && tempUnit === 'F'
 
   // Value and timestamp kept together; compensated field preferred per row so
-  // older firmware without it still shows data.
-  const { values, timestamps } = useMemo(() => {
+  // older firmware without it still shows data. Downsampled rows also carry
+  // the bucket's min and max, read the same way (NaN for raw rows).
+  const { values, timestamps, low, high } = useMemo(() => {
     const values: number[] = []
     const timestamps: number[] = []
-    if (!config || loading || !result) return { values, timestamps }
+    const low: number[] = []
+    const high: number[] = []
+    if (!config || loading || !result) return { values, timestamps, low, high }
+    const unitOf = (v: number | null) => (v === null ? NaN : isTemp ? celsiusToF(v) : v)
     for (const h of result.rows) {
       const v = metricValue(h.measures, config)
       if (v === null) continue
-      values.push(isTemp ? celsiusToF(v) : v)
+      values.push(unitOf(v))
       timestamps.push(h.timestamp)
+      low.push(h.min ? unitOf(metricValue(h.min, config)) : NaN)
+      high.push(h.max ? unitOf(metricValue(h.max, config)) : NaN)
     }
-    return { values, timestamps }
+    return { values, timestamps, low, high }
   }, [config, result, loading, isTemp])
 
+  // Lowest and highest are the true extremes when the points are averages.
   const stats = useMemo(() => {
     if (values.length === 0) return null
     let min = Infinity
     let max = -Infinity
     let sum = 0
-    for (const v of values) {
-      if (v < min) min = v
-      if (v > max) max = v
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i]
+      const lo = Number.isFinite(low[i]) ? low[i] : v
+      const hi = Number.isFinite(high[i]) ? high[i] : v
+      if (lo < min) min = lo
+      if (hi > max) max = hi
       sum += v
     }
     return { latest: values[values.length - 1], avg: sum / values.length, min, max }
-  }, [values])
+  }, [values, low, high])
 
   const statusFn = useMemo(() => {
     if (!config) return undefined
@@ -156,7 +168,7 @@ export default function MetricDetailPage() {
 
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
         <SectionTitle className="text-lg">History</SectionTitle>
-        <Segmented options={RANGES} value={range} onChange={setRange} label="History range" />
+        <Segmented options={RANGES} value={range} onChange={setRange} label="History range" scroll />
       </div>
 
       {loading ? (
@@ -168,6 +180,8 @@ export default function MetricDetailPage() {
           label={config.label}
           unit={unit}
           values={values}
+          low={low}
+          high={high}
           timestamps={timestamps}
           status={currentStatus ?? 'good'}
           statusFn={statusFn}

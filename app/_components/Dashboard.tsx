@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import type { DeviceMeasures, HistoryEntry, DailySummary } from '@/lib/types'
+import type { DeviceMeasures, HistoryEntry, DailySummary, MeasureExtremes } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
 import {
   co2Status, pm25Status, pm1Status, pm10Status,
@@ -20,7 +20,7 @@ import { EventRow } from './events/EventBits'
 import { reviveEvent } from './PollingProvider'
 import { useNowMinute } from '@/lib/useNow'
 
-type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d'
+type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d' | '90d' | '1y'
 
 const TEMP_UNITS = [{ key: 'C', label: '°C' }, { key: 'F', label: '°F' }] as const
 
@@ -30,6 +30,8 @@ const RANGES: { key: RangeKey; label: string; ms: number }[] = [
   { key: '24h', label: '24h', ms: 24 * 60 * 60 * 1000 },
   { key: '7d',  label: '7d',  ms: 7 * 24 * 60 * 60 * 1000 },
   { key: '30d', label: '30d', ms: 30 * 24 * 60 * 60 * 1000 },
+  { key: '90d', label: '90d', ms: 90 * 24 * 60 * 60 * 1000 },
+  { key: '1y',  label: '1y',  ms: 365 * 24 * 60 * 60 * 1000 },
 ]
 
 /** Rows in "Events in this view"; the rest are one tap away in the log. */
@@ -70,24 +72,36 @@ function num(v: number | undefined): number {
   return typeof v === 'number' ? v : NaN
 }
 
-/** One numeric array per metric, built once per history change (compensated values per row). */
+const SERIES_KEYS = ['co2', 'pm25', 'pm1', 'pm10', 'temp', 'hum', 'tvoc', 'nox'] as const
+type SeriesKey = typeof SERIES_KEYS[number]
+
+/**
+ * One numeric array per metric, built once per history change (compensated
+ * values per row), plus `low` / `high` from each downsampled bucket's min and
+ * max through exactly the same transformation (NaN where a row has none).
+ */
 export function buildSeries(rows: HistoryEntry[], pmBatch: PmBatch | null, tempUnit: 'C' | 'F') {
   const n = rows.length
-  const s = {
-    ts: new Array<number>(n), co2: new Array<number>(n), pm25: new Array<number>(n), pm1: new Array<number>(n),
-    pm10: new Array<number>(n), temp: new Array<number>(n), hum: new Array<number>(n), tvoc: new Array<number>(n), nox: new Array<number>(n),
+  const read: Record<SeriesKey, (m: MeasureExtremes) => number> = {
+    co2: m => num(m.rco2),
+    pm25: m => effectivePm25(m, pmBatch),
+    pm1: m => num(m.pm01),
+    pm10: m => num(m.pm10),
+    temp: m => toUnit(num(m.atmpCompensated ?? m.atmp), tempUnit),
+    hum: m => num(m.rhumCompensated ?? m.rhum),
+    tvoc: m => num(m.tvocIndex),
+    nox: m => num(m.noxIndex),
   }
+  const arrays = () => Object.fromEntries(SERIES_KEYS.map(k => [k, new Array<number>(n)])) as Record<SeriesKey, number[]>
+  const s = { ts: new Array<number>(n), ...arrays(), low: arrays(), high: arrays() }
   for (let i = 0; i < n; i++) {
-    const m = rows[i].measures
-    s.ts[i] = rows[i].timestamp
-    s.co2[i] = num(m.rco2)
-    s.pm25[i] = effectivePm25(m, pmBatch)
-    s.pm1[i] = num(m.pm01)
-    s.pm10[i] = num(m.pm10)
-    s.temp[i] = toUnit(num(m.atmpCompensated ?? m.atmp), tempUnit)
-    s.hum[i] = num(m.rhumCompensated ?? m.rhum)
-    s.tvoc[i] = num(m.tvocIndex)
-    s.nox[i] = num(m.noxIndex)
+    const { timestamp, measures, min, max } = rows[i]
+    s.ts[i] = timestamp
+    for (const k of SERIES_KEYS) {
+      s[k][i] = read[k](measures)
+      s.low[k][i] = min ? read[k](min) : NaN
+      s.high[k][i] = max ? read[k](max) : NaN
+    }
   }
   return s
 }
@@ -152,14 +166,14 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
   const tempFn = tempStatusFn[tempUnit]
 
   const readings: MetricReading[] = [
-    metricReading('co2', 'CO₂', measures.rco2, 'ppm', co2Status(measures.rco2), cards.co2),
-    metricReading('pm25', 'PM2.5', fmtNum(pm02, 1), 'µg/m³', pm25Status(pm02), cards.pm25),
-    metricReading('pm1', 'PM1', fmtNum(measures.pm01, 1), 'µg/m³', pm1Status(measures.pm01), cards.pm1),
-    metricReading('pm10', 'PM10', fmtNum(measures.pm10, 1), 'µg/m³', pm10Status(measures.pm10), cards.pm10),
-    metricReading('temperature', 'Temperature', fmtNum(toUnit(temp, tempUnit), 1), `°${tempUnit}`, tempStatus(temp), cards.temp),
-    metricReading('humidity', 'Humidity', fmtNum(hum, 0), '%', humidityStatus(hum), cards.hum),
-    metricReading('tvoc', 'TVOC', measures.tvocIndex, 'index', tvocStatus(measures.tvocIndex), cards.tvoc),
-    metricReading('nox', 'NOx', measures.noxIndex, 'index', noxStatus(measures.noxIndex), cards.nox),
+    metricReading('co2', 'CO₂', measures.rco2, 'ppm', co2Status(measures.rco2), cards.co2, cards.ts),
+    metricReading('pm25', 'PM2.5', fmtNum(pm02, 1), 'µg/m³', pm25Status(pm02), cards.pm25, cards.ts),
+    metricReading('pm1', 'PM1', fmtNum(measures.pm01, 1), 'µg/m³', pm1Status(measures.pm01), cards.pm1, cards.ts),
+    metricReading('pm10', 'PM10', fmtNum(measures.pm10, 1), 'µg/m³', pm10Status(measures.pm10), cards.pm10, cards.ts),
+    metricReading('temperature', 'Temperature', fmtNum(toUnit(temp, tempUnit), 1), `°${tempUnit}`, tempStatus(temp), cards.temp, cards.ts),
+    metricReading('humidity', 'Humidity', fmtNum(hum, 0), '%', humidityStatus(hum), cards.hum, cards.ts),
+    metricReading('tvoc', 'TVOC', measures.tvocIndex, 'index', tvocStatus(measures.tvocIndex), cards.tvoc, cards.ts),
+    metricReading('nox', 'NOx', measures.noxIndex, 'index', noxStatus(measures.noxIndex), cards.nox, cards.ts),
   ]
 
   const deviceInfo = [
@@ -205,7 +219,7 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
       <section className="mt-4 flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <SectionTitle className="text-lg">History</SectionTitle>
-          <Segmented options={RANGES} value={range} onChange={setRange} label="History range" />
+          <Segmented options={RANGES} value={range} onChange={setRange} label="History range" scroll />
           {loadingChart && <Spinner className="h-4 w-4" />}
         </div>
 
@@ -229,14 +243,14 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
 
         {series.ts.length > 1 ? (
           <>
-            <Chart label="CO₂" unit="ppm" values={series.co2} timestamps={series.ts} status={co2Status(measures.rco2)} statusFn={co2Status} events={chartEvents} muted={stale} />
-            <Chart label="PM2.5" unit="μg/m³" values={series.pm25} timestamps={series.ts} status={pm25Status(pm02)} statusFn={pm25Status} events={chartEvents} muted={stale} />
-            <Chart label="PM1" unit="μg/m³" values={series.pm1} timestamps={series.ts} status={pm1Status(measures.pm01)} statusFn={pm1Status} events={chartEvents} muted={stale} />
-            <Chart label="PM10" unit="μg/m³" values={series.pm10} timestamps={series.ts} status={pm10Status(measures.pm10)} statusFn={pm10Status} events={chartEvents} muted={stale} />
-            <Chart label="Temperature" unit={`°${tempUnit}`} values={series.temp} timestamps={series.ts} status={tempStatus(temp)} statusFn={tempFn} muted={stale} />
-            <Chart label="Humidity" unit="%" values={series.hum} timestamps={series.ts} status={humidityStatus(hum)} statusFn={humidityStatus} muted={stale} />
-            <Chart label="TVOC" unit="idx" values={series.tvoc} timestamps={series.ts} status={tvocStatus(measures.tvocIndex)} statusFn={tvocStatus} events={chartEvents} muted={stale} />
-            <Chart label="NOx" unit="idx" values={series.nox} timestamps={series.ts} status={noxStatus(measures.noxIndex)} statusFn={noxStatus} events={chartEvents} muted={stale} />
+            <Chart label="CO₂" unit="ppm" values={series.co2} low={series.low.co2} high={series.high.co2} timestamps={series.ts} status={co2Status(measures.rco2)} statusFn={co2Status} events={chartEvents} muted={stale} />
+            <Chart label="PM2.5" unit="μg/m³" values={series.pm25} low={series.low.pm25} high={series.high.pm25} timestamps={series.ts} status={pm25Status(pm02)} statusFn={pm25Status} events={chartEvents} muted={stale} />
+            <Chart label="PM1" unit="μg/m³" values={series.pm1} low={series.low.pm1} high={series.high.pm1} timestamps={series.ts} status={pm1Status(measures.pm01)} statusFn={pm1Status} events={chartEvents} muted={stale} />
+            <Chart label="PM10" unit="μg/m³" values={series.pm10} low={series.low.pm10} high={series.high.pm10} timestamps={series.ts} status={pm10Status(measures.pm10)} statusFn={pm10Status} events={chartEvents} muted={stale} />
+            <Chart label="Temperature" unit={`°${tempUnit}`} values={series.temp} low={series.low.temp} high={series.high.temp} timestamps={series.ts} status={tempStatus(temp)} statusFn={tempFn} muted={stale} />
+            <Chart label="Humidity" unit="%" values={series.hum} low={series.low.hum} high={series.high.hum} timestamps={series.ts} status={humidityStatus(hum)} statusFn={humidityStatus} muted={stale} />
+            <Chart label="TVOC" unit="idx" values={series.tvoc} low={series.low.tvoc} high={series.high.tvoc} timestamps={series.ts} status={tvocStatus(measures.tvocIndex)} statusFn={tvocStatus} events={chartEvents} muted={stale} />
+            <Chart label="NOx" unit="idx" values={series.nox} low={series.low.nox} high={series.high.nox} timestamps={series.ts} status={noxStatus(measures.noxIndex)} statusFn={noxStatus} events={chartEvents} muted={stale} />
           </>
         ) : !loadingChart && (
           <EmptyState title="No data for this period" />

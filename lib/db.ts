@@ -1,12 +1,21 @@
 import 'server-only'
 import Database from 'better-sqlite3'
 import path from 'path'
-import type { DeviceMeasures, HistoryEntry } from './types'
+import type { DeviceMeasures, HistoryEntry, MeasureExtremes, NumericMeasureKey } from './types'
 import type { AirGradientReading, AirQualityEvent, EventTrace } from './eventTypes'
 import { DETECTION_TIMING, SEVERITY_RANK, mergeEvents, rederiveEvent, slotOf } from './eventDetection'
 import { SEVERITY_LIMITS } from './eventInfo'
 
 const DB_PATH = process.env.DB_PATH ?? path.join(process.cwd(), 'airgradient.db')
+
+/** Numeric fields averaged when history is downsampled (and summarised in `readings_5m`). */
+const NUMERIC_FIELDS = [
+  'rco2', 'pm01', 'pm02', 'pm10', 'pm02Compensated', 'pm003Count',
+  'atmp', 'atmpCompensated', 'rhum', 'rhumCompensated', 'tvocIndex', 'noxIndex', 'wifi',
+] as const satisfies readonly NumericMeasureKey[]
+
+/** `<field>_avg`, `<field>_min`, `<field>_max` for every numeric field, in that order. */
+const ROLLUP_STAT_COLUMNS = NUMERIC_FIELDS.flatMap(f => [`${f}_avg`, `${f}_min`, `${f}_max`])
 
 // Module-level singleton — re-used across hot reloads in dev via globalThis
 const g = globalThis as typeof globalThis & { __ag_db?: Database.Database }
@@ -53,22 +62,45 @@ export function getDb(): Database.Database {
     if (!eventColumns.some(c => c.name === 'sustained')) db.exec('ALTER TABLE events ADD COLUMN sustained TEXT')
     g.__ag_db = db
   }
+  if (!rollupSchemaReady) {
+    ensureRollupSchema(g.__ag_db)
+    rollupSchemaReady = true
+  }
   return g.__ag_db
 }
 
-// ─── Readings ────────────────────────────────────────────────────────────────
+/** Per module evaluation, so a dev server that keeps its connection across hot reloads gets the table too. */
+let rollupSchemaReady = false
 
-/** Numeric fields averaged when history is downsampled. */
-const NUMERIC_FIELDS = [
-  'rco2', 'pm01', 'pm02', 'pm10', 'pm02Compensated', 'pm003Count',
-  'atmp', 'atmpCompensated', 'rhum', 'rhumCompensated', 'tvocIndex', 'noxIndex', 'wifi',
-] as const
+function ensureRollupSchema(db: Database.Database): void {
+  db.exec(`
+    -- Five-minute summary of the readings (complete buckets only), kept long after the raw rows.
+    CREATE TABLE IF NOT EXISTS readings_5m (
+      bucket INTEGER PRIMARY KEY,
+      n      INTEGER NOT NULL,
+      t_avg  INTEGER NOT NULL,
+      ${ROLLUP_STAT_COLUMNS.map(c => `"${c}" REAL`).join(',\n      ')}
+    );
+  `)
+  // A field added to NUMERIC_FIELDS later gets its columns on the next start.
+  const have = new Set((db.prepare('PRAGMA table_info(readings_5m)').all() as { name: string }[]).map(c => c.name))
+  for (const c of ROLLUP_STAT_COLUMNS) if (!have.has(c)) db.exec(`ALTER TABLE readings_5m ADD COLUMN "${c}" REAL`)
+}
+
+// ─── Readings ────────────────────────────────────────────────────────────────
 
 /** Spans up to this length are returned raw (≤ ~2 160 rows at 10 s polling). */
 const RAW_SPAN_MS = 6 * 60 * 60 * 1000
 /** Longer spans are averaged into at most this many buckets. */
 export const MAX_HISTORY_POINTS = 800
 const MIN_BUCKET_MS = 10_000
+/** `readings_5m` bucket size; history buckets at least this long are read from it. */
+export const ROLLUP_MS = 5 * 60 * 1000
+/** A five-minute bucket is complete (and written) once its end is this far in the past. */
+const ROLLUP_SETTLE_MS = 60_000
+/** Raw time summarised per `rollupReadings` call (~8 640 rows), so the event loop stays free. */
+const ROLLUP_CHUNK_MS = 24 * 60 * 60 * 1000
+const MINUTE_MS = 60_000
 
 /**
  * Returns the payload as DeviceMeasures when it is a plain object with finite
@@ -117,16 +149,19 @@ export function getReadingsByDateRange(from: number, to: number): HistoryEntry[]
 }
 
 /**
- * Downsampled buckets that are finished (their time span is entirely in the
- * past) never change, so they are cached per bucket size: a dashboard that
- * refreshes a 30-day chart every minute only re-aggregates the newest bucket(s)
- * instead of re-reading 259 k JSON rows each time. `null` marks an empty bucket.
+ * Raw-row buckets that are finished (their time span is entirely in the past)
+ * never change, so they are cached per bucket size: a dashboard that refreshes
+ * a 24-hour chart every minute only re-aggregates the newest bucket(s).
+ * `null` marks an empty bucket.
  */
-const gh = globalThis as typeof globalThis & { __ag_hist?: Map<number, Map<number, HistoryEntry | null>> }
+const gh = globalThis as typeof globalThis & {
+  __ag_histBuckets?: Map<number, Map<number, HistoryEntry | null>>
+  __ag_histMinutes?: Map<number, HistoryEntry | null>
+}
 const MAX_CACHED_BUCKET_SIZES = 8
 
 function bucketCache(bucket: number): Map<number, HistoryEntry | null> {
-  const all = (gh.__ag_hist ??= new Map())
+  const all = (gh.__ag_histBuckets ??= new Map())
   let m = all.get(bucket)
   if (!m) {
     if (all.size >= MAX_CACHED_BUCKET_SIZES) all.delete(all.keys().next().value as number)
@@ -136,19 +171,130 @@ function bucketCache(bucket: number): Map<number, HistoryEntry | null> {
   return m
 }
 
+// ─── Downsampling ────────────────────────────────────────────────────────────
+
+/** Running totals for one output bucket; raw rows and rollup rows both add to it. */
+interface BucketAcc {
+  /** Readings in the bucket and the sum of their timestamps' mean × count. */
+  n: number
+  tSum: number
+  /** Per field (NUMERIC_FIELDS order): sum of values, how many, extremes. */
+  sum: number[]
+  cnt: number[]
+  min: number[]
+  max: number[]
+}
+
+function newAcc(): BucketAcc {
+  const F = NUMERIC_FIELDS.length
+  return {
+    n: 0, tSum: 0,
+    sum: new Array<number>(F).fill(0), cnt: new Array<number>(F).fill(0),
+    min: new Array<number>(F).fill(Infinity), max: new Array<number>(F).fill(-Infinity),
+  }
+}
+
 /**
- * History for [from, to]. Spans up to 6 h come back raw; longer spans are
- * averaged in SQL into buckets of max(10 s, span / 800), so at most ~800 points
- * are returned. Buckets are aligned to multiples of the bucket size (the first
- * one may start up to one bucket before `from`). A bucket's timestamp is the
- * mean timestamp of its rows (so gaps stay visible) and its measures hold the
- * average of each numeric field; non-numeric fields are omitted.
+ * One aggregate row (from raw readings or from `readings_5m`): `n` readings
+ * with mean timestamp `t`, and per field `<f>_avg` over `<f>_n` readings plus
+ * `<f>_min` / `<f>_max`.
+ */
+type AggRow = { idx: number; n: number; t: number } & Record<string, number | null>
+
+function addAgg(acc: Map<number, BucketAcc>, rows: AggRow[]): void {
+  for (const r of rows) {
+    let a = acc.get(r.idx)
+    if (!a) acc.set(r.idx, (a = newAcc()))
+    a.n += r.n
+    a.tSum += r.t * r.n
+    NUMERIC_FIELDS.forEach((f, i) => {
+      const avg = r[`${f}_avg`]
+      const cnt = r[`${f}_n`]
+      if (typeof avg !== 'number' || !Number.isFinite(avg) || !cnt) return
+      a.sum[i] += avg * cnt
+      a.cnt[i] += cnt
+      const lo = r[`${f}_min`]
+      const hi = r[`${f}_max`]
+      if (typeof lo === 'number' && lo < a.min[i]) a.min[i] = lo
+      if (typeof hi === 'number' && hi > a.max[i]) a.max[i] = hi
+    })
+  }
+}
+
+function accToEntry(a: BucketAcc): HistoryEntry {
+  const measures: Record<string, number> = {}
+  const min: MeasureExtremes = {}
+  const max: MeasureExtremes = {}
+  NUMERIC_FIELDS.forEach((f, i) => {
+    if (!a.cnt[i]) return
+    measures[f] = a.sum[i] / a.cnt[i]
+    if (Number.isFinite(a.min[i])) min[f] = a.min[i]
+    if (Number.isFinite(a.max[i])) max[f] = a.max[i]
+  })
+  return { timestamp: Math.round(a.tSum / a.n), measures: measures as unknown as DeviceMeasures, min, max }
+}
+
+/** Reads each field out of the JSON once per row (a MATERIALIZED CTE is never inlined into every aggregate). */
+function readingsCte(): string {
+  const cols = NUMERIC_FIELDS.map(f => `json_extract(data, '$.${f}') AS "${f}"`).join(', ')
+  return `WITH r AS MATERIALIZED (SELECT timestamp, ${cols} FROM readings WHERE timestamp >= ? AND timestamp < ?)`
+}
+
+/** Raw readings in [from, to) aggregated into buckets of `bucket` ms (an integer). */
+function aggregateRaw(from: number, to: number, bucket: number): AggRow[] {
+  if (!(to > from)) return []
+  const stats = NUMERIC_FIELDS.map(f =>
+    `AVG("${f}") AS "${f}_avg", COUNT("${f}") AS "${f}_n", MIN("${f}") AS "${f}_min", MAX("${f}") AS "${f}_max"`,
+  ).join(',\n           ')
+  // `bucket` is written into the SQL as an integer literal: integer division
+  // (better-sqlite3 would bind a JS number as REAL).
+  return getDb().prepare(`
+    ${readingsCte()}
+    SELECT timestamp / ${Math.trunc(bucket)} AS idx, COUNT(*) AS n, AVG(timestamp) AS t,
+           ${stats}
+    FROM r GROUP BY idx
+  `).all(from, to) as AggRow[]
+}
+
+/** `readings_5m` rows in [from, to) combined into buckets of `bucket` ms (a multiple of 5 min). */
+function aggregateRollups(from: number, to: number, bucket: number): AggRow[] {
+  if (!(to > from)) return []
+  // Each field's average is weighted by the readings of the rows that have it.
+  const stats = NUMERIC_FIELDS.map(f => {
+    const w = `SUM(CASE WHEN "${f}_avg" IS NOT NULL THEN n END)`
+    return `SUM("${f}_avg" * n) / ${w} AS "${f}_avg", ${w} AS "${f}_n", MIN("${f}_min") AS "${f}_min", MAX("${f}_max") AS "${f}_max"`
+  }).join(',\n           ')
+  return getDb().prepare(`
+    SELECT bucket / ${Math.trunc(bucket)} AS idx, SUM(n) AS n,
+           CAST(SUM(t_avg * n) AS REAL) / SUM(n) AS t,
+           ${stats}
+    FROM readings_5m WHERE bucket >= ? AND bucket < ? GROUP BY idx
+  `).all(from, to) as AggRow[]
+}
+
+/**
+ * History for [from, to]:
+ * - spans up to 6 h: the raw readings;
+ * - longer spans: buckets of max(10 s, span / 800), so at most ~800 points.
+ *   Buckets shorter than 5 min are averaged from the raw readings (finished
+ *   ones cached in memory); longer ones are rounded up to a multiple of 5 min
+ *   and combined from `readings_5m`, plus the raw readings newer than the last
+ *   rolled bucket (the current five minutes, or everything a first backfill
+ *   has not reached yet).
+ * Buckets are aligned to multiples of the bucket size (the first one may start
+ * up to one bucket before `from`). A bucket's timestamp is the mean timestamp
+ * of its readings (so gaps stay visible), its measures hold the average of
+ * each numeric field and `min` / `max` their extremes; non-numeric fields are
+ * omitted.
  */
 export function getHistory(from: number, to: number, maxPoints = MAX_HISTORY_POINTS, now = Date.now()): HistoryEntry[] {
   const span = to - from
   if (span <= RAW_SPAN_MS) return getReadingsByDateRange(from, to)
 
-  const bucket = Math.max(MIN_BUCKET_MS, Math.ceil(span / maxPoints))
+  const size = Math.max(MIN_BUCKET_MS, Math.ceil(span / maxPoints))
+  if (size >= ROLLUP_MS) return getRollupHistory(from, to, Math.ceil(size / ROLLUP_MS) * ROLLUP_MS)
+
+  const bucket = size
   const firstIdx = Math.floor(from / bucket)
   const lastIdx = Math.floor(to / bucket)
   const isFinished = (idx: number) => (idx + 1) * bucket <= now
@@ -160,19 +306,65 @@ export function getHistory(from: number, to: number, maxPoints = MAX_HISTORY_POI
 
   const fresh = new Map<number, HistoryEntry>()
   if (queryIdx <= lastIdx) {
-    const cols = NUMERIC_FIELDS.map(f => `AVG(json_extract(data, '$.${f}')) AS "${f}"`).join(',\n             ')
-    const rows = getDb()
-      .prepare(`
-        SELECT CAST(timestamp / ? AS INTEGER) AS idx,
-               CAST(AVG(timestamp) AS INTEGER) AS t,
-               ${cols}
-        FROM readings
-        WHERE timestamp >= ? AND timestamp < ?
-        -- better-sqlite3 binds JS numbers as REAL, so cast to get integer buckets
-        GROUP BY CAST(timestamp / ? AS INTEGER)
-      `)
-      .all(bucket, queryIdx * bucket, (lastIdx + 1) * bucket, bucket) as ({ idx: number; t: number } & Record<string, number | null>)[]
+    const acc = new Map<number, BucketAcc>()
+    addAgg(acc, aggregateRaw(queryIdx * bucket, (lastIdx + 1) * bucket, bucket))
+    for (const [idx, a] of acc) fresh.set(idx, accToEntry(a))
+    for (let idx = queryIdx; idx <= lastIdx; idx++) {
+      if (isFinished(idx)) cache.set(idx, fresh.get(idx) ?? null)
+    }
+    // Keep the cache to the window in use.
+    for (const idx of cache.keys()) if (idx < firstIdx) cache.delete(idx)
+  }
 
+  const out: HistoryEntry[] = []
+  for (let idx = firstIdx; idx <= lastIdx; idx++) {
+    const e = idx >= queryIdx ? fresh.get(idx) : cache.get(idx)
+    if (e) out.push(e)
+  }
+  return out
+}
+
+function getRollupHistory(from: number, to: number, bucket: number): HistoryEntry[] {
+  const firstIdx = Math.floor(from / bucket)
+  const lastIdx = Math.floor(to / bucket)
+  const lo = firstIdx * bucket
+  const hi = (lastIdx + 1) * bucket
+  // Rolled up oldest to newest, so everything after the last rolled bucket is raw only.
+  const last = getLastRollupBucket()
+  const tail = last == null ? lo : Math.max(lo, last + ROLLUP_MS)
+
+  const acc = new Map<number, BucketAcc>()
+  addAgg(acc, aggregateRollups(lo, Math.min(hi, tail), bucket))
+  addAgg(acc, aggregateRaw(tail, hi, bucket))
+  return [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([, a]) => accToEntry(a))
+}
+
+/**
+ * The last `minutes` minutes of readings, up to the newest one, as one-minute
+ * averages (the newest minute is usually partial). Each entry's timestamp is
+ * that of the LAST reading in its minute, so a client appending live readings
+ * newer than it never counts one twice. Values are rounded to 2 decimals;
+ * there is no `min` / `max`. Finished minutes are cached.
+ */
+export function getRecentMinutes(minutes: number, now = Date.now()): HistoryEntry[] {
+  const latest = getLatestReadingTimestamp()
+  if (latest == null || minutes < 1) return []
+  const lastIdx = Math.floor(latest / MINUTE_MS)
+  const firstIdx = lastIdx - Math.floor(minutes) + 1
+  const cache = (gh.__ag_histMinutes ??= new Map())
+  const isFinished = (idx: number) => (idx + 1) * MINUTE_MS <= now
+
+  let queryIdx = firstIdx
+  while (queryIdx <= lastIdx && isFinished(queryIdx) && cache.has(queryIdx)) queryIdx++
+
+  const fresh = new Map<number, HistoryEntry>()
+  if (queryIdx <= lastIdx) {
+    const avgs = NUMERIC_FIELDS.map(f => `ROUND(AVG("${f}"), 2) AS "${f}"`).join(', ')
+    const rows = getDb().prepare(`
+      ${readingsCte()}
+      SELECT timestamp / ${MINUTE_MS} AS idx, MAX(timestamp) AS t, ${avgs}
+      FROM r GROUP BY idx
+    `).all(queryIdx * MINUTE_MS, (lastIdx + 1) * MINUTE_MS) as ({ idx: number; t: number } & Record<string, number | null>)[]
     for (const r of rows) {
       const measures: Record<string, number> = {}
       for (const f of NUMERIC_FIELDS) {
@@ -184,8 +376,8 @@ export function getHistory(from: number, to: number, maxPoints = MAX_HISTORY_POI
     for (let idx = queryIdx; idx <= lastIdx; idx++) {
       if (isFinished(idx)) cache.set(idx, fresh.get(idx) ?? null)
     }
-    // Keep the cache to the window in use.
-    for (const idx of cache.keys()) if (idx < firstIdx) cache.delete(idx)
+    // A day of minutes is the most anyone asks for.
+    for (const idx of cache.keys()) if (idx <= lastIdx - 1440) cache.delete(idx)
   }
 
   const out: HistoryEntry[] = []
@@ -257,23 +449,91 @@ export function* iterateDetectorReadings(from = 0, to = Number.MAX_SAFE_INTEGER)
 }
 
 /**
- * Timestamp + PM2.5 for the daily summary, preferring the firmware-compensated
- * value when the row has one.
+ * Raw readings are deleted once older than `keepMs`, but never before they
+ * are rolled up: only rows before the end of the last rolled bucket go (none
+ * while nothing is rolled up yet).
  */
-export function getPmSeries(from: number): { timestamp: number; pm: number | null }[] {
-  return getDb()
-    .prepare(`
-      SELECT timestamp,
-             COALESCE(json_extract(data, '$.pm02Compensated'), json_extract(data, '$.pm02')) AS pm
-      FROM readings
-      WHERE timestamp >= ?
-      ORDER BY timestamp ASC
-    `)
-    .all(from) as { timestamp: number; pm: number | null }[]
+export function pruneReadings(keepMs: number, now = Date.now()): number {
+  const last = getLastRollupBucket()
+  if (last == null) return 0
+  const cutoff = Math.min(now - keepMs, last + ROLLUP_MS)
+  return getDb().prepare('DELETE FROM readings WHERE timestamp < ?').run(cutoff).changes
 }
 
-export function pruneReadings(keepMs: number, now = Date.now()): number {
-  return getDb().prepare('DELETE FROM readings WHERE timestamp < ?').run(now - keepMs).changes
+// ─── Five-minute rollup ──────────────────────────────────────────────────────
+
+/** Start of the newest bucket in `readings_5m`, or null when it is empty. */
+export function getLastRollupBucket(): number | null {
+  return (getDb().prepare('SELECT MAX(bucket) AS b FROM readings_5m').get() as { b: number | null }).b
+}
+
+/** Buckets starting before this are complete: their end is at least 60 s in the past. */
+export function rollupCompleteBefore(now = Date.now()): number {
+  return Math.floor((now - ROLLUP_SETTLE_MS) / ROLLUP_MS) * ROLLUP_MS
+}
+
+export interface RollupResult {
+  /** Buckets written by this call. */
+  written: number
+  /** More complete buckets are waiting; call again. */
+  more: boolean
+  /** Every complete bucket before this time is now in the table. */
+  through: number
+}
+
+/**
+ * Summarises the next stretch of raw readings into `readings_5m`: complete
+ * five-minute buckets only, oldest first, from the bucket after the newest one
+ * stored (or the oldest reading), at most a day of readings per call. Empty
+ * buckets get no row. One `INSERT OR REPLACE … SELECT … GROUP BY`, so running
+ * it twice changes nothing.
+ */
+export function rollupReadings(now = Date.now(), chunkMs = ROLLUP_CHUNK_MS): RollupResult {
+  const db = getDb()
+  const completeEnd = rollupCompleteBefore(now)
+  const last = getLastRollupBucket()
+  let start = last == null ? 0 : last + ROLLUP_MS
+  // Skip straight over a stretch without readings (device off for a week, say).
+  const next = (db.prepare('SELECT MIN(timestamp) AS t FROM readings WHERE timestamp >= ?').get(start) as { t: number | null }).t
+  if (next == null) return { written: 0, more: false, through: completeEnd }
+  start = Math.max(start, Math.floor(next / ROLLUP_MS) * ROLLUP_MS)
+  if (start >= completeEnd) return { written: 0, more: false, through: completeEnd }
+
+  const end = Math.min(completeEnd, start + chunkMs)
+  const cols = ROLLUP_STAT_COLUMNS.map(c => `"${c}"`).join(', ')
+  const stats = NUMERIC_FIELDS.map(f => `AVG("${f}"), MIN("${f}"), MAX("${f}")`).join(', ')
+  const written = db.prepare(`
+    INSERT OR REPLACE INTO readings_5m (bucket, n, t_avg, ${cols})
+    ${readingsCte()}
+    SELECT (timestamp / ${ROLLUP_MS}) * ${ROLLUP_MS}, COUNT(*), CAST(ROUND(AVG(timestamp)) AS INTEGER), ${stats}
+    FROM r GROUP BY timestamp / ${ROLLUP_MS}
+  `).run(start, end).changes
+  const more = end < completeEnd &&
+    db.prepare('SELECT 1 FROM readings WHERE timestamp >= ? AND timestamp < ? LIMIT 1').get(end, completeEnd) !== undefined
+  return { written, more, through: more ? end : completeEnd }
+}
+
+/** Deletes rollup rows whose bucket started more than `keepMs` ago. */
+export function pruneRollups(keepMs: number, now = Date.now()): number {
+  return getDb().prepare('DELETE FROM readings_5m WHERE bucket < ?').run(now - keepMs).changes
+}
+
+/** One `readings_5m` row as the daily summary needs it (PM2.5: compensated when the firmware reports it). */
+export interface PmRollupRow {
+  bucket: number
+  n: number
+  t: number
+  avg: number | null
+  max: number | null
+}
+
+export function getPmRollups(from: number): PmRollupRow[] {
+  return getDb().prepare(`
+    SELECT bucket, n, t_avg AS t,
+           CASE WHEN pm02Compensated_avg IS NOT NULL THEN pm02Compensated_avg ELSE pm02_avg END AS avg,
+           CASE WHEN pm02Compensated_avg IS NOT NULL THEN pm02Compensated_max ELSE pm02_max END AS max
+    FROM readings_5m WHERE bucket >= ? ORDER BY bucket ASC
+  `).all(from) as PmRollupRow[]
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────

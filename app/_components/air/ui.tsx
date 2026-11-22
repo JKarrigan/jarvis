@@ -81,16 +81,22 @@ export function StatusDot({ status, muted = false, className = '' }: { status: S
 }
 
 /** Segmented control (range pickers, unit switches). */
-export function Segmented<T extends string>({ options, value, onChange, label, disabled = false }: {
+export function Segmented<T extends string>({ options, value, onChange, label, disabled = false, scroll = false }: {
   options: readonly { key: T; label: string }[]
   value: T
   onChange: (key: T) => void
   /** Accessible name for the group. */
   label: string
   disabled?: boolean
+  /** Many options: never wider than its row, scrolls sideways instead (phones). */
+  scroll?: boolean
 }) {
   return (
-    <div role="group" aria-label={label} className="inline-flex gap-1 rounded-xl bg-air-raised p-1">
+    <div
+      role="group"
+      aria-label={label}
+      className={`inline-flex gap-1 rounded-xl bg-air-raised p-1 ${scroll ? 'scrollbar-hide max-w-full overflow-x-auto' : ''}`}
+    >
       {options.map(o => (
         <button
           key={o.key}
@@ -98,7 +104,7 @@ export function Segmented<T extends string>({ options, value, onChange, label, d
           onClick={() => onChange(o.key)}
           aria-pressed={value === o.key}
           disabled={disabled}
-          className={`min-h-8 rounded-lg px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-50 ${
+          className={`min-h-8 shrink-0 rounded-lg px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 disabled:opacity-50 ${
             value === o.key ? 'bg-air-active font-semibold text-white' : 'text-zinc-400 hover:text-white'
           }`}
         >

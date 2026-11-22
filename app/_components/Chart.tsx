@@ -55,11 +55,21 @@ interface ChartProps {
   events?: AirQualityEvent[]
   /** Data is stale: draw in neutral grey. */
   muted?: boolean
+  /**
+   * Per-point minimum and maximum (downsampled buckets), aligned with `values`.
+   * When both are given a band is drawn between them behind the line; points
+   * without a finite pair just have no band.
+   */
+  low?: number[]
+  high?: number[]
 }
 
 interface Geometry {
   vals: number[]
   ts: number[]
+  /** Band edges aligned with `vals` (NaN where there is none); null without a band. */
+  lows: number[] | null
+  highs: number[] | null
   tMin: number
   tMax: number
   lo: number
@@ -69,23 +79,38 @@ interface Geometry {
   dayBoundaries: number[]
 }
 
-function buildGeometry(values: number[], timestamps: number[]): Geometry | null {
+function buildGeometry(values: number[], timestamps: number[], low?: number[], high?: number[]): Geometry | null {
   // Drop entries where the value is missing or non-finite so downstream math never sees NaN
   const vals: number[] = []
   const ts: number[] = []
+  const banded = !!low && !!high
+  const lows: number[] = []
+  const highs: number[] = []
   for (let i = 0; i < values.length; i++) {
     const v = values[i]
     const t = timestamps[i]
-    if (Number.isFinite(v) && Number.isFinite(t)) { vals.push(v); ts.push(t) }
+    if (!Number.isFinite(v) || !Number.isFinite(t)) continue
+    vals.push(v)
+    ts.push(t)
+    if (banded) {
+      const lo = low[i]
+      const hi = high[i]
+      const ok = Number.isFinite(lo) && Number.isFinite(hi)
+      lows.push(ok ? Math.min(lo, v) : NaN)
+      highs.push(ok ? Math.max(hi, v) : NaN)
+    }
   }
   if (vals.length < 2) return null
 
   // Loops, not Math.min(...vals): spreading tens of thousands of values throws RangeError.
+  // The band is part of the scale, so it is never clipped.
   let min = Infinity
   let max = -Infinity
-  for (const v of vals) {
-    if (v < min) min = v
-    if (v > max) max = v
+  for (let i = 0; i < vals.length; i++) {
+    const lo = banded && Number.isFinite(lows[i]) ? lows[i] : vals[i]
+    const hi = banded && Number.isFinite(highs[i]) ? highs[i] : vals[i]
+    if (lo < min) min = lo
+    if (hi > max) max = hi
   }
   const pad = (max - min) * 0.12 || 1
 
@@ -93,13 +118,19 @@ function buildGeometry(values: number[], timestamps: number[]): Geometry | null 
   const tMax = ts[ts.length - 1] > tMin ? ts[ts.length - 1] : tMin + 1
 
   // Gap threshold from the typical spacing (works for raw 10 s data and for buckets).
-  const deltas = ts.slice(1).map((t, i) => t - ts[i]).sort((a, b) => a - b)
-  const typical = deltas[deltas.length >> 1] ?? 0
-  const gapMs = Math.max(MIN_GAP_MS, typical * 5)
+  // Where the local spacing is wider than the typical one (minute averages
+  // followed by live 10 s readings on the Overview) the local one counts, so
+  // only a real hole splits the line.
+  const deltas = ts.slice(1).map((t, i) => t - ts[i])
+  const sorted = [...deltas].sort((a, b) => a - b)
+  const typical = sorted[sorted.length >> 1] ?? 0
   const segments: [number, number][] = []
   let segStart = 0
   for (let i = 1; i < ts.length; i++) {
-    if (ts[i] - ts[i - 1] > gapMs) {
+    const d = deltas[i - 1]
+    const local = Math.min(deltas[i - 2] ?? Infinity, deltas[i] ?? Infinity)
+    const gapMs = Math.max(MIN_GAP_MS, 5 * Math.max(typical, Number.isFinite(local) ? local : 0))
+    if (d > gapMs) {
       segments.push([segStart, i - 1])
       segStart = i
     }
@@ -115,19 +146,22 @@ function buildGeometry(values: number[], timestamps: number[]): Geometry | null 
     prevDay = day
   }
 
-  return { vals, ts, tMin, tMax, lo: min - pad, hi: max + pad, segments, dayBoundaries }
+  return {
+    vals, ts, lows: banded ? lows : null, highs: banded ? highs : null,
+    tMin, tMax, lo: min - pad, hi: max + pad, segments, dayBoundaries,
+  }
 }
 
-export const Chart = memo(function Chart({ label, unit, values, timestamps, status, statusFn, events, muted = false }: ChartProps) {
+export const Chart = memo(function Chart({ label, unit, values, timestamps, status, statusFn, events, muted = false, low, high }: ChartProps) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [colorMode, setColorMode] = useState<'uniform' | 'by-range'>('uniform')
   const [hoveredEvent, setHoveredEvent] = useState<AirQualityEvent | null>(null)
 
-  const geo = useMemo(() => buildGeometry(values, timestamps), [values, timestamps])
+  const geo = useMemo(() => buildGeometry(values, timestamps, low, high), [values, timestamps, low, high])
 
   const drawn = useMemo(() => {
     if (!geo) return null
-    const { vals, ts, tMin, tMax, lo, hi, segments } = geo
+    const { vals, ts, lows, highs, tMin, tMax, lo, hi, segments } = geo
     // x is proportional to time, so gaps and event overlays line up.
     const toX = (t: number) => PAD.l + ((t - tMin) / (tMax - tMin)) * CW
     const toY = (v: number) => PAD.t + CH - ((v - lo) / (hi - lo)) * CH
@@ -141,7 +175,28 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
       lines.push(pts)
       area += `M ${toX(ts[a]).toFixed(1)},${base} L ${pts.replaceAll(' ', ' L ')} L ${toX(ts[b]).toFixed(1)},${base} Z `
     }
-    return { toX, toY, lines, area }
+
+    // Min-to-max band: one closed shape per run of points that have both edges, within each segment.
+    let band = ''
+    if (lows && highs) {
+      for (const [a, b] of segments) {
+        let i = a
+        while (i <= b) {
+          if (!Number.isFinite(lows[i])) { i++; continue }
+          let j = i
+          while (j + 1 <= b && Number.isFinite(lows[j + 1])) j++
+          if (j > i) {
+            let top = ''
+            let bottom = ''
+            for (let k = i; k <= j; k++) top += `${k > i ? ' L ' : 'M '}${toX(ts[k]).toFixed(1)},${toY(highs[k]).toFixed(1)}`
+            for (let k = j; k >= i; k--) bottom += ` L ${toX(ts[k]).toFixed(1)},${toY(lows[k]).toFixed(1)}`
+            band += `${top}${bottom} Z `
+          }
+          i = j + 1
+        }
+      }
+    }
+    return { toX, toY, lines, area, band }
   }, [geo])
 
   const sortedEvents = useMemo(() => {
@@ -158,7 +213,7 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
   }, [events, geo])
 
   if (!geo || !drawn) return null
-  const { vals, ts, tMin, tMax, lo, hi, segments, dayBoundaries } = geo
+  const { vals, ts, lows, highs, tMin, tMax, lo, hi, segments, dayBoundaries } = geo
   const { toX, toY } = drawn
   const isMultiDay = dayBoundaries.length > 0
   const color = muted ? NEUTRAL_HEX : STATUS_COLORS[status].hex
@@ -187,6 +242,14 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
   }
 
   const displayValue = hovered !== null ? vals[hovered] : vals[vals.length - 1]
+  /** "67 (3 to 226)": the average and, for a downsampled point, its range. */
+  const readout = (i: number) => {
+    const lo = lows?.[i]
+    const hi = highs?.[i]
+    return lo !== undefined && hi !== undefined && Number.isFinite(lo) && Number.isFinite(hi)
+      ? `${fmt(vals[i])} (${fmt(lo)} to ${fmt(hi)})`
+      : fmt(vals[i])
+  }
   const hoveredColor = (hovered !== null && statusFn && colorMode === 'by-range' && !muted)
     ? STATUS_COLORS[statusFn(vals[hovered])].hex
     : color
@@ -216,7 +279,7 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
               {colorMode === 'by-range' ? 'By Range' : 'Uniform'}
             </button>
           )}
-          <span className="text-xs font-mono transition-all" style={{ color }}>{fmt(displayValue)}</span>
+          <span className="text-xs font-mono transition-all" style={{ color }}>{hovered !== null ? readout(hovered) : fmt(displayValue)}</span>
         </div>
       </div>
       <svg
@@ -268,6 +331,18 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
           ? <path d={drawn.area} fill={color} fillOpacity={0.1} />
           : <path d={drawn.area} fill="#52525b" fillOpacity={0.05} />
         }
+        {/* Range of each downsampled point, behind the line (grey while the line is coloured by range).
+            The thin outline keeps a one-point spike visible: a fill alone is a pixel wide there. */}
+        {drawn.band && (() => {
+          const bandColor = colorMode === 'uniform' || muted ? color : NEUTRAL_HEX
+          return (
+            <path
+              d={drawn.band}
+              fill={bandColor} fillOpacity={0.2}
+              stroke={bandColor} strokeOpacity={0.5} strokeWidth="1" strokeLinejoin="round"
+            />
+          )
+        })()}
         {colorMode === 'uniform' || !statusFn || muted
           ? drawn.lines.map((pts, i) => (
             <polyline key={i} points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
@@ -334,8 +409,9 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
         {hovered !== null && hovered < vals.length && (() => {
           const tx = toX(ts[hovered])
           const ty = toY(vals[hovered])
-          const val = vals[hovered]
-          const TW = isMultiDay ? 130 : 100
+          const text = `${readout(hovered)} ${unit}`
+          // Monospace at 13px is ~7.8px a character.
+          const TW = Math.max(isMultiDay ? 130 : 100, Math.ceil(text.length * 7.8) + 16)
           const TH = 38
           const TX = Math.max(PAD.l, Math.min(VW - PAD.r - TW, tx - TW / 2))
           const TY = ty - TH - 10 < PAD.t ? ty + 10 : ty - TH - 10
@@ -345,7 +421,7 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
               <circle cx={tx} cy={ty} r="4" fill={hoveredColor} stroke="#18181b" strokeWidth="2" />
               <rect x={TX} y={TY} width={TW} height={TH} rx="4" fill="#18181b" stroke="#3f3f46" strokeWidth="1" />
               <text x={TX + TW / 2} y={TY + 14} textAnchor="middle" fill={hoveredColor} fontSize="13" fontFamily="ui-monospace, monospace" fontWeight="600">
-                {fmt(val)} {unit}
+                {text}
               </text>
               <text x={TX + TW / 2} y={TY + 28} textAnchor="middle" fill="#a1a1aa" fontSize="10">
                 {isMultiDay ? `${fmtDate(ts[hovered])} ${fmtTime(ts[hovered])}` : fmtTime(ts[hovered])}

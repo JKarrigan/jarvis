@@ -2,7 +2,7 @@ import 'server-only'
 import { lookup } from 'dns/promises'
 import {
   backfillEventTraces, getLatestReadingTimestamp, getOpenEvents, insertReading, iterateDetectorReadings,
-  reconcileOpenEvents, storeEventTrace, upsertEvents,
+  reconcileOpenEvents, rollupCompleteBefore, rollupReadings, storeEventTrace, upsertEvents,
 } from './db'
 import { primeDetector, type DetectorChange, type EventDetector } from './eventDetection'
 import type { AirQualityEvent } from './eventTypes'
@@ -29,7 +29,11 @@ interface PollerState {
 }
 
 // Persist across hot reloads in dev via globalThis — same pattern as db.ts
-const g = globalThis as typeof globalThis & { __ag_poller?: PollerState; __ag_traceTimer?: ReturnType<typeof setTimeout> | null }
+const g = globalThis as typeof globalThis & {
+  __ag_poller?: PollerState
+  __ag_traceTimer?: ReturnType<typeof setTimeout> | null
+  __ag_rollup?: { timer: ReturnType<typeof setTimeout> | null; through: number | null }
+}
 
 function getState(): PollerState {
   if (!g.__ag_poller) {
@@ -106,6 +110,49 @@ export function scheduleTraceBackfill(delayMs = TRACE_BATCH_GAP_MS): void {
   const timer = setTimeout(run, delayMs)
   timer.unref?.()
   g.__ag_traceTimer = timer
+}
+
+// ─── Five-minute rollup ──────────────────────────────────────────────────────
+
+const ROLLUP_BATCH_GAP_MS = 2_000
+
+function rollupState() {
+  return (g.__ag_rollup ??= { timer: null, through: null })
+}
+
+/**
+ * Summarises raw readings into `readings_5m`, a day of readings per run and
+ * runs a couple of seconds apart until nothing complete is left (the first
+ * run on an existing database works through weeks of readings).
+ */
+export function scheduleRollup(delayMs = ROLLUP_BATCH_GAP_MS): void {
+  const state = rollupState()
+  if (state.timer) return
+  const run = () => {
+    state.timer = null
+    let more = false
+    try {
+      const result = rollupReadings()
+      state.through = result.through
+      more = result.more
+    } catch (err) {
+      console.error('[poller] readings rollup failed', err)
+    }
+    if (more) scheduleRollup()
+  }
+  const timer = setTimeout(run, delayMs)
+  timer.unref?.()
+  state.timer = timer
+}
+
+/**
+ * Called after every stored reading: once a five-minute bucket has been over
+ * for 60 s (so at most ~6 minutes after it started a new one), roll it up.
+ * Cheap: compares two numbers until then.
+ */
+function rollupIfDue(now: number): void {
+  const { through } = rollupState()
+  if (through == null || rollupCompleteBefore(now) > through) scheduleRollup(0)
 }
 
 /**
@@ -227,6 +274,12 @@ async function poll(): Promise<void> {
       }))
     } catch (err) {
       console.error('[poller] event detection failed', err)
+    }
+
+    try {
+      rollupIfDue(now)
+    } catch (err) {
+      console.error('[poller] readings rollup failed', err)
     }
   } catch (err) {
     addLog({ ts, source: 'air-gradient', method: 'GET', url, status: null, durationMs: Date.now() - ts, error: String(err) })

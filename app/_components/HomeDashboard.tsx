@@ -172,12 +172,12 @@ export function HomeDashboard({
   const aqiStyle = STATUS_COLORS[aqi.color]
 
   const readings: MetricReading[] = [
-    metricReading('temperature', 'Temperature', Number.isFinite(temp) ? toUnit(temp, tempUnit).toFixed(1) : '—', `°${tempUnit}`, tempStatus(temp), series.temp),
-    metricReading('humidity', 'Humidity', Number.isFinite(hum) ? hum.toFixed(0) : '—', '%', humidityStatus(hum), series.hum),
-    metricReading('co2', 'CO₂', measures.rco2, 'ppm', co2Status(measures.rco2), series.co2),
-    metricReading('pm25', 'PM2.5', Number.isFinite(pm02) ? pm02.toFixed(1) : '—', 'µg/m³', pm25Status(pm02), series.pm25),
-    metricReading('tvoc', 'TVOC', measures.tvocIndex, 'index', tvocStatus(measures.tvocIndex), series.tvoc),
-    metricReading('nox', 'NOx', measures.noxIndex, 'index', noxStatus(measures.noxIndex), series.nox),
+    metricReading('temperature', 'Temperature', Number.isFinite(temp) ? toUnit(temp, tempUnit).toFixed(1) : '—', `°${tempUnit}`, tempStatus(temp), series.temp, series.ts),
+    metricReading('humidity', 'Humidity', Number.isFinite(hum) ? hum.toFixed(0) : '—', '%', humidityStatus(hum), series.hum, series.ts),
+    metricReading('co2', 'CO₂', measures.rco2, 'ppm', co2Status(measures.rco2), series.co2, series.ts),
+    metricReading('pm25', 'PM2.5', Number.isFinite(pm02) ? pm02.toFixed(1) : '—', 'µg/m³', pm25Status(pm02), series.pm25, series.ts),
+    metricReading('tvoc', 'TVOC', measures.tvocIndex, 'index', tvocStatus(measures.tvocIndex), series.tvoc, series.ts),
+    metricReading('nox', 'NOx', measures.noxIndex, 'index', noxStatus(measures.noxIndex), series.nox, series.ts),
   ]
 
   const outside = outdoorLine(aqi.value, outdoorAqi)

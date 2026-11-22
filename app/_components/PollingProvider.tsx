@@ -5,7 +5,12 @@ import type { DeviceMeasures, HistoryEntry } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
 import { isAlert } from '@/lib/eventInfo'
 
-const HISTORY_MAX = 3600
+/** `history` holds the last 10 hours of readings (by time, counted back from the newest). */
+const HISTORY_WINDOW_MS = 10 * 60 * 60 * 1000
+/** Hydrated as one-minute averages: ~600 small entries instead of 3 600 raw readings. */
+const HYDRATE_MINUTES = 600
+/** Safety net only: 12 h of 10 s readings. */
+const HISTORY_MAX = 4320
 const POLL_MS = 10_000
 const EVENTS_POLL_MS = 30_000
 const OUTDOOR_POLL_MS = 15 * 60 * 1000
@@ -61,6 +66,16 @@ export function reviveEvent(e: WireEvent | AirQualityEvent): AirQualityEvent {
     startTime: new Date(e.startTime),
     endTime: e.endTime ? new Date(e.endTime) : null,
   }
+}
+
+/** Keeps the entries of the last 10 hours before the newest one (and at most HISTORY_MAX). */
+function trimHistory(history: HistoryEntry[]): HistoryEntry[] {
+  if (history.length === 0) return history
+  const cutoff = history[history.length - 1].timestamp - HISTORY_WINDOW_MS
+  let start = 0
+  while (start < history.length && history[start].timestamp < cutoff) start++
+  start = Math.max(start, history.length - HISTORY_MAX)
+  return start > 0 ? history.slice(start) : history
 }
 
 async function fetchJson<T>(url: string, signal: AbortSignal, init?: RequestInit): Promise<T | null> {
@@ -143,8 +158,10 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
   const tempUnit: 'C' | 'F' = tempUnitRaw === 'C' ? 'C' : 'F'
   const deviceIp = device.ip
 
-  // Newest reading timestamp applied so far
+  // Newest reading timestamp applied to `history` so far
   const lastTimestamp = useRef(0)
+  // Timestamp of the reading shown as current (`measures`): always a raw reading from /api/latest
+  const shownTimestamp = useRef(0)
   const previewEventIds = useRef(new Set<string>())
   useEffect(() => { previewEventIds.current = new Set(previewEvents.map(e => e.id)) }, [previewEvents])
 
@@ -188,17 +205,12 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
     let inFlight = false
     let stopped = false
 
+    /** Adds entries newer than any applied so far to `history` (charts only; never the current reading). */
     const append = (entries: HistoryEntry[]) => {
       const fresh = entries.filter(e => e.timestamp > lastTimestamp.current)
       if (fresh.length === 0) return
-      const newest = fresh[fresh.length - 1]
-      lastTimestamp.current = newest.timestamp
-      setHistory(prev => {
-        const next = prev.concat(fresh)
-        return next.length > HISTORY_MAX ? next.slice(next.length - HISTORY_MAX) : next
-      })
-      setMeasures(newest.measures)
-      setLastUpdated(new Date(newest.timestamp))
+      lastTimestamp.current = fresh[fresh.length - 1].timestamp
+      setHistory(prev => trimHistory(prev.concat(fresh)))
     }
 
     const poll = async () => {
@@ -206,13 +218,21 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       if (!latest) return
       setError(latest.pollerError)
       const last = lastTimestamp.current
-      if (latest.timestamp <= last) return
-      if (last > 0 && latest.timestamp - last > GAP_MS) {
-        // Missed readings (tab was hidden, laptop slept): backfill the gap.
-        const missing = await fetchJson<HistoryEntry[]>(`/api/history?from=${last + 1}&to=${latest.timestamp}`, ac.signal)
-        if (Array.isArray(missing) && missing.length > 0) append(missing)
+      if (latest.timestamp > last) {
+        if (last > 0 && latest.timestamp - last > GAP_MS) {
+          // Missed readings (tab was hidden, laptop slept): backfill the gap.
+          const missing = await fetchJson<HistoryEntry[]>(`/api/history?from=${last + 1}&to=${latest.timestamp}`, ac.signal)
+          if (Array.isArray(missing) && missing.length > 0) append(missing)
+        }
+        append([{ timestamp: latest.timestamp, measures: latest.measures }])
       }
-      append([{ timestamp: latest.timestamp, measures: latest.measures }])
+      // The current reading is the raw one, even when it is already in `history`
+      // (device offline: the newest stored reading closes the last hydrated minute).
+      if (latest.timestamp > shownTimestamp.current) {
+        shownTimestamp.current = latest.timestamp
+        setMeasures(latest.measures)
+        setLastUpdated(new Date(latest.timestamp))
+      }
     }
 
     const tick = async () => {
@@ -233,7 +253,9 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
 
     const start = async () => {
       try {
-        const data = await fetchJson<HistoryEntry[]>(`/api/history?limit=${HISTORY_MAX}`, ac.signal)
+        // One-minute averages, each stamped with its minute's last reading, so
+        // the live readings appended after them are never counted twice.
+        const data = await fetchJson<HistoryEntry[]>(`/api/history?minutes=${HYDRATE_MINUTES}`, ac.signal)
         if (Array.isArray(data) && data.length > 0) {
           lastTimestamp.current = 0
           setHistory([])
@@ -254,6 +276,7 @@ export function PollingProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(timer)
       document.removeEventListener('visibilitychange', onVisible)
       lastTimestamp.current = 0
+      shownTimestamp.current = 0
     }
   }, [deviceIp])
 
