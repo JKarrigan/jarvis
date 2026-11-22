@@ -1,5 +1,7 @@
 import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline } from './eventTypes'
-import { SEVERITY_RANK, classifyEvent, eventDescription, eventRecommendation, eventTitle, severityFor } from './eventInfo'
+import {
+  SEVERITY_LIMITS, SEVERITY_RANK, classifyEvent, eventDescription, eventRecommendation, eventTitle, severityFor,
+} from './eventInfo'
 
 /**
  * Air-quality event detection.
@@ -25,11 +27,21 @@ import { SEVERITY_RANK, classifyEvent, eventDescription, eventRecommendation, ev
  * reopened, of any type, when matching readings return within
  * MERGE_WINDOW_MS of the last matching reading.
  *
+ * The CO₂ slot has hysteresis: it opens at SEVERITY_LIMITS.co2Event (1000
+ * ppm) but, while open, is kept going by the same 30-minute test at
+ * co2Release (900 ppm), so a room hovering around 1000 is one event. Its end
+ * is the last reading that met the hold test. Reopening a closed slot needs
+ * the opening test again.
+ *
  * The rules decide *when* an incident is open. What it is called, how serious
  * it is and the sentences that describe it come from lib/eventInfo.ts
  * (`buildEvent`): severity follows how bad the air got (PM2.5 and CO₂ bands),
  * a VOC rise that also put PM2.5 in the Unhealthy range is a particle event
- * (`classifyEvent`), and VOC alone never alerts.
+ * (`classifyEvent`), and VOC alone never alerts. "How bad" is the `sustained`
+ * level, the highest 3-minute median of each reading on the minute grid since
+ * the incident began (both slots use the 3-minute window), so one stray
+ * reading cannot raise the severity; `peak` stays the true maximum and is
+ * what the sentences quote.
  *
  * Cost: each reading is a push plus O(log n) binary searches; each one-minute
  * step looks only at its fixed-size windows, so detection is O(n) overall.
@@ -58,6 +70,8 @@ export const DETECTION_TIMING = {
 } as const
 
 type Peak = AirQualityEvent['peak']
+/** Starting value for `peak` and `sustained`: below any reading. */
+const NO_LEVEL: Peak = { noxIndex: -Infinity, tvocIndex: -Infinity, pm02: -Infinity, rco2: -Infinity }
 
 /**
  * Internal, normalised sample.
@@ -86,7 +100,8 @@ export { SEVERITY_RANK }
 
 /**
  * True when type `a` describes an incident more seriously than type `b`,
- * given the incident's peak: higher severity first (so a particle spike in
+ * given the incident's judged levels (`sustained`, or `peak` for rows that
+ * have none): higher severity first (so a particle spike in
  * the Unhealthy range outranks a VOC rise), then the rule priority order
  * (combustion before fuel vapour before outdoor drift before VOC before
  * particulate).
@@ -173,7 +188,9 @@ const SAMPLE_RULES: Rule[] = [
 ]
 
 /** Ventilation is judged on its own 30-minute window and can overlap a short-window event. */
-const VENT_RULE: Rule = { type: 'ventilation_poor', test: r => r.rco2 >= 1000 }
+const VENT_RULE: Rule = { type: 'ventilation_poor', test: r => r.rco2 >= SEVERITY_LIMITS.co2Event }
+/** What keeps an open ventilation event going (hysteresis, see the header). */
+const VENT_HOLD_RULE: Rule = { type: 'ventilation_poor', test: r => r.rco2 >= SEVERITY_LIMITS.co2Release }
 
 const TYPE_ORDER: EventType[] = [...SAMPLE_RULES.map(r => r.type), VENT_RULE.type]
 
@@ -208,6 +225,10 @@ interface SlotState {
   peak: Peak
   /** Readings with ts < peakUntil have been folded into `peak`. */
   peakUntil: number
+  /** Highest 3-minute median of each reading so far (-Infinity until a window is folded). */
+  sustained: Peak
+  /** Grid minutes up to and including this one have been folded into `sustained`. */
+  sustainedUntil: number
   /** Latest reading that satisfied the rule; becomes endTime on close. */
   lastMatchMs: number
   lastEvalMs: number
@@ -336,7 +357,7 @@ export class EventDetector {
    * event's type may have escalated since onset. For each slot the oldest open
    * event wins:
    * - if the replay re-detected the incident, the replayed slot takes over the
-   *   stored id, start, baseline, type and peak;
+   *   stored id, start, baseline, type and peak (and the higher sustained level);
    * - if it did not (the incident began before the replay window, so the
    *   replay's rolling baseline already contains it) and the stored event was
    *   still being updated near the last reading, the slot is restored from the
@@ -366,7 +387,8 @@ export class EventDetector {
         active.startMs = storedStart
         active.baseline = { ...stored.baseline }
         active.peak = maxPeak(active.peak, stored.peak)
-        if (moreSerious(stored.type, active.type, finitePeak(active.peak))) active.type = stored.type
+        if (stored.sustained) active.sustained = maxPeak(active.sustained, stored.sustained)
+        if (moreSerious(stored.type, active.type, judgedOf(active))) active.type = stored.type
         continue
       }
       this.slots[key] = {
@@ -376,6 +398,9 @@ export class EventDetector {
         baseline: { ...stored.baseline },
         peak: { ...stored.peak },
         peakUntil: this.lastTs + 1,
+        sustained: { ...(stored.sustained ?? stored.peak) },
+        // The replay has evaluated every grid minute before nextEval.
+        sustainedUntil: this.nextEval - STEP_MS,
         lastMatchMs: Math.min(storedLast, this.lastTs),
         lastEvalMs: Math.min(storedLast, this.lastTs),
         clearSteps: 0,
@@ -469,7 +494,9 @@ export class EventDetector {
     }
     this.step('sample', sampleMatch, baseline, t, sEnd, changes)
 
-    const ventMatch = this.persists(this.lowerBound(t - VENT_WINDOW_MS), sEnd, VENT_RULE, baseline, VENT_WINDOW_MS)
+    // Hysteresis: an open CO₂ event is held by the lower release level.
+    const ventRule = this.slots.vent?.closedAt === null ? VENT_HOLD_RULE : VENT_RULE
+    const ventMatch = this.persists(this.lowerBound(t - VENT_WINDOW_MS), sEnd, ventRule, baseline, VENT_WINDOW_MS)
     this.step('vent', ventMatch, baseline, t, sEnd, changes)
   }
 
@@ -487,8 +514,9 @@ export class EventDetector {
         s.lastMatchMs = Math.max(s.lastMatchMs, this.buf[match.lastIdx].ts)
         this.foldPeak(s, this.lowerBound(s.peakUntil), windowEnd)
         s.peakUntil = t
+        this.foldSustained(s, t)
         s.lastEvalMs = t
-        if (moreSerious(match.rule.type, s.type, finitePeak(s.peak))) s.type = match.rule.type
+        if (moreSerious(match.rule.type, s.type, judgedOf(s))) s.type = match.rule.type
         changes.push({ kind, event: this.snapshot(s) })
         return
       }
@@ -498,14 +526,19 @@ export class EventDetector {
         type: match.rule.type,
         startMs,
         baseline: { ...(s?.baseline ?? baseline) },
-        peak: { noxIndex: -Infinity, tvocIndex: -Infinity, pm02: -Infinity, rco2: -Infinity },
+        peak: { ...NO_LEVEL },
         peakUntil: t,
+        sustained: { ...NO_LEVEL },
+        // Every minute since the first matching reading: a CO₂ match spans up
+        // to 30 minutes and the air may have been worse early in it.
+        sustainedUntil: Math.floor(startMs / STEP_MS) * STEP_MS,
         lastMatchMs: this.buf[match.lastIdx].ts,
         lastEvalMs: t,
         clearSteps: 0,
         closedAt: null,
       }
       this.foldPeak(next, match.firstIdx, windowEnd)
+      this.foldSustained(next, t)
       this.slots[key] = next
       changes.push({ kind: 'open', event: this.snapshot(next) })
       return
@@ -528,6 +561,22 @@ export class EventDetector {
     }
   }
 
+  /**
+   * Folds the 3-minute medians of the grid minutes after `sustainedUntil` up
+   * to `t` (windows [tau - sample window, tau), like the rules') into
+   * `sustained`. Windows with fewer than 5 readings (gaps) are skipped.
+   */
+  private foldSustained(s: SlotState, t: number): void {
+    for (let tau = s.sustainedUntil + STEP_MS; tau <= t; tau += STEP_MS) {
+      const from = this.lowerBound(tau - this.sampleWindowMs)
+      const to = this.lowerBound(tau)
+      if (to - from < 5) continue
+      const m = this.rollingBaseline(from, to)
+      s.sustained = maxPeak(s.sustained, m)
+    }
+    s.sustainedUntil = Math.max(s.sustainedUntil, t)
+  }
+
   private close(s: SlotState): AirQualityEvent {
     s.closedAt = s.lastMatchMs
     return this.snapshot(s)
@@ -544,7 +593,7 @@ export class EventDetector {
   private snapshot(s: SlotState): AirQualityEvent {
     const endMs = s.closedAt
     const durationMs = Math.max(0, (endMs ?? Math.max(s.lastEvalMs, s.lastMatchMs)) - s.startMs)
-    return buildEvent(s.id, s.type, s.startMs, endMs, durationMs, finitePeak(s.peak), s.baseline)
+    return buildEvent(s.id, s.type, s.startMs, endMs, durationMs, finitePeak(s.peak), s.baseline, sustainedOf(s))
   }
 
   private windowMs(key: SlotKey): number {
@@ -555,14 +604,16 @@ export class EventDetector {
 /**
  * Assembles an event and its derived fields (final type, severity, text,
  * confidence). `ruleType` is what the rules called it; `classifyEvent` may
- * rename it from the peaks.
+ * rename it. Name and severity are judged on `sustained` when there is one
+ * (rows from older versions have only `peak`); the sentences quote `peak`.
  */
 function buildEvent(
   id: string, ruleType: EventType, startMs: number, endMs: number | null, durationMs: number,
-  peak: Peak, baseline: LocalBaseline, acknowledged = false,
+  peak: Peak, baseline: LocalBaseline, sustained: Peak | null | undefined, acknowledged = false,
 ): AirQualityEvent {
-  const type = classifyEvent(ruleType, peak, baseline)
-  const severity = severityFor(type, peak)
+  const judged = sustained ?? peak
+  const type = classifyEvent(ruleType, judged, baseline)
+  const severity = severityFor(type, judged)
   return {
     id,
     type,
@@ -571,6 +622,7 @@ function buildEvent(
     endTime: endMs !== null ? new Date(endMs) : null,
     durationMinutes: durationMs / 60000,
     peak: { ...peak },
+    ...(sustained ? { sustained: { ...sustained } } : {}),
     baseline: { ...baseline },
     title: eventTitle(type),
     description: eventDescription(type, peak, baseline),
@@ -582,14 +634,15 @@ function buildEvent(
 
 /**
  * The same event as the current rules would write it: type, severity and
- * wording recomputed from its stored type, peak and baseline. Used at startup
- * so rows written by older versions read like new ones (they outlive the
- * readings they came from, so they cannot be re-detected).
+ * wording recomputed from its stored type, peak, sustained level and baseline.
+ * Used at startup so rows written by older versions read like new ones (they
+ * outlive the readings they came from, so they cannot be re-detected); a row
+ * without `sustained` is judged on its peak, as it was when written.
  */
 export function rederiveEvent(e: AirQualityEvent): AirQualityEvent {
   const built = buildEvent(
     e.id, e.type, e.startTime.getTime(), e.endTime?.getTime() ?? null, e.durationMinutes * 60000,
-    e.peak, e.baseline, e.acknowledged,
+    e.peak, e.baseline, e.sustained, e.acknowledged,
   )
   return { ...built, durationMinutes: e.durationMinutes }
 }
@@ -597,6 +650,27 @@ export function rederiveEvent(e: AirQualityEvent): AirQualityEvent {
 function finitePeak(p: Peak): Peak {
   const f = (v: number) => (Number.isFinite(v) ? v : 0)
   return { noxIndex: f(p.noxIndex), tvocIndex: f(p.tvocIndex), pm02: f(p.pm02), rco2: f(p.rco2) }
+}
+
+/**
+ * A slot's sustained levels, or null before any 3-minute window was folded.
+ * Capped at the peak: the first windows can reach a little before the onset,
+ * and a held level is never above the highest reading of the incident.
+ */
+function sustainedOf(s: SlotState): Peak | null {
+  if (!Number.isFinite(s.sustained.pm02)) return null
+  const peak = finitePeak(s.peak)
+  return {
+    noxIndex: Math.min(s.sustained.noxIndex, peak.noxIndex),
+    tvocIndex: Math.min(s.sustained.tvocIndex, peak.tvocIndex),
+    pm02: Math.min(s.sustained.pm02, peak.pm02),
+    rco2: Math.min(s.sustained.rco2, peak.rco2),
+  }
+}
+
+/** The levels a slot's severity is judged on (see `buildEvent`). */
+function judgedOf(s: SlotState): Peak {
+  return sustainedOf(s) ?? finitePeak(s.peak)
 }
 
 function maxPeak(a: Peak, b: Peak): Peak {
@@ -664,7 +738,7 @@ export function primeDetector(
  *
  * The oldest row of a group survives with its id and baseline; it takes the
  * latest end (open if the member reaching furthest is open), the maximum
- * peak and the most serious type. It stays acknowledged only when a member
+ * peak and sustained level and the most serious type. It stays acknowledged only when a member
  * at least as severe as the result was acknowledged. Severity, text and
  * confidence are recomputed. Returns only what changed.
  */
@@ -686,9 +760,15 @@ export function mergeEvents(events: AirQualityEvent[]): { merged: AirQualityEven
         const open = latest.endTime === null
         const durationMs = Math.max(0, lastMs - startMs)
         const peak = rest.reduce((p, e) => maxPeak(p, e.peak), first.peak)
+        // A member without a held level (an older row) counts with its peak;
+        // a group of older rows only stays without one.
+        const sustained = group.some(e => e.sustained)
+          ? rest.reduce((p, e) => maxPeak(p, e.sustained ?? e.peak), first.sustained ?? first.peak)
+          : null
+        const judged = sustained ?? peak
         let type = first.type
-        for (const e of rest) if (moreSerious(e.type, type, peak)) type = e.type
-        const event = buildEvent(first.id, type, startMs, open ? null : lastMs, durationMs, peak, first.baseline)
+        for (const e of rest) if (moreSerious(e.type, type, judged)) type = e.type
+        const event = buildEvent(first.id, type, startMs, open ? null : lastMs, durationMs, peak, first.baseline, sustained)
         // Dismissed only if a dismissed row was already at this severity, so
         // folding in a later, worse part of the incident does not hide it.
         event.acknowledged = group.some(e => e.acknowledged && SEVERITY_RANK[e.severity] >= SEVERITY_RANK[event.severity])

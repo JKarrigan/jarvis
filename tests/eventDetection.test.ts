@@ -140,6 +140,28 @@ describe('one incident is one event', () => {
     expect(summary(detectEvents(readings))).toHaveLength(2)
   })
 
+  it('keeps one CO₂ event while the room hovers around 1000 ppm', () => {
+    // Long enough at 1040 to meet the 1000 ppm rule again on its own, long
+    // enough at 960 to be past the merge window: without the 900 ppm hold this
+    // is three events.
+    const readings = sequence([60, CLEAN], [40, { rco2: 1100 }], ...alternating(150, 30, { rco2: 960 }, { rco2: 1040 }), [60, CLEAN])
+    const events = detectEvents(readings)
+    expect(summary(events)).toHaveLength(1)
+    expect(events[0].type).toBe('ventilation_poor')
+    expect(events[0].endTime!.getTime()).toBe(T0 + 250 * MIN - STEP)
+  })
+
+  it('does not open a CO₂ event below 1000 ppm, however long', () => {
+    expect(detectEvents(sequence([60, CLEAN], [90, { rco2: 950 }], [30, CLEAN]))).toHaveLength(0)
+  })
+
+  it('ends a CO₂ event at the last reading at or above 900 ppm', () => {
+    const readings = sequence([60, CLEAN], [40, { rco2: 1100 }], [30, { rco2: 950 }], [60, { rco2: 850 }])
+    const events = detectEvents(readings)
+    expect(summary(events)).toHaveLength(1)
+    expect(events[0].endTime!.getTime()).toBe(T0 + 130 * MIN - STEP)
+  })
+
   it('survives a short data gap mid-incident', () => {
     const before = sequence([60, CLEAN], [30, FUEL])
     const after = sequence([60 + 30 + 10, CLEAN], [30, FUEL], [30, CLEAN]).filter(r => r.timestamp.getTime() >= T0 + 100 * MIN)
@@ -149,9 +171,10 @@ describe('one incident is one event', () => {
   it('matches live and batch detection', () => {
     const readings = sequence([60, CLEAN], ...alternating(60, 6, FUEL, VOC), [20, COMBUSTION], [30, CLEAN], [60, { rco2: 1300 }], [30, CLEAN])
     const live = runLive(readings)
-    expect(live.map(e => [e.id, e.type, e.endTime?.getTime()])).toEqual(
-      detectEvents(readings).map(e => [e.id, e.type, e.endTime?.getTime()]),
+    expect(live.map(e => [e.id, e.type, e.endTime?.getTime(), e.severity, e.sustained])).toEqual(
+      detectEvents(readings).map(e => [e.id, e.type, e.endTime?.getTime(), e.severity, e.sustained]),
     )
+    expect(live.every(e => e.sustained)).toBe(true)
   })
 })
 
@@ -213,6 +236,14 @@ describe('server restart while an event is open', () => {
     expect(summary(events)).toHaveLength(1)
     expect(events[0].endTime!.getTime()).toBeGreaterThanOrEqual(T0 + 9 * HOUR + 50 * MIN)
   })
+
+  it('continues a CO₂ row through a restart while it is held between 900 and 1000 ppm', () => {
+    const readings = sequence([60, CLEAN], [40, { rco2: 1100 }], [60, { rco2: 950 }], [30, CLEAN])
+    const restartAt = readings.findIndex(r => r.timestamp.getTime() >= T0 + 130 * MIN)
+    const events = runLive(readings, [restartAt])
+    expect(summary(events)).toHaveLength(1)
+    expect(events[0].endTime!.getTime()).toBe(T0 + 160 * MIN - STEP)
+  })
 })
 
 // ─── Naming and severity ─────────────────────────────────────────────────────
@@ -265,6 +296,25 @@ describe('severity follows how bad the air got', () => {
     expect(co2(1200).title).toBe('Stale air')
   })
 
+  it('judges severity on the level held for 3 minutes, not on one stray reading', () => {
+    const stray = sequence([60, CLEAN], [40, { pm02: 50 }], [30, CLEAN])
+    const at = stray.findIndex(r => r.timestamp.getTime() === T0 + 80 * MIN)
+    stray[at] = { ...stray[at], pm02: 70 }
+    const [blip] = detectEvents(stray)
+    expect([blip.type, blip.peak.pm02, blip.sustained?.pm02, blip.severity]).toEqual(['particulate_spike', 70, 50, 'notable'])
+
+    const held = detectEvents(sequence([60, CLEAN], [20, { pm02: 50 }], [5, { pm02: 70 }], [15, { pm02: 50 }], [30, CLEAN]))
+    expect(held).toHaveLength(1)
+    expect([held[0].peak.pm02, held[0].sustained?.pm02, held[0].severity]).toEqual([70, 70, 'warning'])
+  })
+
+  it('counts CO₂ that was high early in the 30 minutes before a CO₂ event opened', () => {
+    const [e] = detectEvents(sequence([60, CLEAN], [10, { rco2: 1600 }], [60, { rco2: 1200 }], [30, CLEAN]))
+    expect(e.type).toBe('ventilation_poor')
+    expect(e.sustained!.rco2).toBeGreaterThanOrEqual(1500)
+    expect(e.severity).toBe('warning')
+  })
+
   it('writes rounded numbers into the description', () => {
     const e = only({ pm02: 119.17 })
     expect(e.description).toBe('PM2.5 rose to 119 µg/m³, from 2 before.')
@@ -297,5 +347,17 @@ describe('rederiveEvent', () => {
   it('is stable', () => {
     const once = rederiveEvent(legacy({}))
     expect(rederiveEvent(once)).toEqual(once)
+    const held = rederiveEvent(legacy({ type: 'particulate_spike', peak: { noxIndex: 1, tvocIndex: 90, pm02: 70, rco2: 700 }, sustained: { noxIndex: 1, tvocIndex: 90, pm02: 50, rco2: 700 } }))
+    expect(rederiveEvent(held)).toEqual(held)
+  })
+
+  it('judges a row on its held level when it has one, on its peak when it does not', () => {
+    const spike = { type: 'particulate_spike' as const, peak: { noxIndex: 1, tvocIndex: 90, pm02: 70, rco2: 700 } }
+    const held = rederiveEvent(legacy({ ...spike, sustained: { noxIndex: 1, tvocIndex: 90, pm02: 50, rco2: 700 } }))
+    expect([held.severity, held.peak.pm02, held.sustained?.pm02]).toEqual(['notable', 70, 50])
+    expect(held.description).toContain('rose to 70')
+    const old = rederiveEvent(legacy(spike))
+    expect(old.severity).toBe('warning')
+    expect('sustained' in old).toBe(false)
   })
 })

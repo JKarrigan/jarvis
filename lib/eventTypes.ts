@@ -50,6 +50,18 @@ export interface AirQualityEvent {
     rco2: number
   }
   baseline: LocalBaseline
+  /**
+   * For each reading, the highest 3-minute median during the event: the level
+   * the air actually held, so one stray reading does not count. Severity and
+   * the name are judged on it; `peak` stays the true maximum for charts and
+   * sentences. Rows written by older versions do not have it (then `peak` is used).
+   */
+  sustained?: {
+    noxIndex: number
+    tvocIndex: number
+    pm02: number
+    rco2: number
+  } | null
   title: string
   description: string
   recommendation: string | null

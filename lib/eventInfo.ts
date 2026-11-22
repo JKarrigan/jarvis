@@ -34,13 +34,20 @@ type Peak = AirQualityEvent['peak']
  * unhealthy is critical; CO₂ over 1500 ppm is a warning, over 2000 critical.
  * The VOC index is relative to the room's own last 24 hours and saturates at
  * 500 during ordinary cooking, so VOC alone never alerts.
+ *
+ * The detector passes the incident's `sustained` levels (the highest 3-minute
+ * median) rather than its single highest readings, so one stray reading cannot
+ * raise an alert. Rows from older versions have only their peaks.
  */
 export const SEVERITY_LIMITS = {
   /** PM2.5 µg/m³: lower edge of "Sensitive", "Unhealthy" and "Very unhealthy". */
   pmSensitive: 35.5,
   pmWarning: 55.5,
   pmCritical: 125.5,
+  /** CO₂ ppm a stale-air event needs to start. */
   co2Event: 1000,
+  /** Once it has started, it keeps going until CO₂ is back under this (so a room hovering at 1000 is one event). */
+  co2Release: 900,
   co2Warning: 1500,
   co2Critical: 2000,
   /** NOx index where the tile leaves "Good"; with the combustion pattern this is critical. */
@@ -174,7 +181,7 @@ export const KIND_INFO: Record<EventKind, KindInfo> = {
     chip: 'Stale air',
     lead: 'rco2',
     signals: 'CO₂ high for half an hour',
-    rule: 'CO₂ at least 1,000 ppm for 30 minutes. Warning from 1,500 ppm, critical from 2,000.',
+    rule: 'CO₂ at least 1,000 ppm for 30 minutes. It ends once CO₂ is back under 900 ppm. Warning from 1,500 ppm, critical from 2,000.',
     causes: 'People in a closed room: windows shut and no ventilation running.',
   },
 }
@@ -285,7 +292,7 @@ export function eventDescription(type: EventType, peak: Peak, baseline: LocalBas
           ? ` PM2.5 also reached ${pm}.`
           : ' Particles and NOx stayed low, so this was vapour rather than smoke.')
     case 'ventilation_poor':
-      return `CO₂ stayed above 1,000 ppm and peaked at ${fmtMetricWithUnit('rco2', peak.rco2)}. The room is getting less fresh air than the people in it need.`
+      return `CO₂ rose above 1,000 ppm and peaked at ${fmtMetricWithUnit('rco2', peak.rco2)}. The room is getting less fresh air than the people in it need.`
   }
 }
 

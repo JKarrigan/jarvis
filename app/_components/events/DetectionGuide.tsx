@@ -51,6 +51,9 @@ export function DetectionGuide({ onClose, onReprocessed }: { onClose: () => void
 
         <section className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold text-zinc-100">Severity is how bad the air got</h3>
+          <p className="text-[13px] leading-relaxed text-zinc-400">
+            It uses the level held for 3 minutes, so a single stray reading cannot raise an alert.
+          </p>
           {SEVERITIES.map(s => (
             <div key={s} className="flex items-baseline gap-2.5 text-sm">
               <SeverityMark severity={s} className="translate-y-px" />

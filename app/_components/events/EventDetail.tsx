@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import type { AirQualityEvent, EventTrace } from '@/lib/eventTypes'
 import type { HistoryEntry } from '@/lib/types'
 import {
-  EVENT_METRICS, METRIC_INFO, SEVERITY_INFO, SEVERITY_LIMITS, eventCauses, eventMinutes, eventTitle, fmtDuration, fmtMetric,
+  EVENT_METRICS, METRIC_INFO, SEVERITY_INFO, SEVERITY_LIMITS, eventCauses, eventMinutes, eventTitle, fmtDuration, fmtMetric, fmtMetricWithUnit,
   isAlert, leadMetric, metricStatus, vocWord, type EventMetric,
 } from '@/lib/eventInfo'
 import { STATUS_COLORS } from '@/lib/statusColors'
@@ -397,6 +397,7 @@ export function EventDetail({ id }: { id: string }) {
             <dl>
               <Fact label="Started">{fmtClock(event.startTime)}</Fact>
               {trace && <Fact label={`${METRIC_INFO[lead].short} peak`}>{fmtMetric(lead, event.peak[lead])} at {fmtClock(trace.peakAt[lead])}</Fact>}
+              {event.sustained && <Fact label="Held for 3 minutes">{fmtMetricWithUnit(lead, event.sustained[lead])}</Fact>}
               {band && <Fact label={band.label}>{fmtDuration(band.min)}</Fact>}
               <Fact label={ongoing ? 'Still going' : 'Ended'}>{ongoing ? 'yes' : fmtClock(event.endTime!)}</Fact>
               <Fact label={ongoing ? 'So far' : 'Lasted'}>{fmtDuration(eventMinutes(event, nowMinute))}</Fact>

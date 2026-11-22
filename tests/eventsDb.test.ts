@@ -120,6 +120,41 @@ describe('mergeDuplicateEvents', () => {
     expect(db.getDb().prepare('SELECT merged_at FROM events_premerge').all()).toEqual([{ merged_at: 123 }, { merged_at: 123 }])
   })
 
+  it('takes the highest held level of the merged rows, counting an older row by its peak', () => {
+    db.upsertEvents([
+      ev('particulate_spike', 0, 20, {
+        peak: { noxIndex: 1, tvocIndex: 150, pm02: 70, rco2: 700 }, sustained: { noxIndex: 1, tvocIndex: 140, pm02: 50, rco2: 690 },
+      }),
+      ev('particulate_spike', 18, 40, {
+        peak: { noxIndex: 2, tvocIndex: 120, pm02: 60, rco2: 720 }, sustained: { noxIndex: 2, tvocIndex: 110, pm02: 52, rco2: 710 },
+      }),
+      ev('particulate_spike', 38, 50, { peak: { noxIndex: 1, tvocIndex: 100, pm02: 30, rco2: 800 } }),
+    ])
+    db.mergeDuplicateEvents()
+    const incident = db.getEventById(`particulate_spike_${T0}`)!
+    expect(incident.peak).toEqual({ noxIndex: 2, tvocIndex: 150, pm02: 70, rco2: 800 })
+    expect(incident.sustained).toEqual({ noxIndex: 2, tvocIndex: 140, pm02: 52, rco2: 800 })
+    // Judged on 52 held, not the 70 peak.
+    expect(incident.severity).toBe('notable')
+  })
+
+  it('backs up into an events_premerge table made by an older version', () => {
+    // On the Pi the backup table already exists with the original columns.
+    db.getDb().exec(`
+      CREATE TABLE events_premerge (
+        id TEXT, type TEXT, severity TEXT, start_time INT, end_time INT, duration_minutes REAL, peak TEXT, baseline TEXT,
+        title TEXT, description TEXT, recommendation TEXT, confidence REAL, acknowledged INT, created_at INT, merged_at
+      )
+    `)
+    db.upsertEvents([
+      ev('voc_event', 0, 20, { sustained: { noxIndex: 1, tvocIndex: 250, pm02: 4, rco2: 790 } }),
+      ev('voc_event', 10, 30),
+    ])
+    expect(db.mergeDuplicateEvents(7)).toEqual({ removed: 1, merged: 1 })
+    const backup = db.getDb().prepare('SELECT id, merged_at FROM events_premerge ORDER BY id').all()
+    expect(backup).toEqual([{ id: `voc_event_${T0}`, merged_at: 7 }, { id: `voc_event_${T0 + 10 * MIN}`, merged_at: 7 }])
+  })
+
   it('leaves a clean table alone', () => {
     db.upsertEvents([ev('voc_event', 0, 20), ev('voc_event', 60, 80)])
     expect(db.mergeDuplicateEvents()).toEqual({ removed: 0, merged: 0 })
@@ -128,6 +163,21 @@ describe('mergeDuplicateEvents', () => {
 })
 
 describe('event writes', () => {
+  it('stores the held level with the row and returns it in lists', () => {
+    const sustained = { noxIndex: 1, tvocIndex: 280, pm02: 4.5, rco2: 780 }
+    const held = ev('voc_event', 0, 20, { sustained })
+    const old = ev('voc_event', 100, 120)
+    db.upsertEvents([held, old])
+    expect(db.getEventById(held.id)!.sustained).toEqual(sustained)
+    expect('sustained' in db.getEventById(old.id)!).toBe(false)
+    const listed = db.getEvents()
+    expect(listed.find(e => e.id === held.id)!.sustained).toEqual(sustained)
+    expect('sustained' in listed.find(e => e.id === old.id)!).toBe(false)
+    // An update writes the new level.
+    db.upsertEvents([{ ...held, sustained: { ...sustained, pm02: 9 } }])
+    expect(db.getEventById(held.id)!.sustained!.pm02).toBe(9)
+  })
+
   it('updates the type of an open event whose classification escalated', () => {
     db.upsertEvents([ev('voc_event', 0, null)])
     db.upsertEvents([{ ...ev('voc_event', 0, null), type: 'fuel_vapor', severity: 'warning' }])

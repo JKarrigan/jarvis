@@ -35,9 +35,12 @@ describe('events table from an older version', () => {
     const db = await import('@/lib/db')
     const columns = (db.getDb().prepare('PRAGMA table_info(events)').all() as { name: string }[]).map(c => c.name)
     expect(columns).toContain('trace')
+    expect(columns).toContain('sustained')
     const event = db.getEventById('fuel_vapor_1')!
     expect(event.title).toBe('Fuel vapor detected')
     expect(event.trace).toBeNull()
+    expect('sustained' in event).toBe(false)
+    expect('sustained' in db.getEvents()[0]).toBe(false)
 
     expect(db.refreshStoredEvents()).toBe(1)
     expect(db.getEventById('fuel_vapor_1')).toMatchObject({ severity: 'notable', title: 'VOC rise' })

@@ -41,13 +41,16 @@ export function getDb(): Database.Database {
         confidence       REAL    NOT NULL,
         acknowledged     INTEGER NOT NULL DEFAULT 0,
         created_at       INTEGER NOT NULL,
-        trace            TEXT
+        trace            TEXT,
+        sustained        TEXT
       );
       CREATE INDEX IF NOT EXISTS events_start ON events (start_time);
     `)
     // Databases created before events kept a trace.
     const eventColumns = db.prepare('PRAGMA table_info(events)').all() as { name: string }[]
     if (!eventColumns.some(c => c.name === 'trace')) db.exec('ALTER TABLE events ADD COLUMN trace TEXT')
+    // …and before events kept the level held for 3 minutes (NULL: judged on the peak).
+    if (!eventColumns.some(c => c.name === 'sustained')) db.exec('ALTER TABLE events ADD COLUMN sustained TEXT')
     g.__ag_db = db
   }
   return g.__ag_db
@@ -297,8 +300,8 @@ function severityRankSql(column: string): string {
 
 const UPSERT_EVENT_SQL = `
   INSERT INTO events (id, type, severity, start_time, end_time, duration_minutes, peak, baseline,
-                      title, description, recommendation, confidence, acknowledged, created_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      title, description, recommendation, confidence, acknowledged, created_at, sustained)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
     -- The type can escalate while an incident is open (the id keeps the onset type).
     type             = excluded.type,
@@ -306,6 +309,7 @@ const UPSERT_EVENT_SQL = `
     end_time         = excluded.end_time,
     duration_minutes = excluded.duration_minutes,
     peak             = excluded.peak,
+    sustained        = excluded.sustained,
     title            = excluded.title,
     description      = excluded.description,
     recommendation   = excluded.recommendation,
@@ -319,6 +323,10 @@ const UPSERT_EVENT_SQL = `
       ELSE MAX(events.acknowledged, excluded.acknowledged)
     END
 `
+
+function sustainedJson(event: AirQualityEvent): string | null {
+  return event.sustained ? JSON.stringify(event.sustained) : null
+}
 
 function eventParams(event: AirQualityEvent, now: number): unknown[] {
   return [
@@ -336,6 +344,7 @@ function eventParams(event: AirQualityEvent, now: number): unknown[] {
     event.confidence,
     event.acknowledged ? 1 : 0,
     now,
+    sustainedJson(event),
   ]
 }
 
@@ -396,8 +405,16 @@ export function replaceEvents(events: AirQualityEvent[], readingsFrom: number): 
   })()
 }
 
-const EVENT_COLUMNS = 'id, type, severity, start_time, end_time, duration_minutes, peak, baseline, ' +
+/**
+ * The columns `events_premerge` was created with. It is a backup table that
+ * already exists on the Pi in this shape, so it is never given newer columns
+ * (`sustained`): a merged row's held level lives on in the surviving row.
+ */
+const PREMERGE_COLUMNS = 'id, type, severity, start_time, end_time, duration_minutes, peak, baseline, ' +
   'title, description, recommendation, confidence, acknowledged, created_at'
+
+/** Every column but the trace (only a single event read returns it). */
+const EVENT_COLUMNS = `${PREMERGE_COLUMNS}, sustained`
 
 /**
  * Collapses stored rows that belong to one incident (`mergeEvents`: same
@@ -413,11 +430,11 @@ export function mergeDuplicateEvents(now = Date.now()): { removed: number; merge
     const { merged, removedIds } = mergeEvents(rows)
     if (removedIds.length === 0) return { removed: 0, merged: 0 }
 
-    db.exec(`CREATE TABLE IF NOT EXISTS events_premerge AS SELECT ${EVENT_COLUMNS}, 0 AS merged_at FROM events WHERE 0`)
-    const backup = db.prepare(`INSERT INTO events_premerge (${EVENT_COLUMNS}, merged_at) SELECT ${EVENT_COLUMNS}, ? FROM events WHERE id = ?`)
+    db.exec(`CREATE TABLE IF NOT EXISTS events_premerge AS SELECT ${PREMERGE_COLUMNS}, 0 AS merged_at FROM events WHERE 0`)
+    const backup = db.prepare(`INSERT INTO events_premerge (${PREMERGE_COLUMNS}, merged_at) SELECT ${PREMERGE_COLUMNS}, ? FROM events WHERE id = ?`)
     const remove = db.prepare('DELETE FROM events WHERE id = ?')
     const update = db.prepare(`
-      UPDATE events SET type = ?, severity = ?, end_time = ?, duration_minutes = ?, peak = ?,
+      UPDATE events SET type = ?, severity = ?, end_time = ?, duration_minutes = ?, peak = ?, sustained = ?,
                         title = ?, description = ?, recommendation = ?, confidence = ?, acknowledged = ?,
                         trace = NULL
       WHERE id = ?
@@ -426,7 +443,7 @@ export function mergeDuplicateEvents(now = Date.now()): { removed: number; merge
     for (const id of removedIds) remove.run(id)
     for (const e of merged) {
       update.run(
-        e.type, e.severity, e.endTime?.getTime() ?? null, e.durationMinutes, JSON.stringify(e.peak),
+        e.type, e.severity, e.endTime?.getTime() ?? null, e.durationMinutes, JSON.stringify(e.peak), sustainedJson(e),
         e.title, e.description, e.recommendation ?? null, e.confidence, e.acknowledged ? 1 : 0, e.id,
       )
     }
@@ -438,6 +455,8 @@ interface EventRow {
   id: string; type: string; severity: string; start_time: number; end_time: number | null
   duration_minutes: number; peak: string; baseline: string; title: string; description: string
   recommendation: string | null; confidence: number; acknowledged: number
+  /** JSON; NULL on rows written before it existed. */
+  sustained: string | null
   /** Only selected for a single event read. */
   trace?: string | null
 }
@@ -457,6 +476,7 @@ function rowToEvent(r: EventRow): AirQualityEvent {
     endTime: r.end_time != null ? new Date(r.end_time) : null,
     durationMinutes: r.duration_minutes,
     peak: JSON.parse(r.peak),
+    ...(r.sustained ? { sustained: JSON.parse(r.sustained) } : {}),
     baseline: JSON.parse(r.baseline),
     title: r.title,
     description: r.description,
