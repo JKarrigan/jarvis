@@ -154,6 +154,8 @@ function Legend() {
             The sensor detects six real-world patterns by combining readings from the NOx, VOC, PM2.5, and CO₂ channels.
             Each event must persist in at least 80% of the samples in a 3-minute window (30 minutes for ventilation) to filter out single-spike noise,
             and ends once the pattern has been gone for 5 minutes; a recurrence within 15 minutes continues the same event.
+            One incident is one event: if its pattern changes along the way (say VOC, then combustion), it is labelled by the most serious one it showed.
+            Ventilation is tracked separately and can overlap another event.
             Confidence scores reflect how far readings exceeded their thresholds and how long the event lasted.
           </p>
           <div className="grid gap-3 lg:grid-cols-2">

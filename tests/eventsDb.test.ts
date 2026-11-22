@@ -1,0 +1,193 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { runDetector } from '@/lib/eventDetection'
+import type { AirQualityEvent, EventType } from '@/lib/eventTypes'
+
+// lib/db.ts reads DB_PATH when it is first imported, so import it after setting it.
+const dir = mkdtempSync(path.join(tmpdir(), 'ag-events-'))
+process.env.DB_PATH = path.join(dir, 'test.db')
+let db: typeof import('@/lib/db')
+
+beforeAll(async () => { db = await import('@/lib/db') })
+afterAll(() => {
+  db.getDb().close()
+  rmSync(dir, { recursive: true, force: true })
+})
+beforeEach(() => {
+  db.getDb().exec('DELETE FROM events; DROP TABLE IF EXISTS events_premerge')
+})
+
+const MIN = 60_000
+const T0 = Date.UTC(2026, 10, 20, 12, 0, 0)
+
+function ev(type: EventType, startMin: number, endMin: number | null, extra: Partial<AirQualityEvent> = {}): AirQualityEvent {
+  const startMs = T0 + startMin * MIN
+  return {
+    id: `${type}_${startMs}`,
+    type,
+    severity: 'notable',
+    startTime: new Date(startMs),
+    endTime: endMin == null ? null : new Date(T0 + endMin * MIN),
+    durationMinutes: (endMin ?? startMin + 5) - startMin,
+    peak: { noxIndex: 1, tvocIndex: 300, pm02: 5, rco2: 800 },
+    baseline: { noxIndex: 1, tvocIndex: 100, pm02: 2, rco2: 600 },
+    title: type,
+    description: '',
+    recommendation: null,
+    confidence: 0.5,
+    acknowledged: false,
+    ...extra,
+  }
+}
+
+function ids(): string[] {
+  return db.getEvents({ limit: 1000 }).map(e => e.id).sort()
+}
+
+describe('mergeDuplicateEvents', () => {
+  it('collapses one incident logged as a row per classification change', () => {
+    db.upsertEvents([
+      ev('voc_event', 0, 6),
+      ev('fuel_vapor', 4, 20, { peak: { noxIndex: 1, tvocIndex: 480, pm02: 4, rco2: 700 } }),
+      ev('voc_event', 18, 40, { acknowledged: true }),
+      ev('combustion_exhaust', 38, 60, { peak: { noxIndex: 9, tvocIndex: 350, pm02: 60, rco2: 900 } }),
+      ev('voc_event', 70, null), // 10 min after the last one ended: same incident, still open
+      ev('voc_event', 200, 230), // a separate incident
+      ev('ventilation_poor', 10, 90), // CO₂ is its own slot
+    ])
+    const result = db.mergeDuplicateEvents()
+    expect(result).toEqual({ removed: 4, merged: 1 })
+
+    const rows = db.getEvents({ limit: 1000 })
+    expect(rows).toHaveLength(3)
+    const incident = db.getEventById(`voc_event_${T0}`)!
+    expect(incident.type).toBe('combustion_exhaust')
+    expect(incident.severity).toBe('critical')
+    expect(incident.endTime).toBeNull()
+    // Only a notable part was dismissed; the merged incident is critical, so it alerts again.
+    expect(incident.acknowledged).toBe(false)
+    expect(incident.peak).toEqual({ noxIndex: 9, tvocIndex: 480, pm02: 60, rco2: 900 })
+    expect(incident.title).toBe('Possible combustion exhaust')
+
+    const backup = db.getDb().prepare('SELECT COUNT(*) AS n FROM events_premerge').get() as { n: number }
+    expect(backup.n).toBe(5)
+
+    expect(db.mergeDuplicateEvents()).toEqual({ removed: 0, merged: 0 })
+  })
+
+  it('collapses rows written every 10 s for one CO₂ episode', () => {
+    const rows: AirQualityEvent[] = []
+    for (let i = 0; i < 50; i++) {
+      const startMs = T0 + i * 10_000
+      rows.push({ ...ev('ventilation_poor', 0, 8), id: `ventilation_poor_${startMs}`, startTime: new Date(startMs), endTime: new Date(startMs + 8 * MIN) })
+    }
+    db.upsertEvents(rows)
+    expect(db.mergeDuplicateEvents().removed).toBe(49)
+    expect(ids()).toEqual([`ventilation_poor_${T0}`])
+    expect(db.getEventById(`ventilation_poor_${T0}`)!.endTime!.getTime()).toBe(T0 + 49 * 10_000 + 8 * MIN)
+  })
+
+  it('keeps the dismissal when a dismissed row was already as severe', () => {
+    db.upsertEvents([
+      ev('fuel_vapor', 0, 20, { severity: 'warning', acknowledged: true }),
+      ev('voc_event', 18, 40),
+    ])
+    db.mergeDuplicateEvents()
+    const incident = db.getEventById(`fuel_vapor_${T0}`)!
+    expect(incident.severity).toBe('warning')
+    expect(incident.acknowledged).toBe(true)
+  })
+
+  it('does not downgrade a critical VOC row merged with a particulate spike', () => {
+    db.upsertEvents([
+      ev('voc_event', 0, 20, { severity: 'critical', peak: { noxIndex: 1, tvocIndex: 450, pm02: 20, rco2: 700 } }),
+      ev('particulate_spike', 18, 40, { severity: 'warning', peak: { noxIndex: 1, tvocIndex: 150, pm02: 30, rco2: 700 } }),
+    ])
+    db.mergeDuplicateEvents()
+    const incident = db.getEventById(`voc_event_${T0}`)!
+    expect(incident.type).toBe('voc_event')
+    expect(incident.severity).toBe('critical')
+  })
+
+  it('backs up rows with named columns', () => {
+    db.upsertEvents([ev('voc_event', 0, 20), ev('voc_event', 10, 30)])
+    db.mergeDuplicateEvents(123)
+    const cols = (db.getDb().prepare('PRAGMA table_info(events_premerge)').all() as { name: string }[]).map(c => c.name)
+    expect(cols.at(-1)).toBe('merged_at')
+    expect(db.getDb().prepare('SELECT merged_at FROM events_premerge').all()).toEqual([{ merged_at: 123 }, { merged_at: 123 }])
+  })
+
+  it('leaves a clean table alone', () => {
+    db.upsertEvents([ev('voc_event', 0, 20), ev('voc_event', 60, 80)])
+    expect(db.mergeDuplicateEvents()).toEqual({ removed: 0, merged: 0 })
+    expect(ids()).toHaveLength(2)
+  })
+})
+
+describe('event writes', () => {
+  it('updates the type of an open event whose classification escalated', () => {
+    db.upsertEvents([ev('voc_event', 0, null)])
+    db.upsertEvents([{ ...ev('voc_event', 0, null), type: 'fuel_vapor', severity: 'warning' }])
+    expect(db.getEventById(`voc_event_${T0}`)!.type).toBe('fuel_vapor')
+  })
+
+  it('clears a dismissal when the event escalates, keeps it otherwise', () => {
+    const id = `voc_event_${T0}`
+    db.upsertEvents([ev('voc_event', 0, null, { severity: 'warning' })])
+    db.acknowledgeEventInDb(id)
+    db.upsertEvents([ev('voc_event', 0, null, { severity: 'warning', durationMinutes: 10 })])
+    expect(db.getEventById(id)!.acknowledged).toBe(true)
+    db.upsertEvents([ev('voc_event', 0, null, { type: 'combustion_exhaust', severity: 'critical' })])
+    expect(db.getEventById(id)!.acknowledged).toBe(false)
+  })
+
+  it('reprocess carries a dismissal over to a re-detected event of another type in the same slot', () => {
+    db.upsertEvents([
+      ev('fuel_vapor', 1000, 1020, { severity: 'warning' }),
+      ev('voc_event', 1020, 1040, { severity: 'warning', acknowledged: true }),
+    ])
+    db.replaceEvents([ev('fuel_vapor', 1000, 1040, { severity: 'warning' })], T0)
+    expect(db.getEventById(`fuel_vapor_${T0 + 1000 * MIN}`)!.acknowledged).toBe(true)
+  })
+
+  it('reprocess keeps stored events from before the batch detector could evaluate', () => {
+    // Readings start at minute 0: a fresh detector is blind for 33 minutes.
+    db.upsertEvents([ev('voc_event', 10, 20), ev('voc_event', 100, 120)])
+    db.replaceEvents([ev('voc_event', 101, 125)], T0)
+    expect(ids()).toEqual([`voc_event_${T0 + 10 * MIN}`, `voc_event_${T0 + 101 * MIN}`])
+  })
+
+  it('an open batch event merged into an older row continues under the surviving id', () => {
+    // Readings start at minute 1000; an incident from before them ended at 1040.
+    db.upsertEvents([ev('fuel_vapor', 990, 1040, { severity: 'warning' })])
+    const readings = []
+    for (let ts = T0 + 1000 * MIN; ts < T0 + 1100 * MIN; ts += 10_000) {
+      const fuel = ts >= T0 + 1050 * MIN
+      readings.push({ timestamp: new Date(ts), pm02: fuel ? 4 : 2, rco2: 600, tvocIndex: fuel ? 400 : 100, noxIndex: 1, atmp: 21, rhum: 45 })
+    }
+    const { events, detector } = runDetector(readings)
+    expect(events).toHaveLength(1)
+    expect(events[0].endTime).toBeNull()
+    db.replaceEvents(events, T0 + 1000 * MIN)
+    db.mergeDuplicateEvents()
+    const survivor = `fuel_vapor_${T0 + 990 * MIN}`
+    expect(ids()).toEqual([survivor])
+    // What replaceLiveDetector does after a reprocess:
+    const active = detector.resume(db.getOpenEvents())
+    db.reconcileOpenEvents(active)
+    expect(active.map(e => e.id)).toEqual([survivor])
+    const next = detector.push({ ...readings[readings.length - 1], timestamp: new Date(T0 + 1100 * MIN) })
+    expect(next.every(c => c.event.id === survivor)).toBe(true)
+    expect(db.getOpenEvents().map(e => e.id)).toEqual([survivor])
+  })
+
+  it('reprocess keeps events older than the stored readings', () => {
+    db.upsertEvents([ev('voc_event', 0, 20), ev('voc_event', 1000, 1020, { acknowledged: true })])
+    db.replaceEvents([ev('voc_event', 1001, 1030)], T0 + 500 * MIN)
+    expect(ids()).toEqual([`voc_event_${T0}`, `voc_event_${T0 + 1001 * MIN}`])
+    // The acknowledgement follows the overlapping re-detected event.
+    expect(db.getEventById(`voc_event_${T0 + 1001 * MIN}`)!.acknowledged).toBe(true)
+  })
+})

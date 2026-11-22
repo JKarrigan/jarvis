@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import path from 'path'
 import type { DeviceMeasures, HistoryEntry } from './types'
 import type { AirGradientReading, AirQualityEvent } from './eventTypes'
+import { DETECTION_TIMING, SEVERITY_RANK, mergeEvents, slotOf } from './eventDetection'
 
 const DB_PATH = process.env.DB_PATH ?? path.join(process.cwd(), 'airgradient.db')
 
@@ -284,11 +285,18 @@ export function setSetting(key: string, value: string): void {
 
 // ─── Events ──────────────────────────────────────────────────────────────────
 
+function severityRankSql(column: string): string {
+  const cases = Object.entries(SEVERITY_RANK).map(([sev, rank]) => `WHEN '${sev}' THEN ${rank}`).join(' ')
+  return `(CASE ${column} ${cases} ELSE 0 END)`
+}
+
 const UPSERT_EVENT_SQL = `
   INSERT INTO events (id, type, severity, start_time, end_time, duration_minutes, peak, baseline,
                       title, description, recommendation, confidence, acknowledged, created_at)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
+    -- The type can escalate while an incident is open (the id keeps the onset type).
+    type             = excluded.type,
     severity         = excluded.severity,
     end_time         = excluded.end_time,
     duration_minutes = excluded.duration_minutes,
@@ -297,8 +305,12 @@ const UPSERT_EVENT_SQL = `
     description      = excluded.description,
     recommendation   = excluded.recommendation,
     confidence       = excluded.confidence,
-    -- An acknowledgement is sticky: no writer can reset it to 0.
-    acknowledged     = MAX(events.acknowledged, excluded.acknowledged)
+    -- An acknowledgement is sticky while the event stays as severe as it was;
+    -- escalating (say VOC → combustion) makes it alert again.
+    acknowledged     = CASE
+      WHEN ${severityRankSql('excluded.severity')} > ${severityRankSql('events.severity')} THEN excluded.acknowledged
+      ELSE MAX(events.acknowledged, excluded.acknowledged)
+    END
 `
 
 function eventParams(event: AirQualityEvent, now: number): unknown[] {
@@ -336,31 +348,81 @@ export function upsertEvents(events: AirQualityEvent[]): void {
 }
 
 /**
- * Replaces every event with `events` atomically. Acknowledgements survive: a
- * new event is acknowledged when an event with the same id was, or when an
- * acknowledged event of the same type overlapped its time span (ids from
- * older detector versions differ).
+ * Replaces the stored events with those from a batch run over the readings
+ * that start at `readingsFrom`. A fresh detector cannot evaluate until it has
+ * a baseline and a window of readings, so only events starting after that
+ * point are replaced; older events (including those whose readings have been
+ * pruned) are kept, and `mergeDuplicateEvents` then joins any incident that
+ * straddles the boundary. Atomic. Acknowledgements survive when an
+ * acknowledged event of the same slot overlapped (or was within the merge
+ * window of) the new one and was at least as severe; ids and types from
+ * older detector versions differ.
  */
-export function replaceAllEvents(events: AirQualityEvent[]): void {
+export function replaceEvents(events: AirQualityEvent[], readingsFrom: number): void {
   const db = getDb()
   const insert = db.prepare(UPSERT_EVENT_SQL)
   const now = Date.now()
+  const from = readingsFrom + DETECTION_TIMING.BASELINE_WINDOW_MS + DETECTION_TIMING.SAMPLE_WINDOW_MS
+  const margin = DETECTION_TIMING.MERGE_WINDOW_MS
   db.transaction(() => {
-    const acked = db
-      .prepare('SELECT id, type, start_time, end_time, duration_minutes FROM events WHERE acknowledged = 1')
-      .all() as { id: string; type: string; start_time: number; end_time: number | null; duration_minutes: number }[]
+    const acked = (db
+      .prepare('SELECT * FROM events WHERE acknowledged = 1 AND start_time >= ?')
+      .all(from) as EventRow[]).map(rowToEvent)
     const ackedIds = new Set(acked.map(a => a.id))
     const isAcked = (e: AirQualityEvent) => {
       if (ackedIds.has(e.id)) return true
       const start = e.startTime.getTime()
       const end = e.endTime?.getTime() ?? now
       return acked.some(a => {
-        const aEnd = a.end_time ?? a.start_time + a.duration_minutes * 60_000
-        return a.type === e.type && a.start_time <= end && aEnd >= start
+        const aStart = a.startTime.getTime()
+        const aEnd = a.endTime?.getTime() ?? aStart + a.durationMinutes * 60_000
+        return slotOf(a.type) === slotOf(e.type) &&
+          aStart <= end + margin && aEnd + margin >= start &&
+          SEVERITY_RANK[a.severity] >= SEVERITY_RANK[e.severity]
       })
     }
-    db.prepare('DELETE FROM events').run()
-    for (const e of events) insert.run(...eventParams({ ...e, acknowledged: e.acknowledged || isAcked(e) }, now))
+    db.prepare('DELETE FROM events WHERE start_time >= ?').run(from)
+    for (const e of events) {
+      if (e.startTime.getTime() < from) continue
+      insert.run(...eventParams({ ...e, acknowledged: e.acknowledged || isAcked(e) }, now))
+    }
+  })()
+}
+
+const EVENT_COLUMNS = 'id, type, severity, start_time, end_time, duration_minutes, peak, baseline, ' +
+  'title, description, recommendation, confidence, acknowledged, created_at'
+
+/**
+ * Collapses stored rows that belong to one incident (`mergeEvents`: same
+ * slot, overlapping or within the merge window) into the oldest row of each
+ * group. Every row of a merged group is first copied, unchanged, into
+ * `events_premerge` (with `merged_at`), so the cleanup can be inspected or
+ * undone by hand. Idempotent; returns how many rows were removed.
+ */
+export function mergeDuplicateEvents(now = Date.now()): { removed: number; merged: number } {
+  const db = getDb()
+  return db.transaction(() => {
+    const rows = (db.prepare('SELECT * FROM events').all() as EventRow[]).map(rowToEvent)
+    const { merged, removedIds } = mergeEvents(rows)
+    if (removedIds.length === 0) return { removed: 0, merged: 0 }
+
+    db.exec(`CREATE TABLE IF NOT EXISTS events_premerge AS SELECT ${EVENT_COLUMNS}, 0 AS merged_at FROM events WHERE 0`)
+    const backup = db.prepare(`INSERT INTO events_premerge (${EVENT_COLUMNS}, merged_at) SELECT ${EVENT_COLUMNS}, ? FROM events WHERE id = ?`)
+    const remove = db.prepare('DELETE FROM events WHERE id = ?')
+    const update = db.prepare(`
+      UPDATE events SET type = ?, severity = ?, end_time = ?, duration_minutes = ?, peak = ?,
+                        title = ?, description = ?, recommendation = ?, confidence = ?, acknowledged = ?
+      WHERE id = ?
+    `)
+    for (const id of [...merged.map(e => e.id), ...removedIds]) backup.run(now, id)
+    for (const id of removedIds) remove.run(id)
+    for (const e of merged) {
+      update.run(
+        e.type, e.severity, e.endTime?.getTime() ?? null, e.durationMinutes, JSON.stringify(e.peak),
+        e.title, e.description, e.recommendation ?? null, e.confidence, e.acknowledged ? 1 : 0, e.id,
+      )
+    }
+    return { removed: removedIds.length, merged: merged.length }
   })()
 }
 
@@ -435,6 +497,17 @@ export function closeOrphanEvents(activeIds: string[]): number {
     WHERE end_time IS NULL ${activeIds.length ? `AND id NOT IN (${placeholders})` : ''}
   `
   return db.prepare(sql).run(...activeIds).changes
+}
+
+/**
+ * After the live detector is (re)built: writes the events it is continuing
+ * and closes every other open row, in one transaction.
+ */
+export function reconcileOpenEvents(active: AirQualityEvent[]): void {
+  getDb().transaction(() => {
+    upsertEvents(active)
+    closeOrphanEvents(active.map(e => e.id))
+  })()
 }
 
 /** Returns false when no event has that id. */

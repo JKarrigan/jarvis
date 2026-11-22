@@ -10,11 +10,19 @@ import type { AirGradientReading, AirQualityEvent, EventType, LocalBaseline, Sev
  *
  * Detection runs on a fixed one-minute grid aligned to wall-clock minutes
  * (not to the first reading in a buffer), so a given event always gets the
- * same id: `${type}_${startMs}` where startMs is the first reading that met the
- * rule. The id is created once at onset; afterwards the same event is updated
- * in place and closed when the rule has stopped matching for CLEAR_STEPS
- * consecutive minutes. A same-type re-trigger within MERGE_WINDOW_MS of the
- * close reopens that event rather than creating a new one.
+ * same id: `${type}_${startMs}` where type is the classification at onset and
+ * startMs is the first reading that met the rule. The id is created once at
+ * onset and never changes.
+ *
+ * One incident is one event. There are two independent slots: `sample` (the
+ * short-window rules: combustion, fuel vapour, outdoor drift, VOC, particulate)
+ * and `vent` (CO₂). While a slot's event is open, any rule of that slot keeps
+ * it going, even when the classification changes (a cooking session moves
+ * between VOC, fuel vapour and combustion as PM and NOx rise and fall); the
+ * event then takes the most serious type it has shown (`moreSerious`). It is
+ * closed once nothing has matched for CLEAR_STEPS consecutive minutes, and
+ * reopened, of any type, when matching readings return within
+ * MERGE_WINDOW_MS of the last matching reading.
  *
  * Cost: each reading is a push plus O(log n) binary searches; each one-minute
  * step looks only at its fixed-size windows, so detection is O(n) overall.
@@ -117,6 +125,22 @@ function defaultSeverity(type: EventType): Severity {
   }
 }
 
+export const SEVERITY_RANK: Record<Severity, number> = { info: 0, notable: 1, warning: 2, critical: 3 }
+
+/**
+ * True when type `a` describes an incident more seriously than type `b`,
+ * given the incident's peak and duration: higher escalated severity first
+ * (so a critical VOC event, TVOC ≥ 400, outranks a warning-level particulate
+ * spike), then the rule priority order (combustion before fuel vapour before
+ * outdoor drift before VOC before particulate).
+ */
+export function moreSerious(a: EventType, b: EventType, peak: Peak, durationMs: number): boolean {
+  const sa = SEVERITY_RANK[escalatedSeverity(a, peak, durationMs)]
+  const sb = SEVERITY_RANK[escalatedSeverity(b, peak, durationMs)]
+  if (sa !== sb) return sa > sb
+  return TYPE_ORDER.indexOf(a) < TYPE_ORDER.indexOf(b)
+}
+
 function escalatedSeverity(type: EventType, peak: Peak, durationMs: number): Severity {
   const base = defaultSeverity(type)
   if (base === 'critical') return 'critical'
@@ -205,6 +229,16 @@ const SAMPLE_RULES: Rule[] = [
 /** Ventilation is judged on its own 30-minute window and can overlap a short-window event. */
 const VENT_RULE: Rule = { type: 'ventilation_poor', test: r => r.rco2 >= 1000 }
 
+const TYPE_ORDER: EventType[] = [...SAMPLE_RULES.map(r => r.type), VENT_RULE.type]
+
+type SlotKey = 'sample' | 'vent'
+const SLOT_KEYS: readonly SlotKey[] = ['sample', 'vent']
+
+/** Which detector slot an event type belongs to; one incident per slot at a time. */
+export function slotOf(type: EventType): SlotKey {
+  return type === 'ventilation_poor' ? 'vent' : 'sample'
+}
+
 // ─── Detector ────────────────────────────────────────────────────────────────
 
 export interface DetectOptions {
@@ -219,8 +253,6 @@ export interface DetectorChange {
   event: AirQualityEvent
 }
 
-type SlotKey = 'sample' | 'vent'
-
 interface SlotState {
   id: string
   type: EventType
@@ -234,7 +266,7 @@ interface SlotState {
   lastMatchMs: number
   lastEvalMs: number
   clearSteps: number
-  /** Non-null once closed; the slot is kept for MERGE_WINDOW_MS to allow a reopen. */
+  /** Non-null once closed; the slot is kept a while so a quick return reopens it. */
   closedAt: number | null
 }
 
@@ -344,7 +376,7 @@ export class EventDetector {
   /** Currently open events. */
   activeEvents(): AirQualityEvent[] {
     const out: AirQualityEvent[] = []
-    for (const key of ['sample', 'vent'] as const) {
+    for (const key of SLOT_KEYS) {
       const s = this.slots[key]
       if (s && s.closedAt === null) out.push(this.snapshot(s))
     }
@@ -352,23 +384,58 @@ export class EventDetector {
   }
 
   /**
-   * Continues events that were already open in the database (e.g. after a
-   * server restart, when the detector was primed from recent readings and
-   * re-detected the ongoing event with a later start). Returns the active
-   * events after adoption.
+   * Continues events that were already open in the database after a server
+   * restart, once the detector has been primed from recent readings (see
+   * `primeDetector`). Matching is per slot, not per type, because an open
+   * event's type may have escalated since onset. For each slot the oldest open
+   * event wins:
+   * - if the replay re-detected the incident, the replayed slot takes over the
+   *   stored id, start, baseline, type and peak;
+   * - if it did not (the incident began before the replay window, so the
+   *   replay's rolling baseline already contains it) and the stored event was
+   *   still being updated near the last reading, the slot is restored from the
+   *   row with its frozen baseline and keeps being judged against it.
+   * Returns the active events afterwards; any other open row is an orphan.
    */
-  adopt(openEvents: AirQualityEvent[]): AirQualityEvent[] {
-    for (const key of ['sample', 'vent'] as const) {
+  resume(openEvents: AirQualityEvent[]): AirQualityEvent[] {
+    const lastOf = (e: AirQualityEvent) => e.startTime.getTime() + e.durationMinutes * 60_000
+    for (const key of SLOT_KEYS) {
       const s = this.slots[key]
-      if (!s || s.closedAt !== null) continue
-      const match = openEvents
-        .filter(e => e.endTime === null && e.type === s.type && e.startTime.getTime() <= s.startMs)
+      const active = s && s.closedAt === null ? s : null
+      if (!active && s && openEvents.some(e => e.id === s.id)) continue // the replay saw it end
+      // Rows that cannot be this incident (e.g. left open by a crash days ago)
+      // are skipped before picking, so they never hide the real one.
+      const stored = openEvents
+        .filter(e => e.endTime === null && slotOf(e.type) === key)
+        .filter(e => active
+          ? lastOf(e) >= active.startMs - MERGE_WINDOW_MS
+          : Number.isFinite(this.lastTs) && lastOf(e) >= this.lastTs - WARM_UP_GAP_MS)
         .sort((a, b) => a.startTime.getTime() - b.startTime.getTime())[0]
-      if (!match || match.id === s.id) continue
-      s.id = match.id
-      s.startMs = match.startTime.getTime()
-      s.baseline = { ...match.baseline }
-      s.peak = maxPeak(s.peak, match.peak)
+      if (!stored) continue
+      const storedStart = stored.startTime.getTime()
+      const storedLast = lastOf(stored)
+      if (active) {
+        // The row's id and start_time are fixed, so the slot takes both.
+        active.id = stored.id
+        active.startMs = storedStart
+        active.baseline = { ...stored.baseline }
+        active.peak = maxPeak(active.peak, stored.peak)
+        const durationMs = Math.max(active.lastEvalMs, active.lastMatchMs) - active.startMs
+        if (moreSerious(stored.type, active.type, finitePeak(active.peak), durationMs)) active.type = stored.type
+        continue
+      }
+      this.slots[key] = {
+        id: stored.id,
+        type: stored.type,
+        startMs: storedStart,
+        baseline: { ...stored.baseline },
+        peak: { ...stored.peak },
+        peakUntil: this.lastTs + 1,
+        lastMatchMs: Math.min(storedLast, this.lastTs),
+        lastEvalMs: Math.min(storedLast, this.lastTs),
+        clearSteps: 0,
+        closedAt: null,
+      }
     }
     return this.activeEvents()
   }
@@ -438,10 +505,11 @@ export class EventDetector {
     const sStart = this.lowerBound(t - this.sampleWindowMs)
     if (sEnd === sStart) return // no data in this minute's window (short gap)
 
-    // Drop closed slots whose merge window has passed.
-    for (const key of ['sample', 'vent'] as const) {
+    // Drop closed slots that can no longer reopen: a match at t starts no
+    // earlier than t - window, so past this point its gap exceeds the merge window.
+    for (const key of SLOT_KEYS) {
       const s = this.slots[key]
-      if (s && s.closedAt !== null && t - s.closedAt > MERGE_WINDOW_MS) this.slots[key] = null
+      if (s && s.closedAt !== null && t - s.closedAt > MERGE_WINDOW_MS + this.windowMs(key)) this.slots[key] = null
     }
 
     // While an event is active (or just closed) keep judging against its
@@ -464,7 +532,10 @@ export class EventDetector {
     const s = this.slots[key]
 
     if (match) {
-      if (s && s.type === match.rule.type) {
+      const startMs = this.buf[match.firstIdx].ts
+      // Same incident: still open (whatever the rule that matched now), or
+      // matching readings came back within the merge window of the last ones.
+      if (s && (s.closedAt === null || startMs - s.lastMatchMs <= MERGE_WINDOW_MS)) {
         const kind: DetectorChangeKind = s.closedAt !== null ? 'reopen' : 'update'
         s.closedAt = null
         s.clearSteps = 0
@@ -472,12 +543,11 @@ export class EventDetector {
         this.foldPeak(s, this.lowerBound(s.peakUntil), windowEnd)
         s.peakUntil = t
         s.lastEvalMs = t
+        if (moreSerious(match.rule.type, s.type, finitePeak(s.peak), t - s.startMs)) s.type = match.rule.type
         changes.push({ kind, event: this.snapshot(s) })
         return
       }
-      // Type changed (or nothing tracked): close the old one, open a new one.
-      if (s && s.closedAt === null) changes.push({ kind: 'close', event: this.close(s) })
-      const startMs = this.buf[match.firstIdx].ts
+      // A new incident (any earlier one in this slot is closed).
       const next: SlotState = {
         id: generateId(match.rule.type, startMs),
         type: match.rule.type,
@@ -519,7 +589,7 @@ export class EventDetector {
   }
 
   private closeAll(changes: DetectorChange[]): void {
-    for (const key of ['sample', 'vent'] as const) {
+    for (const key of SLOT_KEYS) {
       const s = this.slots[key]
       if (s && s.closedAt === null) changes.push({ kind: 'close', event: this.close(s) })
       this.slots[key] = null
@@ -529,23 +599,34 @@ export class EventDetector {
   private snapshot(s: SlotState): AirQualityEvent {
     const endMs = s.closedAt
     const durationMs = Math.max(0, (endMs ?? Math.max(s.lastEvalMs, s.lastMatchMs)) - s.startMs)
-    const peak = finitePeak(s.peak)
-    const severity = escalatedSeverity(s.type, peak, durationMs)
-    return {
-      id: s.id,
-      type: s.type,
-      severity,
-      startTime: new Date(s.startMs),
-      endTime: endMs !== null ? new Date(endMs) : null,
-      durationMinutes: durationMs / 60000,
-      peak,
-      baseline: { ...s.baseline },
-      title: eventTitle(s.type),
-      description: eventDescription(s.type, peak),
-      recommendation: eventRecommendation(s.type, severity),
-      confidence: computeConfidence(s.type, peak, s.baseline, durationMs),
-      acknowledged: false,
-    }
+    return buildEvent(s.id, s.type, s.startMs, endMs, durationMs, finitePeak(s.peak), s.baseline)
+  }
+
+  private windowMs(key: SlotKey): number {
+    return key === 'vent' ? VENT_WINDOW_MS : this.sampleWindowMs
+  }
+}
+
+/** Assembles an event and its derived fields (severity, text, confidence). */
+function buildEvent(
+  id: string, type: EventType, startMs: number, endMs: number | null, durationMs: number,
+  peak: Peak, baseline: LocalBaseline, acknowledged = false,
+): AirQualityEvent {
+  const severity = escalatedSeverity(type, peak, durationMs)
+  return {
+    id,
+    type,
+    severity,
+    startTime: new Date(startMs),
+    endTime: endMs !== null ? new Date(endMs) : null,
+    durationMinutes: durationMs / 60000,
+    peak: { ...peak },
+    baseline: { ...baseline },
+    title: eventTitle(type),
+    description: eventDescription(type, peak),
+    recommendation: eventRecommendation(type, severity),
+    confidence: computeConfidence(type, peak, baseline, durationMs),
+    acknowledged,
   }
 }
 
@@ -588,4 +669,82 @@ export function runDetector(
 /** Pure batch detection over ascending readings. */
 export function detectEvents(readings: AirGradientReading[], options?: DetectOptions): AirQualityEvent[] {
   return runDetector(readings, options).events
+}
+
+// ─── Restart ─────────────────────────────────────────────────────────────────
+
+/**
+ * Builds a live detector after a (re)start: replays recent stored readings
+ * silently (their events were already written), then continues the events
+ * the database still has open (`EventDetector.resume`). `active` should be
+ * written back; every other open row is an orphan to close.
+ */
+export function primeDetector(
+  recentReadings: Iterable<AirGradientReading>,
+  openEvents: AirQualityEvent[],
+  options?: DetectOptions,
+): { detector: EventDetector; active: AirQualityEvent[] } {
+  const detector = new EventDetector(options)
+  for (const r of recentReadings) detector.push(r)
+  return { detector, active: detector.resume(openEvents) }
+}
+
+// ─── Cleanup of stored duplicates ────────────────────────────────────────────
+
+/**
+ * Collapses stored events that the current detector would have logged as one
+ * incident: same slot (CO₂ vs everything else), each one starting no later
+ * than MERGE_WINDOW_MS after the group so far ended (overlaps included).
+ * Earlier detector versions split one incident into a row per classification
+ * change and, before that, a row every 10 s.
+ *
+ * The oldest row of a group survives with its id and baseline; it takes the
+ * latest end (open if the member reaching furthest is open), the maximum
+ * peak and the most serious type. It stays acknowledged only when a member
+ * at least as severe as the result was acknowledged. Severity, text and
+ * confidence are recomputed. Returns only what changed.
+ */
+export function mergeEvents(events: AirQualityEvent[]): { merged: AirQualityEvent[]; removedIds: string[] } {
+  const merged: AirQualityEvent[] = []
+  const removedIds: string[] = []
+  for (const key of SLOT_KEYS) {
+    const rows = events
+      .filter(e => slotOf(e.type) === key)
+      .sort((a, b) => a.startTime.getTime() - b.startTime.getTime() || a.id.localeCompare(b.id))
+    let group: AirQualityEvent[] = []
+    let groupEnd = -Infinity
+    const flush = () => {
+      if (group.length > 1) {
+        const [first, ...rest] = group
+        const startMs = first.startTime.getTime()
+        const latest = group.reduce((x, y) => (endOf(y) >= endOf(x) ? y : x))
+        const lastMs = endOf(latest)
+        const open = latest.endTime === null
+        const durationMs = Math.max(0, lastMs - startMs)
+        const peak = rest.reduce((p, e) => maxPeak(p, e.peak), first.peak)
+        let type = first.type
+        for (const e of rest) if (moreSerious(e.type, type, peak, durationMs)) type = e.type
+        const event = buildEvent(first.id, type, startMs, open ? null : lastMs, durationMs, peak, first.baseline)
+        // Dismissed only if a dismissed row was already at this severity, so
+        // folding in a later, worse part of the incident does not hide it.
+        event.acknowledged = group.some(e => e.acknowledged && SEVERITY_RANK[e.severity] >= SEVERITY_RANK[event.severity])
+        merged.push(event)
+        for (const e of rest) removedIds.push(e.id)
+      }
+      group = []
+      groupEnd = -Infinity
+    }
+    for (const e of rows) {
+      if (group.length > 0 && e.startTime.getTime() > groupEnd + MERGE_WINDOW_MS) flush()
+      group.push(e)
+      groupEnd = Math.max(groupEnd, endOf(e))
+    }
+    flush()
+  }
+  return { merged, removedIds }
+}
+
+/** End of an event, or how far an open one has got. */
+function endOf(e: AirQualityEvent): number {
+  return e.endTime?.getTime() ?? e.startTime.getTime() + e.durationMinutes * 60_000
 }

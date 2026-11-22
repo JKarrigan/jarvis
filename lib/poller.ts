@@ -1,10 +1,10 @@
 import 'server-only'
 import { lookup } from 'dns/promises'
 import {
-  closeOrphanEvents, getLatestReadingTimestamp, getOpenEvents, insertReading,
-  iterateDetectorReadings, upsertEvents,
+  getLatestReadingTimestamp, getOpenEvents, insertReading, iterateDetectorReadings,
+  reconcileOpenEvents, upsertEvents,
 } from './db'
-import { EventDetector, type DetectorChange } from './eventDetection'
+import { primeDetector, type DetectorChange, type EventDetector } from './eventDetection'
 import type { AirQualityEvent } from './eventTypes'
 import { isLanHost } from './http'
 import { addLog, truncateData } from './httpLog'
@@ -77,21 +77,17 @@ function persistChanges(changes: DetectorChange[]): void {
  * (silently — those events were already written), continues any event the
  * database still has open, and closes open rows nothing is tracking.
  */
-function primeDetector(): EventDetector {
-  const detector = new EventDetector()
+function buildLiveDetector(): EventDetector {
   const last = getLatestReadingTimestamp()
-  if (last != null) {
-    for (const r of iterateDetectorReadings(last - PRIME_MS, last)) detector.push(r)
-  }
-  const active = detector.adopt(getOpenEvents())
-  upsertEvents(active)
-  closeOrphanEvents(active.map(e => e.id))
+  const recent = last != null ? iterateDetectorReadings(last - PRIME_MS, last) : []
+  const { detector, active } = primeDetector(recent, getOpenEvents())
+  reconcileOpenEvents(active)
   return detector
 }
 
 function getDetector(): EventDetector {
   const state = getState()
-  if (!state.detector) state.detector = primeDetector()
+  if (!state.detector) state.detector = buildLiveDetector()
   return state.detector
 }
 
@@ -103,8 +99,11 @@ export function initEventDetection(): void {
 /**
  * Swaps in a detector built elsewhere (the reprocess endpoint replays all
  * history and hands over its final state so live ids match the new rows).
+ * Call after the events table has been rewritten and merged: an open event
+ * whose row was merged into an older one continues under the surviving id.
  */
 export function replaceLiveDetector(detector: EventDetector): void {
+  reconcileOpenEvents(detector.resume(getOpenEvents()))
   getState().detector = detector
 }
 

@@ -1,5 +1,5 @@
 import 'server-only'
-import { getSetting, pruneEvents, pruneReadings } from './db'
+import { getSetting, mergeDuplicateEvents, pruneEvents, pruneReadings } from './db'
 import { initEventDetection, normalizeDeviceHost, startPoller } from './poller'
 import { startPhotoScheduler } from './photos/scan'
 
@@ -32,6 +32,14 @@ function prune(): void {
 }
 
 function startAirGradient(): void {
+  try {
+    // Rows that older detector versions logged twice for one incident; the
+    // originals are kept in events_premerge. A no-op once the table is clean.
+    const { removed, merged } = mergeDuplicateEvents()
+    if (removed) console.log(`[startup] merged ${removed} duplicate events into ${merged}`)
+  } catch (err) {
+    console.error('[startup] duplicate event cleanup failed', err)
+  }
   try {
     initEventDetection()
   } catch (err) {

@@ -101,16 +101,18 @@ export function DashboardShell() {
 
   const allActiveEvents = useMemo(() => [...activeEvents, ...devEvents], [activeEvents, devEvents])
 
-  // Toast new critical/warning events once each (server ids are stable now).
+  // Toast new critical/warning events once per id and severity: an event
+  // keeps its id when it escalates (say VOC → combustion), and that should alert again.
   useEffect(() => {
     notifiedIds.current ??= new Set(readNotified())
     const seen = notifiedIds.current
     let changed = false
     for (const event of allActiveEvents) {
-      if (seen.has(event.id) || event.acknowledged) continue
+      const key = `${event.id}:${event.severity}`
+      if (seen.has(key) || event.acknowledged) continue
       if (event.severity !== 'critical' && event.severity !== 'warning') continue
       showToast(event.severity, event.title)
-      seen.add(event.id)
+      seen.add(key)
       changed = true
     }
     if (changed) writeNotified([...seen])
@@ -126,7 +128,10 @@ export function DashboardShell() {
 
   function simulateAlerts() {
     // Forget the mock ids so their toasts fire again
-    for (const e of mockEvents()) notifiedIds.current?.delete(e.id)
+    const mockIds = new Set(mockEvents().map(e => e.id))
+    for (const key of [...(notifiedIds.current ?? [])]) {
+      if (mockIds.has(key.slice(0, key.lastIndexOf(':')))) notifiedIds.current?.delete(key)
+    }
     setDevEvents(mockEvents())
   }
 

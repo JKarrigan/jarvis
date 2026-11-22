@@ -1,13 +1,15 @@
-import { getReadingSpan, iterateDetectorReadings, replaceAllEvents } from '@/lib/db'
+import { getReadingSpan, iterateDetectorReadings, mergeDuplicateEvents, replaceEvents } from '@/lib/db'
 import { runDetector } from '@/lib/eventDetection'
 import { assertSameOrigin } from '@/lib/http'
 import { replaceLiveDetector } from '@/lib/poller'
 
 /**
  * Re-runs event detection over all stored readings. Detection is O(n) and the
- * rows stream straight from SQLite; the old events are replaced in a single
- * transaction that keeps acknowledgements. The live poller then continues from
- * the batch detector's final state, so its ids match the new rows.
+ * rows stream straight from SQLite; the events in the span of the stored
+ * readings are replaced in a single transaction that keeps acknowledgements
+ * (older events, whose readings have been pruned, are kept), then rows that
+ * still describe one incident twice are merged. The live poller continues
+ * from the batch detector's final state, so its ids match the new rows.
  */
 export async function POST(request: Request) {
   const rejected = assertSameOrigin(request)
@@ -15,7 +17,8 @@ export async function POST(request: Request) {
 
   const span = getReadingSpan()
   const { events, detector, readingsProcessed } = runDetector(iterateDetectorReadings())
-  replaceAllEvents(events)
+  if (span) replaceEvents(events, span.from)
+  mergeDuplicateEvents()
   replaceLiveDetector(detector)
 
   return Response.json({
