@@ -8,3 +8,6 @@ export const SIDEBAR_KEY = 'home.sidebar.v1'
  */
 export const SIDEBAR_INIT_SCRIPT =
   `try{if(localStorage.getItem(${JSON.stringify(SIDEBAR_KEY)})==='collapsed')document.documentElement.dataset.sidebar='collapsed'}catch(e){}`
+
+/** Fired on `window` after this tab collapses or expands the sidebar. */
+export const SIDEBAR_CHANGE_EVENT = 'home-sidebar-change'

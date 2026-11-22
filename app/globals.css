@@ -223,7 +223,15 @@ body {
    has the right gutters on a phone (setting them from JS after hydration made
    phones flash the 96px desktop gutter). The breakpoint matches Tailwind's `md`
    (768px), where MediaRail switches from the bottom tab bar to the side rail. */
+/* Registered as a length so it can transition: collapsing or expanding the sidebar eases
+   every `var(--rail)` gutter (and the docked players) along with the sidebar's width. */
+@property --rail {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 96px;
+}
 .reel-root {
+  transition: --rail 300ms cubic-bezier(0.2, 0.7, 0.2, 1);
   --rail: 96px;      /* left page gutter (clears the icon rail) */
   --gx: 56px;        /* right page gutter */
   --navpad: 0px;     /* bottom padding that clears the mobile tab bar */

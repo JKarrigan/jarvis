@@ -141,12 +141,12 @@ export function AirSidebar() {
         href={item.href}
         aria-current={active ? 'page' : undefined}
         title={item.label}
-        className={`relative flex h-11 items-center justify-center gap-3 rounded-[10px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 wide:justify-start ${
+        className={`relative flex h-11 items-center gap-3 overflow-hidden rounded-[10px] pl-[15px] pr-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 ${
           active ? 'bg-air-hover font-semibold text-white' : 'font-medium text-zinc-400 hover:bg-white/[0.04] hover:text-white'
         }`}
       >
         <Icon d={item.d} className={`h-[18px] w-[18px] ${active ? 'text-emerald-400' : ''}`} />
-        <span className="sr-only flex-1 wide:not-sr-only">{item.label}</span>
+        <span className="flex-1 whitespace-nowrap opacity-0 transition-opacity duration-200 wide:opacity-100">{item.label}</span>
         {badge ? (
           <span className="absolute right-1.5 top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-amber-400 px-1 text-[11px] font-bold text-zinc-950 wide:static">
             {badge}<span className="sr-only"> open</span>
@@ -169,7 +169,7 @@ export function AirSidebar() {
       </div>
 
       {/* ── Sidebar ── */}
-      <aside className="sticky top-0 hidden h-screen w-[72px] shrink-0 flex-col gap-5 overflow-y-auto border-r border-air-line bg-air-panel px-3 py-4 md:flex wide:w-[232px]">
+      <aside className="sticky top-0 hidden h-screen w-[72px] shrink-0 flex-col gap-5 overflow-y-auto overflow-x-hidden border-r border-air-line bg-air-panel px-3 py-4 transition-[width] duration-300 ease-[cubic-bezier(0.2,0.7,0.2,1)] md:flex wide:w-[232px]">
         <AppSwitch current="air" layout="rail" />
 
         <nav aria-label="Home" className="flex flex-col gap-0.5">
@@ -177,23 +177,26 @@ export function AirSidebar() {
         </nav>
 
         <nav aria-label="System" className="flex flex-col gap-0.5">
-          <div aria-hidden="true" className="mx-3 mb-2 h-px bg-air-line wide:hidden" />
-          <p className="hidden px-3 pb-1.5 text-xs text-zinc-400 wide:block">System</p>
+          {/* Same height either way, so the links below never move: a rule on the rail, the label when open. */}
+          <div className="relative h-[22px]">
+            <div aria-hidden="true" className="absolute inset-x-3 top-2 h-px bg-air-line transition-opacity duration-200 wide:opacity-0" />
+            <p className="absolute left-[15px] top-0 whitespace-nowrap text-xs text-zinc-400 opacity-0 transition-opacity duration-200 wide:opacity-100">System</p>
+          </div>
           {SYSTEM.map(item => sideLink(item))}
         </nav>
 
-        <div className="mt-auto flex flex-col">
-          <SidebarToggle tone="air" />
-        </div>
-
-        {/* Connection status: full rows when labelled, two dots on the rail. */}
-        <div className="hidden flex-col gap-2.5 rounded-xl border border-air-line bg-air-card px-3 py-3.5 text-[13px] wide:flex">
+        {/* Connection status: full rows when labelled, two dots on the rail. The toggle sits
+            below it, pinned to the bottom, so it stays under the pointer when the status changes height. */}
+        <div className="mt-auto hidden flex-col gap-2.5 whitespace-nowrap rounded-xl border border-air-line bg-air-card px-3 py-3.5 text-[13px] wide:flex">
           <HealthRow label="Air sensor" health={sensor} />
           <HealthRow label="Hue bridge" health={hue} />
         </div>
-        <div className="flex flex-col items-center gap-2.5 pb-1 wide:hidden">
+        <div className="mt-auto flex flex-col items-center gap-2.5 pb-1 wide:hidden">
           <span role="img" aria-label={`Air sensor: ${sensor.text}`} title={`Air sensor: ${sensor.text}`} className={`h-2 w-2 rounded-full ${HEALTH_DOT[sensor.state]}`} />
           <span role="img" aria-label={`Hue bridge: ${hue.text}`} title={`Hue bridge: ${hue.text}`} className={`h-2 w-2 rounded-full ${HEALTH_DOT[hue.state]}`} />
+        </div>
+        <div className="-mt-2 flex flex-col">
+          <SidebarToggle tone="air" />
         </div>
       </aside>
 

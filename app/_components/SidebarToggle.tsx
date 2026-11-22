@@ -1,9 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
-import { SIDEBAR_KEY } from '@/lib/sidebar'
-
-const CHANGE_EVENT = 'home-sidebar-change'
+import { SIDEBAR_CHANGE_EVENT as CHANGE_EVENT, SIDEBAR_KEY } from '@/lib/sidebar'
 
 function read(): boolean {
   try { return localStorage.getItem(SIDEBAR_KEY) === 'collapsed' } catch { return false }
@@ -67,7 +65,7 @@ export function SidebarToggle({ tone }: { tone: 'air' | 'media' }) {
       onClick={toggle}
       aria-pressed={collapsed}
       title={`${label} ( [ )`}
-      className={`hidden h-11 shrink-0 items-center justify-center gap-3 rounded-[10px] px-3 text-sm font-medium text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 xl:flex wide:justify-start ${
+      className={`hidden h-11 shrink-0 items-center gap-3 overflow-hidden rounded-[10px] pl-[15px] pr-3 text-sm font-medium text-white/60 transition-colors hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 xl:flex ${
         tone === 'air' ? 'focus-visible:ring-emerald-400' : 'focus-visible:ring-accent'
       }`}
     >
@@ -75,7 +73,7 @@ export function SidebarToggle({ tone }: { tone: 'air' | 'media' }) {
         <path d="M4 5h16v14H4zM9 5v14" />
         <path d={collapsed ? 'M14 10l2 2-2 2' : 'M16 10l-2 2 2 2'} />
       </svg>
-      <span className="sr-only flex-1 text-left wide:not-sr-only">{label}</span>
+      <span className="flex-1 whitespace-nowrap opacity-0 transition-opacity duration-200 wide:opacity-100 text-left">{label}</span>
       <kbd aria-hidden="true" className="hidden rounded-md bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white/70 wide:inline">[</kbd>
     </button>
   )

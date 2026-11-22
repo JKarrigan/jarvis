@@ -103,12 +103,12 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
         aria-label={badge ? `${item.label} (${badge})` : undefined}
         aria-current={active ? 'page' : undefined}
         title={item.label}
-        className={`relative flex h-11 items-center justify-center gap-3 rounded-[10px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent wide:justify-start ${
+        className={`relative flex h-11 items-center gap-3 overflow-hidden rounded-[10px] pl-[15px] pr-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
           active ? 'bg-surface-2 font-bold text-accent-soft' : 'font-semibold text-white/65 hover:bg-white/5 hover:text-white'
         }`}
       >
         <item.Icon className="h-5 w-5 shrink-0" />
-        <span className="sr-only flex-1 wide:not-sr-only">{item.label}</span>
+        <span className="flex-1 whitespace-nowrap opacity-0 transition-opacity duration-200 wide:opacity-100">{item.label}</span>
         {badge ? <CountBadge count={badge} className="absolute right-1 top-1 h-[18px] min-w-[18px] px-1 text-[10px] wide:static" /> : null}
       </Link>
     )
@@ -141,7 +141,7 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
       </div>
 
       {/* ── Sidebar ── */}
-      <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[74px] flex-col gap-4 overflow-y-auto border-r border-border bg-black/35 px-3 py-4 backdrop-blur-xl backdrop-saturate-150 md:flex wide:w-[232px]">
+      <aside className="fixed left-0 top-0 z-40 hidden h-screen w-[74px] flex-col gap-4 overflow-y-auto overflow-x-hidden border-r border-border bg-black/35 px-3 py-4 backdrop-blur-xl backdrop-saturate-150 transition-[width] duration-300 ease-[cubic-bezier(0.2,0.7,0.2,1)] md:flex wide:w-[232px]">
         <AppSwitch current="media" layout="rail" />
 
         <button
@@ -149,10 +149,10 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
           onClick={onSearch}
           aria-label={searchLabel}
           title={searchLabel}
-          className="flex h-11 shrink-0 items-center justify-center gap-3 rounded-[10px] border border-white/[0.08] bg-white/[0.04] px-3 text-sm font-semibold text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent wide:justify-start"
+          className="flex h-11 shrink-0 items-center gap-3 overflow-hidden rounded-[10px] border border-white/[0.08] bg-white/[0.04] pl-[14px] pr-3 text-sm font-semibold text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <SearchIcon className="h-5 w-5 shrink-0" />
-          <span className="hidden flex-1 text-left wide:inline">Search</span>
+          <span className="flex-1 whitespace-nowrap opacity-0 transition-opacity duration-200 wide:opacity-100 text-left">Search</span>
           {shortcut && <kbd className="hidden rounded-md bg-white/10 px-1.5 py-0.5 font-sans text-xs text-white/70 wide:inline">{shortcut}</kbd>}
         </button>
 
@@ -161,8 +161,11 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
         </nav>
 
         <nav aria-label="Your library" className="flex flex-col gap-0.5">
-          <div aria-hidden="true" className="mx-3 mb-2 h-px bg-white/10 wide:hidden" />
-          <p className="hidden px-3 pb-1.5 text-xs text-white/60 wide:block">Your library</p>
+          {/* Same height either way, so the links below never move: a rule on the rail, the label when open. */}
+          <div className="relative h-[22px]">
+            <div aria-hidden="true" className="absolute inset-x-3 top-2 h-px bg-white/10 transition-opacity duration-200 wide:opacity-0" />
+            <p className="absolute left-[15px] top-0 whitespace-nowrap text-xs text-white/60 opacity-0 transition-opacity duration-200 wide:opacity-100">Your library</p>
+          </div>
           {LIBRARY.map(item => sideLink(item))}
           {pickCount > 0 && sideLink(PICK_LIST, pickCount)}
         </nav>
@@ -176,12 +179,12 @@ export function MediaRail({ onSearch }: { onSearch: () => void }) {
           aria-label={`Profile ${activeProfile} and settings`}
           aria-current={isActive(pathname, SETTINGS) ? 'page' : undefined}
           title="Profile and settings"
-          className={`flex h-[52px] shrink-0 items-center justify-center gap-3 rounded-xl border border-white/[0.08] px-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent wide:justify-start wide:px-2.5 ${
+          className={`flex h-[52px] shrink-0 items-center gap-3 overflow-hidden rounded-xl border border-white/[0.08] pl-2 pr-2.5 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
             isActive(pathname, SETTINGS) ? 'bg-surface-2 text-accent-soft' : 'bg-white/[0.04] text-white/75 hover:bg-white/[0.08] hover:text-white'
           }`}
         >
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 text-sm font-bold text-accent-soft">{activeProfile}</span>
-          <span className="hidden flex-1 truncate wide:inline">Settings</span>
+          <span className="flex-1 whitespace-nowrap opacity-0 transition-opacity duration-200 wide:opacity-100">Settings</span>
           <GearIcon className="hidden h-[18px] w-[18px] text-white/50 wide:block" />
         </Link>
       </aside>
