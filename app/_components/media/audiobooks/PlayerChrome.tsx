@@ -295,9 +295,9 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
   const multi = book.chapters.length > 1
   const canPlay = status === 'ready' || status === 'loading'
   const bookPercent = book.duration > 0 ? Math.min(100, Math.max(0, Math.round((time / book.duration) * 100))) : 0
-  // `pillShape` has no display of its own, so a pill can also be `hidden md:flex`.
-  const pillShape = 'h-[46px] items-center gap-2 whitespace-nowrap rounded-[13px] border border-border px-4 text-[13.5px] font-bold transition-colors'
-  const pill = `flex ${pillShape}`
+  // `pillBase` has no display, gap or padding of its own, so a pill can also be
+  // `hidden md:flex`, and the two phone pills can be tighter on a 320px screen.
+  const pillBase = 'h-[46px] items-center whitespace-nowrap rounded-[13px] border border-border text-[13.5px] font-bold transition-colors'
 
   // Shared horizontal gutter so the header, stage and timeline line up edge to edge.
   const gutter = 'px-5 md:px-[clamp(28px,4.2vw,84px)]'
@@ -327,8 +327,10 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
         <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(8,6,13,0.55) 0%, rgba(8,6,13,0.3) 40%, rgba(8,6,13,0.82) 100%)' }} />
       </div>
 
-      <div className="relative flex min-h-full flex-col md:h-full md:min-h-[600px]">
-        <header className={`flex shrink-0 items-center justify-between pt-5 md:pt-7 ${gutter}`}>
+      {/* A definite height (not min-height) on every size: the cover's slot below is a size
+          container, and its `cqh` only resolves when the height chain above it is definite. */}
+      <div className="relative flex h-full flex-col md:min-h-[600px]">
+        <header className={`flex shrink-0 items-center justify-between pt-[max(20px,env(safe-area-inset-top))] md:pt-[max(28px,env(safe-area-inset-top))] ${gutter}`}>
           <button type="button" aria-label="Collapse player" onClick={() => setExpanded(false)} className={glassBtn}>
             <ChevronDownIcon className="h-[22px] w-[22px]" />
           </button>
@@ -345,19 +347,26 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
           </div>
         </header>
 
-        {/* Stage: cover sized off the viewport height, controls, and a chapter rail that runs the full height. */}
-        <main className={`grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] items-center gap-5 py-4 md:grid-cols-[auto_minmax(0,1fr)] md:gap-[clamp(28px,3.2vw,72px)] md:py-[clamp(16px,3vh,40px)] xl:grid-cols-[auto_minmax(0,1fr)_clamp(280px,22vw,400px)] ${gutter}`}>
-          <Cover
-            book={book}
-            rounded="rounded-[20px] md:rounded-[26px]"
-            titleClass="text-[clamp(28px,4vw,56px)]"
-            className="mx-auto w-[min(70vw,34vh)] rounded-[20px] shadow-[0_40px_120px_rgba(0,0,0,0.65)] md:mx-0 md:w-[min(38vw,60vh)] md:rounded-[26px] xl:w-[min(30vw,62vh)]"
-          />
+        {/* Stage: cover, controls, and a chapter rail that runs the full height.
+            Phones stack them, and the cover takes whatever height the controls leave: its
+            slot is a size container, so the square is cut to fit and the screen never has
+            to scroll (toolbars showing, small phones, a title on two lines); a slot too
+            short for a cover worth showing stays empty. From md the slot dissolves
+            (`contents`) and the cover is sized off the viewport instead. */}
+        <main className={`flex min-h-0 flex-1 flex-col gap-[clamp(10px,2dvh,20px)] py-[clamp(8px,1.6dvh,16px)] md:grid md:grid-cols-[auto_minmax(0,1fr)] md:grid-rows-[minmax(0,1fr)] md:items-center md:gap-[clamp(28px,3.2vw,72px)] md:py-[clamp(16px,3vh,40px)] xl:grid-cols-[auto_minmax(0,1fr)_clamp(280px,22vw,400px)] ${gutter}`}>
+          <div className="flex min-h-0 flex-1 items-center justify-center [container-type:size] md:contents">
+            <Cover
+              book={book}
+              rounded="rounded-[20px] md:rounded-[26px]"
+              titleClass="text-[clamp(13px,12cqmin,36px)] md:text-[clamp(28px,4vw,56px)]"
+              className="w-[min(100cqw,100cqh,340px)] rounded-[20px] [@container_(max-height:87px)]:hidden shadow-[0_40px_120px_rgba(0,0,0,0.65)] md:w-[min(38vw,60vh)] md:rounded-[26px] xl:w-[min(30vw,62vh)]"
+            />
+          </div>
 
           {/* One column, one width: the scrubber, transport and option rows share both edges.
               Centred on phones, left-aligned beside the cover from md. */}
-          <div className="mx-auto flex w-full min-w-0 max-w-[560px] flex-col gap-[clamp(18px,3.2vh,40px)] md:mx-0">
-            <div className="flex flex-col items-center gap-2.5 text-center md:items-start md:text-left">
+          <div className="mx-auto flex w-full min-w-0 max-w-[560px] shrink-0 flex-col gap-[clamp(12px,2.6dvh,26px)] md:mx-0 md:shrink md:gap-[clamp(18px,3.2vh,40px)]">
+            <div className="flex flex-col items-center gap-1.5 text-center md:items-start md:gap-2.5 md:text-left">
               {multi && chapter && (
                 <div className="text-[11.5px] font-bold uppercase tracking-[0.14em] text-accent-soft md:text-[12.5px]">
                   {/* "Track 20" already carries its number — don't print "Track 20 · 20 of 38". */}
@@ -366,7 +375,7 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
                     : `${chapter.title} · ${chapter.index + 1} of ${book.chapters.length}`}
                 </div>
               )}
-              <h1 className="text-[clamp(26px,2.6vw+1.6vh,62px)] font-[800] leading-[1.02] tracking-[-0.03em] text-ink [text-wrap:balance]">{book.title}</h1>
+              <h1 className="line-clamp-2 pb-[0.08em] text-[clamp(24px,2.6vw+1.6vh,62px)] font-[800] leading-[1.02] tracking-[-0.03em] text-ink [text-wrap:balance] md:line-clamp-none">{book.title}</h1>
               <div className="text-[14px] text-white/70 md:text-[clamp(15px,1.1vw,19px)]">
                 {[book.author, book.narrator && `read by ${book.narrator}`].filter(Boolean).join(' · ')}
               </div>
@@ -421,13 +430,13 @@ function NowPlaying({ onSheet, sheetOpen }: { onSheet: (k: SheetKind) => void; s
                 onOpen={() => onSheet('speed')}
                 label={r => <>{r.toFixed(2)}×<span className="hidden sm:inline"> speed</span></>}
                 labelClass="min-w-0 flex-1"
-                className={`${pill} flex-1 gap-0.5 bg-black/30 px-1 py-1 text-white/85 backdrop-blur-xl`}
+                className={`${pillBase} flex-1 gap-1 bg-black/30 px-1.5 py-1 text-white/85 backdrop-blur-xl md:gap-2 md:px-4`}
                 stepClass="h-full w-10 rounded-[10px] text-[18px]"
               />
-              <button type="button" onClick={() => onSheet('sleep')} className={`${pill} flex-1 justify-center backdrop-blur-xl ${sleep.kind === 'off' ? 'bg-black/30 text-white/85 hover:bg-white/10' : 'bg-white/10 text-accent-soft'}`}>
-                <MoonIcon className="h-[18px] w-[18px]" />{sleepLabel(sleep)}
+              <button type="button" onClick={() => onSheet('sleep')} className={`${pillBase} flex min-w-0 flex-1 justify-center gap-2 px-3 backdrop-blur-xl min-[360px]:px-4 md:min-w-auto ${sleep.kind === 'off' ? 'bg-black/30 text-white/85 hover:bg-white/10' : 'bg-white/10 text-accent-soft'}`}>
+                <MoonIcon className="h-[18px] w-[18px] shrink-0" /><span className="truncate">{sleepLabel(sleep)}</span>
               </button>
-              <div className={`${pillShape} hidden min-w-0 flex-1 gap-2.5 bg-black/30 text-white/85 backdrop-blur-xl md:flex`}>
+              <div className={`${pillBase} hidden min-w-0 flex-1 gap-2.5 bg-black/30 px-4 text-white/85 backdrop-blur-xl md:flex`}>
                 <VolumeIcon className="h-5 w-5 shrink-0" />
                 <Slider ariaLabel="Volume" fraction={volume} onChange={setVolume} />
               </div>
