@@ -103,7 +103,9 @@ function AppMenu({ current, className = '' }: { current: AppKey; className?: str
   }, [open, close])
 
   return (
-    <div className={className}>
+    // The 54px slot matches the open sidebar's two-segment control, so nothing below
+    // moves on toggle; the button inside is the same 44px row as the nav links.
+    <div className={`h-[54px] items-center ${className}`}>
       <button
         ref={buttonRef}
         type="button"
@@ -112,12 +114,14 @@ function AppMenu({ current, className = '' }: { current: AppKey; className?: str
         aria-haspopup="menu"
         aria-expanded={open}
         title="Switch app"
-        className="flex h-[54px] w-full items-center justify-center gap-0.5 rounded-[14px] border border-white/[0.08] bg-white/[0.04] text-zinc-100 transition-colors hover:bg-white/[0.1] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+        className={`flex h-11 w-full items-center justify-center gap-[3px] rounded-[10px] transition-colors hover:bg-white/[0.08] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${open ? 'bg-white/[0.1]' : ''}`}
       >
-        <span className={`grid h-6 w-6 place-items-center rounded-lg text-zinc-900 ${active.chip}`}>
-          <active.Glyph size={14} />
+        {/* No box of its own: the app's chip and the chevron are centred as a pair, so
+            the highlight has the same space to the left of the chip as to the right of the chevron. */}
+        <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg text-zinc-900 ${active.chip}`}>
+          <active.Glyph size={13} />
         </span>
-        <svg aria-hidden="true" className={`text-zinc-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} width="11" height="11" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg aria-hidden="true" className={`shrink-0 text-zinc-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} width="9" height="9" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
           <path d="M5 7.5l5 5 5-5" />
         </svg>
       </button>
@@ -190,7 +194,7 @@ export function AppSwitch({ current, layout = 'row', className = '' }: {
   return (
     <>
       <Segments current={current} className={`hidden wide:flex ${className}`} />
-      <AppMenu current={current} className={`wide:hidden ${className}`} />
+      <AppMenu current={current} className={`flex wide:hidden ${className}`} />
     </>
   )
 }

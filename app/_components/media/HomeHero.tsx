@@ -53,7 +53,9 @@ function HeroDots({
   }, [paused, index, onComplete])
 
   return (
-    <div className="absolute bottom-5 right-[var(--gx)] z-10 flex items-center gap-2">
+    // Centred in the content area (between the sidebar gutter and the right gutter), not
+    // the viewport: the hero runs under the glass sidebar, so the viewport's centre reads as off.
+    <div className="absolute bottom-5 left-[calc(50%+(var(--rail)-var(--gx))/2)] z-10 flex -translate-x-1/2 items-center gap-2">
       {Array.from({ length: count }).map((_, i) => {
         const active = i === index
         return (
