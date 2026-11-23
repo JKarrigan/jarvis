@@ -1,9 +1,10 @@
 'use client'
 
-import { memo, useMemo, useState } from 'react'
+import { memo, useId, useMemo, useState } from 'react'
 import type { StatusColor } from '@/lib/types'
 import type { AirQualityEvent, Severity } from '@/lib/eventTypes'
 import { NEUTRAL_HEX, STATUS_COLORS } from '@/lib/statusColors'
+import { chartScale, clipMarks, type ClipMark } from '@/lib/chartScale'
 import { METRIC_INFO, SEVERITY_INFO, eventTitle, fmtDuration, fmtMetric, keyMetrics } from '@/lib/eventInfo'
 
 /** Event bands use the one severity palette (lib/eventInfo.ts). */
@@ -74,6 +75,9 @@ interface Geometry {
   tMax: number
   lo: number
   hi: number
+  /** Indices whose band edge lies beyond the scale (see lib/chartScale.ts). */
+  clippedAbove: number[]
+  clippedBelow: number[]
   /** [start, end] index ranges of continuous data (split at gaps). */
   segments: [number, number][]
   dayBoundaries: number[]
@@ -102,17 +106,8 @@ function buildGeometry(values: number[], timestamps: number[], low?: number[], h
   }
   if (vals.length < 2) return null
 
-  // Loops, not Math.min(...vals): spreading tens of thousands of values throws RangeError.
-  // The band is part of the scale, so it is never clipped.
-  let min = Infinity
-  let max = -Infinity
-  for (let i = 0; i < vals.length; i++) {
-    const lo = banded && Number.isFinite(lows[i]) ? lows[i] : vals[i]
-    const hi = banded && Number.isFinite(highs[i]) ? highs[i] : vals[i]
-    if (lo < min) min = lo
-    if (hi > max) max = hi
-  }
-  const pad = (max - min) * 0.12 || 1
+  // The line is always in scale; the band only to its typical extent (rare extremes are clipped and marked).
+  const { lo, hi, clippedAbove, clippedBelow } = chartScale(vals, banded ? lows : null, banded ? highs : null)
 
   const tMin = ts[0]
   const tMax = ts[ts.length - 1] > tMin ? ts[ts.length - 1] : tMin + 1
@@ -148,7 +143,7 @@ function buildGeometry(values: number[], timestamps: number[], low?: number[], h
 
   return {
     vals, ts, lows: banded ? lows : null, highs: banded ? highs : null,
-    tMin, tMax, lo: min - pad, hi: max + pad, segments, dayBoundaries,
+    tMin, tMax, lo, hi, clippedAbove, clippedBelow, segments, dayBoundaries,
   }
 }
 
@@ -156,6 +151,8 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
   const [hovered, setHovered] = useState<number | null>(null)
   const [colorMode, setColorMode] = useState<'uniform' | 'by-range'>('uniform')
   const [hoveredEvent, setHoveredEvent] = useState<AirQualityEvent | null>(null)
+  // Several charts share a page, so the band's clip path needs its own id (useId's colons are not safe in url()).
+  const clipId = `chart-band-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
 
   const geo = useMemo(() => buildGeometry(values, timestamps, low, high), [values, timestamps, low, high])
 
@@ -196,7 +193,15 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
         }
       }
     }
-    return { toX, toY, lines, area, band }
+    // Where the band leaves the scale: one caret per clipped run, a label on the most extreme one per side.
+    const marksAbove = highs ? clipMarks(geo.clippedAbove, highs, segments, 'above') : []
+    const marksBelow = lows ? clipMarks(geo.clippedBelow, lows, segments, 'below') : []
+    const extreme = (marks: ClipMark[], above: boolean) => marks.reduce<ClipMark | null>(
+      (best, m) => !best || (above ? m.value > best.value : m.value < best.value) ? m : best, null)
+    return {
+      toX, toY, lines, area, band, marksAbove, marksBelow,
+      labelAbove: extreme(marksAbove, true), labelBelow: extreme(marksBelow, false),
+    }
   }, [geo])
 
   const sortedEvents = useMemo(() => {
@@ -335,12 +340,45 @@ export const Chart = memo(function Chart({ label, unit, values, timestamps, stat
             The thin outline keeps a one-point spike visible: a fill alone is a pixel wide there. */}
         {drawn.band && (() => {
           const bandColor = colorMode === 'uniform' || muted ? color : NEUTRAL_HEX
+          const top = PAD.t
+          const bottom = PAD.t + CH
+          // Labels stay inside the plot: after the caret, or before it near the right edge.
+          const label = (m: ClipMark, y: number) => {
+            const x = toX(ts[m.index])
+            const flip = x > VW - PAD.r - 48
+            return (
+              <text
+                x={flip ? x - 7 : x + 7} y={y} textAnchor={flip ? 'end' : 'start'} dominantBaseline="middle"
+                fill={bandColor} fontSize="10" fontWeight="500"
+                stroke="#111113" strokeWidth="3" paintOrder="stroke" strokeLinejoin="round"
+              >
+                {fmt(m.value)}
+              </text>
+            )
+          }
           return (
-            <path
-              d={drawn.band}
-              fill={bandColor} fillOpacity={0.2}
-              stroke={bandColor} strokeOpacity={0.5} strokeWidth="1" strokeLinejoin="round"
-            />
+            <>
+              <clipPath id={clipId}>
+                <rect x={PAD.l} y={top} width={CW} height={CH} />
+              </clipPath>
+              <path
+                d={drawn.band} clipPath={`url(#${clipId})`}
+                fill={bandColor} fillOpacity={0.2}
+                stroke={bandColor} strokeOpacity={0.5} strokeWidth="1" strokeLinejoin="round"
+              />
+              {/* Carets where the band runs past the scale, so a flat edge is not read as data hitting a ceiling. */}
+              {drawn.marksAbove.map(m => {
+                const x = toX(ts[m.index])
+                return <path key={`a${m.index}`} d={`M ${(x - 4).toFixed(1)},${top + 5} L ${x.toFixed(1)},${top} L ${(x + 4).toFixed(1)},${top + 5} Z`} fill={bandColor} />
+              })}
+              {drawn.marksBelow.map(m => {
+                const x = toX(ts[m.index])
+                return <path key={`b${m.index}`} d={`M ${(x - 4).toFixed(1)},${bottom - 5} L ${x.toFixed(1)},${bottom} L ${(x + 4).toFixed(1)},${bottom - 5} Z`} fill={bandColor} />
+              })}
+              {/* On a multi-day chart the day names run along the top edge: the value goes under them. */}
+              {drawn.labelAbove && label(drawn.labelAbove, isMultiDay ? top + 24 : top + 4)}
+              {drawn.labelBelow && label(drawn.labelBelow, bottom - 4)}
+            </>
           )
         })()}
         {colorMode === 'uniform' || !statusFn || muted
