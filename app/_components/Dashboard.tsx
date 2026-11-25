@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { AnimatePresence, motion } from 'framer-motion'
 import type { DeviceMeasures, HistoryEntry, DailySummary, MeasureExtremes } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
 import {
@@ -9,12 +10,14 @@ import {
   tempStatus, humidityStatus, tvocStatus, noxStatus,
 } from '@/lib/thresholds'
 import { effectivePm25, findPmBatch, type PmBatch } from '@/lib/pmCalibration'
+import { fmtReading } from '@/lib/metrics'
 import { AqiHeatMap } from './AqiHeatMap'
 import { Chart } from './Chart'
 import { Clock, DateLine } from './Clock'
 import { MetricCard, metricReading, type MetricReading } from './MetricCard'
 import { AqiSummary } from './AqiSummary'
-import { Card, EmptyState, Page, PageHeader, SectionTitle, Segmented, Spinner, btnCls } from './air/ui'
+import { Card, EmptyState, Page, PageHeader, SectionTitle, Segmented, btnCls } from './air/ui'
+import { EASE, FadeIn, LoadingMark } from './air/motion'
 import { EventBanner } from './events/EventBanner'
 import { EventRow } from './events/EventBits'
 import { reviveEvent } from './PollingProvider'
@@ -62,10 +65,6 @@ interface DashboardProps {
 
 export function toUnit(celsius: number, unit: 'C' | 'F'): number {
   return unit === 'F' ? celsius * 9 / 5 + 32 : celsius
-}
-
-function fmtNum(v: number | undefined, digits: number): string {
-  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '—'
 }
 
 function num(v: number | undefined): number {
@@ -166,14 +165,14 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
   const tempFn = tempStatusFn[tempUnit]
 
   const readings: MetricReading[] = [
-    metricReading('co2', 'CO₂', measures.rco2, 'ppm', co2Status(measures.rco2), cards.co2, cards.ts),
-    metricReading('pm25', 'PM2.5', fmtNum(pm02, 1), 'µg/m³', pm25Status(pm02), cards.pm25, cards.ts),
-    metricReading('pm1', 'PM1', fmtNum(measures.pm01, 1), 'µg/m³', pm1Status(measures.pm01), cards.pm1, cards.ts),
-    metricReading('pm10', 'PM10', fmtNum(measures.pm10, 1), 'µg/m³', pm10Status(measures.pm10), cards.pm10, cards.ts),
-    metricReading('temperature', 'Temperature', fmtNum(toUnit(temp, tempUnit), 1), `°${tempUnit}`, tempStatus(temp), cards.temp, cards.ts),
-    metricReading('humidity', 'Humidity', fmtNum(hum, 0), '%', humidityStatus(hum), cards.hum, cards.ts),
-    metricReading('tvoc', 'TVOC', measures.tvocIndex, 'index', tvocStatus(measures.tvocIndex), cards.tvoc, cards.ts),
-    metricReading('nox', 'NOx', measures.noxIndex, 'index', noxStatus(measures.noxIndex), cards.nox, cards.ts),
+    metricReading('co2', 'CO₂', fmtReading(measures.rco2, 0), 'ppm', co2Status(measures.rco2), cards.co2, cards.ts),
+    metricReading('pm25', 'PM2.5', fmtReading(pm02, 1), 'µg/m³', pm25Status(pm02), cards.pm25, cards.ts),
+    metricReading('pm1', 'PM1', fmtReading(measures.pm01, 1), 'µg/m³', pm1Status(measures.pm01), cards.pm1, cards.ts),
+    metricReading('pm10', 'PM10', fmtReading(measures.pm10, 1), 'µg/m³', pm10Status(measures.pm10), cards.pm10, cards.ts),
+    metricReading('temperature', 'Temperature', fmtReading(toUnit(temp, tempUnit), 1), `°${tempUnit}`, tempStatus(temp), cards.temp, cards.ts),
+    metricReading('humidity', 'Humidity', fmtReading(hum, 0), '%', humidityStatus(hum), cards.hum, cards.ts),
+    metricReading('tvoc', 'TVOC', fmtReading(measures.tvocIndex, 0), 'index', tvocStatus(measures.tvocIndex), cards.tvoc, cards.ts),
+    metricReading('nox', 'NOx', fmtReading(measures.noxIndex, 0), 'index', noxStatus(measures.noxIndex), cards.nox, cards.ts),
   ]
 
   const deviceInfo = [
@@ -203,12 +202,23 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
       {/* AQI · 30-day heat map */}
       <div className="flex flex-col gap-4 lg:flex-row">
         <AqiSummary pm25={pm02} outdoorAqi={outdoorAqi} stale={stale} className="min-w-0 flex-1" />
-        {dailySummaries.length > 0 && (
-          <Card aria-label="Daily air quality" className="w-full max-w-[380px] shrink-0 p-5 lg:w-[280px]">
-            <p className="mb-3 text-sm text-zinc-400">Daily average AQI</p>
-            <AqiHeatMap summaries={dailySummaries} />
-          </Card>
-        )}
+        <AnimatePresence initial={false}>
+          {dailySummaries.length > 0 && (
+            <motion.div
+              key="daily"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25, ease: EASE }}
+              className="w-full max-w-[380px] shrink-0 lg:w-[280px]"
+            >
+              <Card aria-label="Daily air quality" className="h-full p-5">
+                <p className="mb-3 text-sm text-zinc-400">Daily average AQI</p>
+                <AqiHeatMap summaries={dailySummaries} />
+              </Card>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <section aria-label="Readings" className="grid grid-cols-2 gap-3 md:gap-4 lg:grid-cols-4">
@@ -218,31 +228,56 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
       {/* History */}
       <section className="mt-4 flex flex-col gap-4">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <SectionTitle className="text-lg">History</SectionTitle>
+          <div className="flex items-center gap-3">
+            <SectionTitle className="text-lg">History</SectionTitle>
+            <LoadingMark loading={loadingChart} />
+          </div>
           <Segmented options={RANGES} value={range} onChange={setRange} label="History range" scroll />
-          {loadingChart && <Spinner className="h-4 w-4" />}
         </div>
 
-        {chartEvents.length > 0 && (
-          <Card aria-label="Events in this view" className="overflow-hidden">
-            <div className="flex flex-wrap items-baseline justify-between gap-x-4 px-4 pb-2 pt-4 md:px-5">
-              <p className="text-sm text-zinc-400">
-                <span className="font-medium text-zinc-200">Events in this view.</span> The shaded bands on the charts mark them.
-              </p>
-              {chartEvents.length > EVENTS_SHOWN && (
-                <Link href="/events" className="inline-flex min-h-8 items-center text-sm text-zinc-400 transition-colors hover:text-white">
-                  All {chartEvents.length}
-                </Link>
-              )}
-            </div>
-            {chartEvents.slice(0, EVENTS_SHOWN).map(e => (
-              <EventRow key={e.id} event={e} now={nowMinute} showDay className="border-t border-air-line" />
-            ))}
-          </Card>
-        )}
+        {/* One card for every range that has events (never remounted by a range switch); it and its rows grow and shrink in place. */}
+        <AnimatePresence initial={false}>
+          {chartEvents.length > 0 && (
+            <motion.div
+              key="events"
+              initial={{ height: 0, opacity: 0, marginBottom: -16 }}
+              animate={{ height: 'auto', opacity: 1, marginBottom: 0 }}
+              exit={{ height: 0, opacity: 0, marginBottom: -16 }}
+              transition={{ duration: 0.3, ease: EASE }}
+              className="overflow-hidden"
+            >
+              <Card aria-label="Events in this view" className="overflow-hidden">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 px-4 pb-2 pt-4 md:px-5">
+                  <p className="text-sm text-zinc-400">
+                    <span className="font-medium text-zinc-200">Events in this view.</span> The shaded bands on the charts mark them.
+                  </p>
+                  {chartEvents.length > EVENTS_SHOWN && (
+                    <Link href="/events" className="inline-flex min-h-8 items-center text-sm text-zinc-400 transition-colors hover:text-white">
+                      All {chartEvents.length}
+                    </Link>
+                  )}
+                </div>
+                <AnimatePresence initial={false}>
+                  {chartEvents.slice(0, EVENTS_SHOWN).map(e => (
+                    <motion.div
+                      key={e.id}
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.25, ease: EASE }}
+                      className="overflow-hidden"
+                    >
+                      <EventRow event={e} now={nowMinute} showDay className="border-t border-air-line" />
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </Card>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {series.ts.length > 1 ? (
-          <>
+          <FadeIn key="charts" className="flex flex-col gap-4">
             <Chart label="CO₂" unit="ppm" values={series.co2} low={series.low.co2} high={series.high.co2} timestamps={series.ts} status={co2Status(measures.rco2)} statusFn={co2Status} events={chartEvents} muted={stale} />
             <Chart label="PM2.5" unit="μg/m³" values={series.pm25} low={series.low.pm25} high={series.high.pm25} timestamps={series.ts} status={pm25Status(pm02)} statusFn={pm25Status} events={chartEvents} muted={stale} />
             <Chart label="PM1" unit="μg/m³" values={series.pm1} low={series.low.pm1} high={series.high.pm1} timestamps={series.ts} status={pm1Status(measures.pm01)} statusFn={pm1Status} events={chartEvents} muted={stale} />
@@ -251,9 +286,11 @@ export function Dashboard({ measures, history, tempUnit, onTempUnit, pmBatchId, 
             <Chart label="Humidity" unit="%" values={series.hum} low={series.low.hum} high={series.high.hum} timestamps={series.ts} status={humidityStatus(hum)} statusFn={humidityStatus} muted={stale} />
             <Chart label="TVOC" unit="idx" values={series.tvoc} low={series.low.tvoc} high={series.high.tvoc} timestamps={series.ts} status={tvocStatus(measures.tvocIndex)} statusFn={tvocStatus} events={chartEvents} muted={stale} />
             <Chart label="NOx" unit="idx" values={series.nox} low={series.low.nox} high={series.high.nox} timestamps={series.ts} status={noxStatus(measures.noxIndex)} statusFn={noxStatus} events={chartEvents} muted={stale} />
-          </>
+          </FadeIn>
         ) : !loadingChart && (
-          <EmptyState title="No data for this period" />
+          <FadeIn key="empty">
+            <EmptyState title="No data for this period" />
+          </FadeIn>
         )}
       </section>
 

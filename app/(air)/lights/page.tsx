@@ -16,6 +16,7 @@ import {
 import { useHueLights } from '@/app/_components/lights/useHueLights'
 import { Toast, useToast } from '@/app/_components/Toast'
 import { EmptyState, Page, PageHeader, PageState, SectionTitle, cardCls } from '@/app/_components/air/ui'
+import { FadeIn } from '@/app/_components/air/motion'
 
 /**
  * Card layout: the whole card is a real <button> stretched underneath the
@@ -167,75 +168,78 @@ export default function LightsPage() {
           )}
         </PageHeader>
 
-        {notConfigured ? (
-          <EmptyState title="No Hue bridge connected yet">
-            <Link href="/settings" className="mt-2 text-sm font-medium text-amber-300 transition-colors hover:text-amber-200">
-              Connect your bridge in Settings
-            </Link>
-          </EmptyState>
-        ) : error && data === null ? (
-          <PageState>
-            <div role="alert" className="space-y-1">
-              <p className="text-sm text-red-400">{error}</p>
-              <p className="text-sm text-zinc-400">Retrying automatically.</p>
+        {/* Each state fades in as it replaces the last. */}
+        <FadeIn key={notConfigured ? 'setup' : data ? 'ready' : error ? 'error' : 'loading'} className="flex flex-col gap-4">
+          {notConfigured ? (
+            <EmptyState title="No Hue bridge connected yet">
+              <Link href="/settings" className="mt-2 text-sm font-medium text-amber-300 transition-colors hover:text-amber-200">
+                Connect your bridge in Settings
+              </Link>
+            </EmptyState>
+          ) : error && data === null ? (
+            <PageState>
+              <div role="alert" className="space-y-1">
+                <p className="text-sm text-red-400">{error}</p>
+                <p className="text-sm text-zinc-400">Retrying automatically.</p>
+              </div>
+            </PageState>
+          ) : data === null ? (
+            <div className="flex flex-col gap-4" aria-busy="true" aria-label="Loading lights">
+              <div className="grid gap-3 md:grid-cols-2 md:gap-4">
+                {[...Array(4)].map((_, i) => <div key={i} className={`${cardCls} h-[92px] animate-pulse`} />)}
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4">
+                {[...Array(8)].map((_, i) => <div key={i} className={`${cardCls} h-[104px] animate-pulse`} />)}
+              </div>
             </div>
-          </PageState>
-        ) : data === null ? (
-          <div className="flex flex-col gap-4" aria-busy="true" aria-label="Loading lights">
-            <div className="grid gap-3 md:grid-cols-2 md:gap-4">
-              {[...Array(4)].map((_, i) => <div key={i} className={`${cardCls} h-[92px] animate-pulse`} />)}
-            </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4">
-              {[...Array(8)].map((_, i) => <div key={i} className={`${cardCls} h-[104px] animate-pulse`} />)}
-            </div>
-          </div>
-        ) : (
-          <>
-            {connection === 'reconnecting' && (
-              <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
-                {error ? `${error}. ` : ''}Reconnecting. Values shown may be out of date.
-              </p>
-            )}
+          ) : (
+            <>
+              {connection === 'reconnecting' && (
+                <p role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
+                  {error ? `${error}. ` : ''}Reconnecting. Values shown may be out of date.
+                </p>
+              )}
 
-            {data.groups.length > 0 && (
-              <section className="flex flex-col gap-3">
-                <SectionTitle>Rooms</SectionTitle>
-                <div className="grid gap-3 md:grid-cols-2 md:gap-4">
-                  {data.groups.map(g => (
-                    <RoomCard
-                      key={g.id}
-                      group={g}
-                      onToggle={handleGroupToggle}
-                      onBrightness={handleGroupBrightness}
-                      onSelect={id => setSelectedGroupId(id)}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
+              {data.groups.length > 0 && (
+                <section className="flex flex-col gap-3">
+                  <SectionTitle>Rooms</SectionTitle>
+                  <div className="grid gap-3 md:grid-cols-2 md:gap-4">
+                    {data.groups.map(g => (
+                      <RoomCard
+                        key={g.id}
+                        group={g}
+                        onToggle={handleGroupToggle}
+                        onBrightness={handleGroupBrightness}
+                        onSelect={id => setSelectedGroupId(id)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
 
-            {data.lights.length > 0 && (
-              <section className="mt-2 flex flex-col gap-3">
-                <SectionTitle>All lights</SectionTitle>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4">
-                  {data.lights.map(l => (
-                    <LightCard
-                      key={l.id}
-                      light={l}
-                      selected={lightModalSource === 'grid' && selectedLightId === l.id}
-                      onToggle={handleLightToggle}
-                      onSelect={id => handleSelect(id, 'grid')}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
+              {data.lights.length > 0 && (
+                <section className="mt-2 flex flex-col gap-3">
+                  <SectionTitle>All lights</SectionTitle>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:gap-4 lg:grid-cols-4">
+                    {data.lights.map(l => (
+                      <LightCard
+                        key={l.id}
+                        light={l}
+                        selected={lightModalSource === 'grid' && selectedLightId === l.id}
+                        onToggle={handleLightToggle}
+                        onSelect={id => handleSelect(id, 'grid')}
+                      />
+                    ))}
+                  </div>
+                </section>
+              )}
 
-            {data.groups.length === 0 && data.lights.length === 0 && (
-              <EmptyState title="No lights found on your bridge" />
-            )}
-          </>
-        )}
+              {data.groups.length === 0 && data.lights.length === 0 && (
+                <EmptyState title="No lights found on your bridge" />
+              )}
+            </>
+          )}
+        </FadeIn>
       </Page>
 
       <AnimatePresence>

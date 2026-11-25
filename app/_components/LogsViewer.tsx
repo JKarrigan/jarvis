@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { EmptyState, Page, PageHeader, btnCls, cardCls } from './air/ui'
+import { FadeIn } from './air/motion'
 import type { HttpLogEntry } from '@/lib/httpLog'
 
 const SOURCE_STYLES: Record<HttpLogEntry['source'], string> = {
@@ -115,9 +116,11 @@ export function LogsViewer() {
       </PageHeader>
 
         {visible.length === 0 ? (
-          <EmptyState title="No requests logged yet" hint="Entries appear as the server calls the sensor, the Hue bridge and the outdoor air service." />
+          <FadeIn key="empty">
+            <EmptyState title="No requests logged yet" hint="Entries appear as the server calls the sensor, the Hue bridge and the outdoor air service." />
+          </FadeIn>
         ) : (
-          <div className={`${cardCls} overflow-x-auto`}>
+          <FadeIn key="list" className={`${cardCls} overflow-x-auto`}>
             <div className="min-w-[720px]">
             <div className="grid grid-cols-[80px_100px_48px_1fr_56px_64px_20px] gap-x-3 border-b border-air-line px-4 py-3 text-[13px] font-medium text-zinc-400 md:px-5">
               <span>Time</span>
@@ -179,7 +182,7 @@ export function LogsViewer() {
               })}
             </div>
             </div>
-          </div>
+          </FadeIn>
         )}
     </Page>
   )

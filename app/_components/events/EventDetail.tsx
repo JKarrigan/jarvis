@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { AirQualityEvent, EventTrace } from '@/lib/eventTypes'
 import type { HistoryEntry } from '@/lib/types'
@@ -15,7 +15,8 @@ import { useNowMinute } from '@/lib/useNow'
 import { reviveEvent, usePolling } from '../PollingProvider'
 import { toUnit } from '../Dashboard'
 import { Modal } from '../lights/dialog'
-import { Card, Page, PageHeader, PageState, SectionTitle, Spinner, btnCls, cardCls } from '../air/ui'
+import { Card, Page, PageHeader, PageState, SectionTitle, btnCls, cardCls } from '../air/ui'
+import { FadeIn, LoadingMark } from '../air/motion'
 import { KeyNumbers, SeverityLabel, SeverityMark, eventHref, fmtClock, fmtDay, fmtWeekday, startOfDay } from './EventBits'
 import { EventLanes, type Lane } from './EventLanes'
 
@@ -127,16 +128,23 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   )
 }
 
+/** The event page, mounted by `app/(air)/events/(detail)/layout.tsx` with the id from the URL. */
+export function EventDetailRoute() {
+  const { id } = useParams<{ id: string }>()
+  let decoded = id
+  try { decoded = decodeURIComponent(id) } catch { /* already plain */ }
+  return <EventDetail id={decoded} />
+}
+
+/**
+ * Loads an event and keeps the last one on screen, dimmed and inert, while the
+ * next loads (newer / older), then fades the new one in. The first load shows a
+ * placeholder with the page's shape instead of a spinner.
+ */
 export function EventDetail({ id }: { id: string }) {
-  const router = useRouter()
-  const { tempUnit, acknowledgeEvent, refreshEvents } = usePolling()
-  const nowMinute = useNowMinute()
   const [data, setData] = useState<Loaded | null>(null)
-  const [error, setError] = useState<'missing' | 'failed' | null>(null)
+  const [error, setError] = useState<{ id: string; kind: 'missing' | 'failed' } | null>(null)
   const [reload, setReload] = useState(0)
-  const [moreOpen, setMoreOpen] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [deleting, setDeleting] = useState<'busy' | 'failed' | null>(null)
 
   useEffect(() => {
     const ac = new AbortController()
@@ -145,7 +153,7 @@ export function EventDetail({ id }: { id: string }) {
       let ongoing = false
       try {
         const res = await fetch(`/api/events/${encodeURIComponent(id)}`, { signal: ac.signal })
-        if (res.status === 404) { setError('missing'); return }
+        if (res.status === 404) { setError({ id, kind: 'missing' }); return }
         if (!res.ok) throw new Error('failed')
         const raw = await res.json() as { event: WireEvent; readings: HistoryEntry[]; related: Related }
         const event = reviveEvent(raw.event)
@@ -158,7 +166,7 @@ export function EventDetail({ id }: { id: string }) {
         setError(null)
       } catch {
         if (ac.signal.aborted) return
-        setError('failed')
+        setError({ id, kind: 'failed' })
         ongoing = true // keep trying
       }
       // An event that is still going keeps moving; a finished one never changes.
@@ -171,29 +179,58 @@ export function EventDetail({ id }: { id: string }) {
     }
   }, [id, reload])
 
-  const loaded = data?.event.id === id ? data : null
+  const onDismissed = useCallback((eventId: string) => {
+    setData(d => (d && d.event.id === eventId ? { ...d, event: { ...d.event, acknowledged: true } } : d))
+  }, [])
+
+  const current = data?.event.id === id ? data : null
+  const failure = error?.id === id ? error.kind : null
+
+  if (!current && failure === 'missing') {
+    return (
+      <FadeIn key="missing">
+        <PageState>
+          <p className="text-sm text-zinc-300">This event is no longer in the log.</p>
+          <Link href="/events" className={btnCls}>All events</Link>
+        </PageState>
+      </FadeIn>
+    )
+  }
+  if (!current && failure === 'failed') {
+    return (
+      <FadeIn key="failed">
+        <PageState>
+          <p className="text-sm text-zinc-300">Could not load this event.</p>
+          <button type="button" className={btnCls} onClick={() => setReload(n => n + 1)}>Try again</button>
+        </PageState>
+      </FadeIn>
+    )
+  }
+  if (!data) return <EventDetailSkeleton />
+  // Keyed by event: the next one fades in over the dimmed last one; a refresh of the same one changes in place.
+  return (
+    <FadeIn key={data.event.id}>
+      <EventView loaded={data} pending={!current} onDismissed={onDismissed} />
+    </FadeIn>
+  )
+}
+
+function EventView({ loaded, pending, onDismissed }: {
+  loaded: Loaded
+  /** Another event is loading: this one stays, dimmed and inert, until it is there. */
+  pending: boolean
+  onDismissed: (id: string) => void
+}) {
+  const router = useRouter()
+  const { tempUnit, acknowledgeEvent, refreshEvents } = usePolling()
+  const nowMinute = useNowMinute()
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState<'busy' | 'failed' | null>(null)
   const series = useMemo(
-    () => (loaded ? buildSeries(loaded.readings, loaded.event.trace, tempUnit) : null),
+    () => buildSeries(loaded.readings, loaded.event.trace, tempUnit),
     [loaded, tempUnit],
   )
-
-  if (!loaded && error === 'missing') {
-    return (
-      <PageState>
-        <p className="text-sm text-zinc-300">This event is no longer in the log.</p>
-        <Link href="/events" className={btnCls}>All events</Link>
-      </PageState>
-    )
-  }
-  if (!loaded && error === 'failed') {
-    return (
-      <PageState>
-        <p className="text-sm text-zinc-300">Could not load this event.</p>
-        <button type="button" className={btnCls} onClick={() => setReload(n => n + 1)}>Try again</button>
-      </PageState>
-    )
-  }
-  if (!loaded) return <PageState><Spinner /></PageState>
 
   const { event, related } = loaded
   const trace = event.trace ?? null
@@ -206,7 +243,7 @@ export function EventDetail({ id }: { id: string }) {
 
   function dismiss() {
     acknowledgeEvent(event.id)
-    setData(d => (d ? { ...d, event: { ...d.event, acknowledged: true } } : d))
+    onDismissed(event.id)
   }
 
   async function remove() {
@@ -285,180 +322,238 @@ export function EventDetail({ id }: { id: string }) {
   const windowEnd = windowStart + 2 * OFTEN_WINDOW_MIN * 60_000
 
   return (
+    <div inert={pending} aria-busy={pending} className={`transition-opacity duration-200 ${pending ? 'opacity-60' : ''}`}>
+      <Page>
+        <PageHeader
+          title={eventTitle(event.type)}
+          back={{ href: '/events', label: 'Events' }}
+          subtitle={(
+            <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+              <SeverityLabel severity={event.severity} />
+              <span className="tabular-nums">{whenLine(event)}</span>
+              <span aria-hidden="true">·</span>
+              <span className="tabular-nums">{fmtDuration(eventMinutes(event, nowMinute))}</span>
+              {ongoing
+                ? <><span aria-hidden="true">·</span><span className="font-medium text-emerald-400">Ongoing</span></>
+                : <><span aria-hidden="true">·</span><span>Ended</span></>}
+              {event.acknowledged && isAlert(event.severity) && <><span aria-hidden="true">·</span><span>Dismissed</span></>}
+            </span>
+          )}
+        >
+          <LoadingMark loading={pending} />
+          <AnimatePresence initial={false}>
+            {canDismiss && (
+              <motion.button
+                key="dismiss"
+                type="button"
+                onClick={dismiss}
+                className={btnCls}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+              >
+                Dismiss alert
+              </motion.button>
+            )}
+          </AnimatePresence>
+          {related.newerId
+            ? <Link href={eventHref(related.newerId)} className={iconBtnCls} aria-label="Newer event" title="Newer event"><Icon d="M12.5 5l-5 5 5 5" /></Link>
+            : <span className={`${iconBtnCls} opacity-40`} aria-hidden="true"><Icon d="M12.5 5l-5 5 5 5" /></span>}
+          {related.olderId
+            ? <Link href={eventHref(related.olderId)} className={iconBtnCls} aria-label="Older event" title="Older event"><Icon d="M7.5 5l5 5-5 5" /></Link>
+            : <span className={`${iconBtnCls} opacity-40`} aria-hidden="true"><Icon d="M7.5 5l5 5-5 5" /></span>}
+          {!ongoing && (
+            <button type="button" className={iconBtnCls} aria-label="Delete event" title="Delete event" aria-haspopup="dialog" onClick={() => { setDeleting(null); setConfirmDelete(true) }}>
+              <Icon d="M4 6h12M8 6V4h4v2M6 6l.7 10h6.6L14 6M8.5 9v5M11.5 9v5" />
+            </button>
+          )}
+        </PageHeader>
+
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
+          {/* Readings on one clock */}
+          <Card className="order-2 px-4 pb-4 pt-4 md:px-6 md:pt-5 lg:order-1">
+            {series ? (
+              <>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 pb-1">
+                  <SectionTitle>Readings during the event</SectionTitle>
+                  <p className="text-xs text-zinc-400">
+                    One time axis for all four{trace ? `. The line marks the ${METRIC_INFO[lead].short} peak.` : '.'}
+                  </p>
+                </div>
+                <EventLanes lanes={lanes} {...laneProps} />
+                {series.source === 'trace' && (
+                  <p className="mt-3 border-t border-air-line pt-3 text-[13px] leading-relaxed text-zinc-400">
+                    Readings are kept for 30 days. This is the outline that was saved with the event.
+                  </p>
+                )}
+                {moreLanes.length > 0 && (
+                  <div className="mt-3 border-t border-air-line">
+                    <button
+                      type="button"
+                      aria-expanded={moreOpen}
+                      onClick={() => setMoreOpen(o => !o)}
+                      className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg pt-1 text-left text-sm font-medium text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+                    >
+                      <span>More readings <span className="ml-2 font-normal text-zinc-400">Temperature, humidity, PM1, PM10</span></span>
+                      <svg aria-hidden="true" className={`h-4 w-4 shrink-0 text-zinc-400 transition-transform duration-200 ${moreOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 7.5l5 5 5-5" /></svg>
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {moreOpen && (
+                        <motion.div
+                          key="more"
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
+                          className="overflow-hidden"
+                        >
+                          <EventLanes lanes={moreLanes} {...laneProps} />
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="py-8 text-center">
+                <p className="text-sm text-zinc-300">No readings are stored for this event</p>
+                <p className="mt-1 text-sm text-zinc-400">Readings are kept for 30 days, and this event has no saved outline.</p>
+              </div>
+            )}
+          </Card>
+
+          {/* What it was, what to do, the facts */}
+          <div className="contents lg:order-2 lg:flex lg:flex-col lg:gap-4">
+            <Card className="order-1 px-5 py-4">
+              <p className="text-[15px] leading-relaxed text-zinc-200">{event.description}</p>
+              {event.recommendation && (
+                <p className="mt-2.5 text-sm leading-relaxed text-zinc-300"><span className="font-medium text-zinc-50">What to do.</span> {event.recommendation}</p>
+              )}
+              <p className="mt-2.5 text-sm leading-relaxed text-zinc-400"><span className="text-zinc-300">Likely causes.</span> {eventCauses(event.type)}</p>
+            </Card>
+
+            <Card className="order-3 px-5 py-1.5">
+              <dl>
+                <Fact label="Started">{fmtClock(event.startTime)}</Fact>
+                {trace && <Fact label={`${METRIC_INFO[lead].short} peak`}>{fmtMetric(lead, event.peak[lead])} at {fmtClock(trace.peakAt[lead])}</Fact>}
+                {event.sustained && <Fact label="Held for 3 minutes">{fmtMetricWithUnit(lead, event.sustained[lead])}</Fact>}
+                {band && <Fact label={band.label}>{fmtDuration(band.min)}</Fact>}
+                <Fact label={ongoing ? 'Still going' : 'Ended'}>{ongoing ? 'yes' : fmtClock(event.endTime!)}</Fact>
+                <Fact label={ongoing ? 'So far' : 'Lasted'}>{fmtDuration(eventMinutes(event, nowMinute))}</Fact>
+              </dl>
+            </Card>
+
+            {related.overlapping.length > 0 && (
+              <section aria-label="At the same time" className={`${cardCls} order-4 overflow-hidden`}>
+                <SectionTitle className="px-5 pb-2 pt-4">At the same time</SectionTitle>
+                {related.overlapping.map(o => (
+                  <Link key={o.id} href={eventHref(o.id)} className="flex min-h-12 items-center gap-3 border-t border-air-line px-5 py-2 transition-colors hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-400">
+                    <SeverityMark severity={o.severity} />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium text-zinc-50">{eventTitle(o.type)}</span>
+                      <span className="block text-[13px] tabular-nums text-zinc-400"><KeyNumbers event={o} max={1} /> · from {fmtClock(o.startTime)}</span>
+                    </span>
+                  </Link>
+                ))}
+              </section>
+            )}
+
+            {oftenCount >= OFTEN_MIN_DAYS && (
+              <Card className="order-5 px-5 py-4">
+                <SectionTitle>This happens often</SectionTitle>
+                <p className="mt-1 text-[13px] leading-relaxed text-zinc-400">
+                  An event started between {fmtHour(windowStart)} and {fmtHour(windowEnd)} on {oftenCount} of the {OFTEN_DAYS} days before this one.
+                </p>
+                <div role="img" aria-label={`The ${OFTEN_DAYS} days before, oldest first: ${oftenCount} had an event around this time`} className="mt-3 flex gap-1">
+                  {often.map((hit, i) => (
+                    <span key={i} className={`h-4 flex-1 rounded ${hit ? 'bg-zinc-500' : 'border border-air-line bg-air-raised'}`} />
+                  ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        </div>
+
+        <AnimatePresence>
+          {confirmDelete && (
+            <Modal onClose={() => setConfirmDelete(false)}>
+              <div className="flex flex-col gap-3 p-5">
+                <h2 className="text-base font-semibold text-zinc-50">Delete this event?</h2>
+                <p className="text-sm leading-relaxed text-zinc-300">
+                  {eventTitle(event.type)}, {whenLine(event)}. It is removed from the log. Re-running detection brings it back if the stored readings still show it.
+                </p>
+                {deleting === 'failed' && <p role="alert" className="text-sm text-red-400">That did not work. Try again.</p>}
+                <div className="flex justify-end gap-2 pt-1">
+                  <button type="button" className={btnCls} onClick={() => setConfirmDelete(false)}>Cancel</button>
+                  <button
+                    type="button"
+                    disabled={deleting === 'busy'}
+                    onClick={remove}
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-red-500 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300 disabled:opacity-50"
+                  >
+                    {deleting === 'busy' ? 'Deleting…' : 'Delete'}
+                  </button>
+                </div>
+              </div>
+            </Modal>
+          )}
+        </AnimatePresence>
+      </Page>
+    </div>
+  )
+}
+
+/** The page's shape before the first event has loaded: header, the lanes card and the side column. */
+function EventDetailSkeleton() {
+  const bar = 'animate-pulse rounded bg-air-raised'
+  return (
     <Page>
       <PageHeader
-        title={eventTitle(event.type)}
+        title={<span className={`inline-block h-6 w-56 max-w-full align-middle ${bar}`} />}
         back={{ href: '/events', label: 'Events' }}
+        // The real line usually wraps to two on phones.
         subtitle={(
-          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <SeverityLabel severity={event.severity} />
-            <span className="tabular-nums">{whenLine(event)}</span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{fmtDuration(eventMinutes(event, nowMinute))}</span>
-            {ongoing
-              ? <><span aria-hidden="true">·</span><span className="font-medium text-emerald-400">Ongoing</span></>
-              : <><span aria-hidden="true">·</span><span>Ended</span></>}
-            {event.acknowledged && isAlert(event.severity) && <><span aria-hidden="true">·</span><span>Dismissed</span></>}
+          <span className="flex flex-col gap-1">
+            <span className="flex h-5 items-center"><span className={`h-3.5 w-80 max-w-full ${bar}`} /></span>
+            <span className="flex h-5 items-center sm:hidden"><span className={`h-3.5 w-32 ${bar}`} /></span>
           </span>
         )}
       >
-        <AnimatePresence initial={false}>
-          {canDismiss && (
-            <motion.button
-              key="dismiss"
-              type="button"
-              onClick={dismiss}
-              className={btnCls}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-            >
-              Dismiss alert
-            </motion.button>
-          )}
-        </AnimatePresence>
-        {related.newerId
-          ? <Link href={eventHref(related.newerId)} className={iconBtnCls} aria-label="Newer event" title="Newer event"><Icon d="M12.5 5l-5 5 5 5" /></Link>
-          : <span className={`${iconBtnCls} opacity-40`} aria-hidden="true"><Icon d="M12.5 5l-5 5 5 5" /></span>}
-        {related.olderId
-          ? <Link href={eventHref(related.olderId)} className={iconBtnCls} aria-label="Older event" title="Older event"><Icon d="M7.5 5l5 5-5 5" /></Link>
-          : <span className={`${iconBtnCls} opacity-40`} aria-hidden="true"><Icon d="M7.5 5l5 5-5 5" /></span>}
-        {!ongoing && (
-          <button type="button" className={iconBtnCls} aria-label="Delete event" title="Delete event" aria-haspopup="dialog" onClick={() => { setDeleting(null); setConfirmDelete(true) }}>
-            <Icon d="M4 6h12M8 6V4h4v2M6 6l.7 10h6.6L14 6M8.5 9v5M11.5 9v5" />
-          </button>
-        )}
+        <LoadingMark loading />
+        <span className={`${iconBtnCls} opacity-40`} aria-hidden="true"><Icon d="M12.5 5l-5 5 5 5" /></span>
+        <span className={`${iconBtnCls} opacity-40`} aria-hidden="true"><Icon d="M7.5 5l5 5-5 5" /></span>
       </PageHeader>
-
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
-        {/* Readings on one clock */}
+      <div aria-busy="true" aria-label="Loading event" className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start">
         <Card className="order-2 px-4 pb-4 pt-4 md:px-6 md:pt-5 lg:order-1">
-          {series ? (
-            <>
-              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 pb-1">
-                <SectionTitle>Readings during the event</SectionTitle>
-                <p className="text-xs text-zinc-400">
-                  One time axis for all four{trace ? `. The line marks the ${METRIC_INFO[lead].short} peak.` : '.'}
-                </p>
+          <div className="pb-1"><span className={`block h-6 w-52 ${bar}`} /></div>
+          {[true, false, false, false].map((lead, i) => (
+            <div key={i} className={`py-3.5 sm:flex sm:items-center sm:gap-4 ${i > 0 ? 'border-t border-air-line' : ''}`}>
+              <div className="flex flex-col gap-1.5 sm:w-[150px] sm:shrink-0">
+                <span className={`h-3 w-16 ${bar}`} />
+                <span className={`h-6 w-20 ${bar}`} />
+                <span className={`h-3 w-24 ${bar}`} />
               </div>
-              <EventLanes lanes={lanes} {...laneProps} />
-              {series.source === 'trace' && (
-                <p className="mt-3 border-t border-air-line pt-3 text-[13px] leading-relaxed text-zinc-400">
-                  Readings are kept for 30 days. This is the outline that was saved with the event.
-                </p>
-              )}
-              {moreLanes.length > 0 && (
-                <div className="mt-3 border-t border-air-line">
-                  <button
-                    type="button"
-                    aria-expanded={moreOpen}
-                    onClick={() => setMoreOpen(o => !o)}
-                    className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg pt-1 text-left text-sm font-medium text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
-                  >
-                    <span>More readings <span className="ml-2 font-normal text-zinc-400">Temperature, humidity, PM1, PM10</span></span>
-                    <svg aria-hidden="true" className={`h-4 w-4 shrink-0 text-zinc-400 transition-transform duration-200 ${moreOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 7.5l5 5 5-5" /></svg>
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {moreOpen && (
-                      <motion.div
-                        key="more"
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: 'auto', opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.25, ease: [0.2, 0.7, 0.2, 1] }}
-                        className="overflow-hidden"
-                      >
-                        <EventLanes lanes={moreLanes} {...laneProps} />
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="py-8 text-center">
-              <p className="text-sm text-zinc-300">No readings are stored for this event</p>
-              <p className="mt-1 text-sm text-zinc-400">Readings are kept for 30 days, and this event has no saved outline.</p>
+              <div className={`mt-2 min-w-0 flex-1 rounded-md bg-air-raised/50 sm:mt-0 ${lead ? 'h-[120px]' : 'h-[72px]'}`} />
             </div>
-          )}
+          ))}
+          <div className="h-5" />
         </Card>
-
-        {/* What it was, what to do, the facts */}
         <div className="contents lg:order-2 lg:flex lg:flex-col lg:gap-4">
-          <Card className="order-1 px-5 py-4">
-            <p className="text-[15px] leading-relaxed text-zinc-200">{event.description}</p>
-            {event.recommendation && (
-              <p className="mt-2.5 text-sm leading-relaxed text-zinc-300"><span className="font-medium text-zinc-50">What to do.</span> {event.recommendation}</p>
-            )}
-            <p className="mt-2.5 text-sm leading-relaxed text-zinc-400"><span className="text-zinc-300">Likely causes.</span> {eventCauses(event.type)}</p>
+          <Card className="order-1 flex flex-col gap-2.5 px-5 py-4">
+            <span className={`h-4 w-full ${bar}`} />
+            <span className={`h-4 w-4/5 ${bar}`} />
+            <span className={`h-4 w-3/5 ${bar}`} />
           </Card>
-
           <Card className="order-3 px-5 py-1.5">
-            <dl>
-              <Fact label="Started">{fmtClock(event.startTime)}</Fact>
-              {trace && <Fact label={`${METRIC_INFO[lead].short} peak`}>{fmtMetric(lead, event.peak[lead])} at {fmtClock(trace.peakAt[lead])}</Fact>}
-              {event.sustained && <Fact label="Held for 3 minutes">{fmtMetricWithUnit(lead, event.sustained[lead])}</Fact>}
-              {band && <Fact label={band.label}>{fmtDuration(band.min)}</Fact>}
-              <Fact label={ongoing ? 'Still going' : 'Ended'}>{ongoing ? 'yes' : fmtClock(event.endTime!)}</Fact>
-              <Fact label={ongoing ? 'So far' : 'Lasted'}>{fmtDuration(eventMinutes(event, nowMinute))}</Fact>
-            </dl>
-          </Card>
-
-          {related.overlapping.length > 0 && (
-            <section aria-label="At the same time" className={`${cardCls} order-4 overflow-hidden`}>
-              <SectionTitle className="px-5 pb-2 pt-4">At the same time</SectionTitle>
-              {related.overlapping.map(o => (
-                <Link key={o.id} href={eventHref(o.id)} className="flex min-h-12 items-center gap-3 border-t border-air-line px-5 py-2 transition-colors hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-400">
-                  <SeverityMark severity={o.severity} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium text-zinc-50">{eventTitle(o.type)}</span>
-                    <span className="block text-[13px] tabular-nums text-zinc-400"><KeyNumbers event={o} max={1} /> · from {fmtClock(o.startTime)}</span>
-                  </span>
-                </Link>
-              ))}
-            </section>
-          )}
-
-          {oftenCount >= OFTEN_MIN_DAYS && (
-            <Card className="order-5 px-5 py-4">
-              <SectionTitle>This happens often</SectionTitle>
-              <p className="mt-1 text-[13px] leading-relaxed text-zinc-400">
-                An event started between {fmtHour(windowStart)} and {fmtHour(windowEnd)} on {oftenCount} of the {OFTEN_DAYS} days before this one.
-              </p>
-              <div role="img" aria-label={`The ${OFTEN_DAYS} days before, oldest first: ${oftenCount} had an event around this time`} className="mt-3 flex gap-1">
-                {often.map((hit, i) => (
-                  <span key={i} className={`h-4 flex-1 rounded ${hit ? 'bg-zinc-500' : 'border border-air-line bg-air-raised'}`} />
-                ))}
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} className={`flex justify-between gap-4 py-2.5 ${i > 0 ? 'border-t border-air-line' : ''}`}>
+                <span className={`h-5 w-24 ${bar}`} />
+                <span className={`h-5 w-16 ${bar}`} />
               </div>
-            </Card>
-          )}
+            ))}
+          </Card>
         </div>
       </div>
-
-      <AnimatePresence>
-        {confirmDelete && (
-          <Modal onClose={() => setConfirmDelete(false)}>
-            <div className="flex flex-col gap-3 p-5">
-              <h2 className="text-base font-semibold text-zinc-50">Delete this event?</h2>
-              <p className="text-sm leading-relaxed text-zinc-300">
-                {eventTitle(event.type)}, {whenLine(event)}. It is removed from the log. Re-running detection brings it back if the stored readings still show it.
-              </p>
-              {deleting === 'failed' && <p role="alert" className="text-sm text-red-400">That did not work. Try again.</p>}
-              <div className="flex justify-end gap-2 pt-1">
-                <button type="button" className={btnCls} onClick={() => setConfirmDelete(false)}>Cancel</button>
-                <button
-                  type="button"
-                  disabled={deleting === 'busy'}
-                  onClick={remove}
-                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-red-500 px-4 text-sm font-semibold text-white transition-colors hover:bg-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300 disabled:opacity-50"
-                >
-                  {deleting === 'busy' ? 'Deleting…' : 'Delete'}
-                </button>
-              </div>
-            </div>
-          </Modal>
-        )}
-      </AnimatePresence>
     </Page>
   )
 }

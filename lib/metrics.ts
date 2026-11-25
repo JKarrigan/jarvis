@@ -208,6 +208,24 @@ export function metricStatusLabel(slug: string, color: StatusColor): string {
   return label === 'Unhealthy for Sensitive Groups' ? 'Sensitive groups' : label
 }
 
+const readingFormats = new Map<number, Intl.NumberFormat>()
+
+/**
+ * A reading as tiles and stats show it: fixed decimals and a thousands separator
+ * ("1,151", "21.4"), "—" when there is none. The device reports averages such as
+ * 1150.67, so a value is never printed as it arrives.
+ */
+export function fmtReading(value: number | null | undefined, decimals: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+  let format = readingFormats.get(decimals)
+  if (!format) {
+    format = new Intl.NumberFormat('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+    readingFormats.set(decimals, format)
+  }
+  // Rounding -0.04 to one decimal must not print "-0.0".
+  return format.format(value).replace(/^-(?=0(\.0+)?$)/, '')
+}
+
 /** Reads a metric from one history row, preferring the compensated field when that row has it. */
 export function metricValue(measures: Partial<DeviceMeasures>, metric: Pick<MetricConfig, 'key' | 'altKey'>): number | null {
   const alt = metric.altKey ? measures[metric.altKey] : undefined

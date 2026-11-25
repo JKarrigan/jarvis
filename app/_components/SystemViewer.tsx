@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { EmptyState, Page, PageHeader } from './air/ui'
+import { FadeIn } from './air/motion'
 
 interface SystemStats {
   pi: {
@@ -131,7 +132,7 @@ export function SystemViewer() {
         {!data ? (
           <EmptyState title="Loading…" />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <FadeIn key="ready" className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Pi Hardware */}
             <Card title="Raspberry Pi">
               <div className="flex items-center gap-2 pb-1">
@@ -243,7 +244,7 @@ export function SystemViewer() {
                 <Row label="Node.js" value={data.app.nodeVersion} />
               </div>
             </Card>
-          </div>
+          </FadeIn>
         )}
     </Page>
   )

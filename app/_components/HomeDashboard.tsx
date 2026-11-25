@@ -7,6 +7,7 @@ import type { DeviceMeasures, HistoryEntry, HueGroup, HueLight } from '@/lib/typ
 import type { AirQualityEvent } from '@/lib/eventTypes'
 import { co2Status, tempStatus, humidityStatus, tvocStatus, pm25Status, noxStatus } from '@/lib/thresholds'
 import { effectivePm25, findPmBatch } from '@/lib/pmCalibration'
+import { fmtReading } from '@/lib/metrics'
 import { useNowMinute } from '@/lib/useNow'
 import { Chart } from './Chart'
 import { Clock, DateLine } from './Clock'
@@ -172,12 +173,12 @@ export function HomeDashboard({
   const aqiStyle = STATUS_COLORS[aqi.color]
 
   const readings: MetricReading[] = [
-    metricReading('temperature', 'Temperature', Number.isFinite(temp) ? toUnit(temp, tempUnit).toFixed(1) : '—', `°${tempUnit}`, tempStatus(temp), series.temp, series.ts),
-    metricReading('humidity', 'Humidity', Number.isFinite(hum) ? hum.toFixed(0) : '—', '%', humidityStatus(hum), series.hum, series.ts),
-    metricReading('co2', 'CO₂', measures.rco2, 'ppm', co2Status(measures.rco2), series.co2, series.ts),
-    metricReading('pm25', 'PM2.5', Number.isFinite(pm02) ? pm02.toFixed(1) : '—', 'µg/m³', pm25Status(pm02), series.pm25, series.ts),
-    metricReading('tvoc', 'TVOC', measures.tvocIndex, 'index', tvocStatus(measures.tvocIndex), series.tvoc, series.ts),
-    metricReading('nox', 'NOx', measures.noxIndex, 'index', noxStatus(measures.noxIndex), series.nox, series.ts),
+    metricReading('temperature', 'Temperature', fmtReading(toUnit(temp, tempUnit), 1), `°${tempUnit}`, tempStatus(temp), series.temp, series.ts),
+    metricReading('humidity', 'Humidity', fmtReading(hum, 0), '%', humidityStatus(hum), series.hum, series.ts),
+    metricReading('co2', 'CO₂', fmtReading(measures.rco2, 0), 'ppm', co2Status(measures.rco2), series.co2, series.ts),
+    metricReading('pm25', 'PM2.5', fmtReading(pm02, 1), 'µg/m³', pm25Status(pm02), series.pm25, series.ts),
+    metricReading('tvoc', 'TVOC', fmtReading(measures.tvocIndex, 0), 'index', tvocStatus(measures.tvocIndex), series.tvoc, series.ts),
+    metricReading('nox', 'NOx', fmtReading(measures.noxIndex, 0), 'index', noxStatus(measures.noxIndex), series.nox, series.ts),
   ]
 
   const outside = outdoorLine(aqi.value, outdoorAqi)

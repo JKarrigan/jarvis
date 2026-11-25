@@ -147,6 +147,32 @@ function buildGeometry(values: number[], timestamps: number[], low?: number[], h
   }
 }
 
+/**
+ * A chart-sized box without a chart: the same card, header row and plot (whose
+ * height comes from its aspect ratio), for "loading" and "no data", so swapping
+ * it for a real chart moves nothing below it.
+ */
+export function ChartFrame({ label, unit, children }: { label: string; unit: string; children?: React.ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-air-line bg-air-card px-4 pb-2 pt-4 md:px-5">
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
+        <span className="text-base font-semibold text-zinc-100">{label}</span>
+        <span className="text-sm text-zinc-400">{unit}</span>
+        {/* Stand-ins for the status badge, the colour toggle and the value, so the row wraps like a chart's. */}
+        <span aria-hidden="true" className="invisible text-xs font-medium px-1.5 py-0.5 rounded-md border">Moderate</span>
+        <span aria-hidden="true" className="invisible ml-auto flex items-center gap-2">
+          <span className="text-xs px-2 py-0.5 rounded-md border">Uniform</span>
+          <span className="text-xs font-mono">0000</span>
+        </span>
+      </div>
+      <div className="relative">
+        <svg viewBox={`0 0 ${VW} ${VH}`} width="100%" aria-hidden="true" />
+        {children && <div className="absolute inset-0 grid place-items-center">{children}</div>}
+      </div>
+    </div>
+  )
+}
+
 export const Chart = memo(function Chart({ label, unit, values, timestamps, status, statusFn, events, muted = false, low, high }: ChartProps) {
   const [hovered, setHovered] = useState<number | null>(null)
   const [colorMode, setColorMode] = useState<'uniform' | 'by-range'>('uniform')

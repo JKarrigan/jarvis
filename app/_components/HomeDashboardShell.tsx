@@ -5,6 +5,8 @@ import { usePolling } from './PollingProvider'
 import { HomeDashboard, type HomeLightsState } from './HomeDashboard'
 import { SetupScreen } from './SetupScreen'
 import { StaleBanner } from './StaleBanner'
+import { PageState, Spinner } from './air/ui'
+import { FadeIn } from './air/motion'
 import { Toast, useToast } from './Toast'
 import { useHueLights } from './lights/useHueLights'
 import type { LightState } from './HueControls'
@@ -51,55 +53,58 @@ export function HomeDashboardShell() {
   const displayLastUpdated = lastUpdated
   const old = useIsOlderThan(displayLastUpdated?.getTime() ?? null, STALE_AFTER_MS)
 
+  // Each state fades in as it replaces the last (loading, setup, connecting, the dashboard).
   if (!ready) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" aria-label="Loading" />
-      </div>
+      <PageState><Spinner /></PageState>
     )
   }
 
   if (!deviceIp) {
-    return <SetupScreen onSave={handleIpSave} />
+    return <FadeIn key="setup"><SetupScreen onSave={handleIpSave} /></FadeIn>
   }
 
   if (!displayMeasures || !displayLastUpdated) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="flex flex-col items-center gap-3 text-zinc-400" role="status">
-          <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
-          <span className="text-sm">Connecting to {deviceIp}…</span>
-          {error && (
-            <span className="text-sm text-red-400">{error}. Retrying in 10 s.</span>
-          )}
-        </div>
-      </div>
+      <FadeIn key="connecting">
+        <PageState>
+          <div className="flex flex-col items-center gap-3 text-zinc-400" role="status">
+            <Spinner />
+            <span className="text-sm">Connecting to {deviceIp}…</span>
+            {error && (
+              <span className="text-sm text-red-400">{error}. Retrying in 10 s.</span>
+            )}
+          </div>
+        </PageState>
+      </FadeIn>
     )
   }
 
   return (
     <>
-      <HomeDashboard
-        measures={displayMeasures}
-        history={history}
-        stale={old || !!error}
-        banner={<StaleBanner lastUpdated={displayLastUpdated} error={error} stale={old} />}
-        tempUnit={tempUnit}
-        pmBatchId={pmBatchId}
-        outdoorAqi={outdoorAqi}
-        hue={hue}
-        selectedGroupId={selectedGroupId}
-        selectedLightId={selectedLightId}
-        onGroupToggle={handleGroupToggle}
-        onGroupBrightness={handleGroupBrightness}
-        onGroupSelect={setSelectedGroupId}
-        onGroupClose={closeGroup}
-        recentEvents={allEvents}
-        onLightToggle={handleLightToggle}
-        onLightSetState={handleLightSetState}
-        onLightSelect={setSelectedLightId}
-        onLightClose={closeLight}
-      />
+      <FadeIn key="ready">
+        <HomeDashboard
+          measures={displayMeasures}
+          history={history}
+          stale={old || !!error}
+          banner={<StaleBanner lastUpdated={displayLastUpdated} error={error} stale={old} />}
+          tempUnit={tempUnit}
+          pmBatchId={pmBatchId}
+          outdoorAqi={outdoorAqi}
+          hue={hue}
+          selectedGroupId={selectedGroupId}
+          selectedLightId={selectedLightId}
+          onGroupToggle={handleGroupToggle}
+          onGroupBrightness={handleGroupBrightness}
+          onGroupSelect={setSelectedGroupId}
+          onGroupClose={closeGroup}
+          recentEvents={allEvents}
+          onLightToggle={handleLightToggle}
+          onLightSetState={handleLightSetState}
+          onLightSelect={setSelectedLightId}
+          onLightClose={closeLight}
+        />
+      </FadeIn>
       <Toast toast={toast} onDismiss={dismissToast} />
     </>
   )

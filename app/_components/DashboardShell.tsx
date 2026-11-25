@@ -5,6 +5,8 @@ import { usePolling } from './PollingProvider'
 import { Dashboard } from './Dashboard'
 import { SetupScreen } from './SetupScreen'
 import { StaleBanner } from './StaleBanner'
+import { PageState, Spinner } from './air/ui'
+import { FadeIn } from './air/motion'
 import type { DailySummary } from '@/lib/types'
 import type { AirQualityEvent } from '@/lib/eventTypes'
 import { eventDescription, eventRecommendation, eventTitle, severityFor } from '@/lib/eventInfo'
@@ -85,34 +87,35 @@ export function DashboardShell() {
   const old = useIsOlderThan(displayLastUpdated?.getTime() ?? null, STALE_AFTER_MS)
   const stale = old || !!error
 
+  // Each state fades in as it replaces the last (loading, setup, connecting, the dashboard).
   if (!ready) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" aria-label="Loading" />
-      </div>
+      <PageState><Spinner /></PageState>
     )
   }
 
   if (!deviceIp) {
-    return <SetupScreen onSave={handleIpSave} />
+    return <FadeIn key="setup"><SetupScreen onSave={handleIpSave} /></FadeIn>
   }
 
   if (!displayMeasures || !displayLastUpdated) {
     return (
-      <div className="flex min-h-[60vh] items-center justify-center">
-        <div className="flex flex-col items-center gap-3 text-zinc-400" role="status">
-          <div className="w-6 h-6 rounded-full border-2 border-zinc-700 border-t-emerald-500 animate-spin" />
-          <span className="text-sm">Connecting to {deviceIp}…</span>
-          {error && (
-            <span className="text-sm text-red-400">{error}. Retrying in 10 s.</span>
-          )}
-        </div>
-      </div>
+      <FadeIn key="connecting">
+        <PageState>
+          <div className="flex flex-col items-center gap-3 text-zinc-400" role="status">
+            <Spinner />
+            <span className="text-sm">Connecting to {deviceIp}…</span>
+            {error && (
+              <span className="text-sm text-red-400">{error}. Retrying in 10 s.</span>
+            )}
+          </div>
+        </PageState>
+      </FadeIn>
     )
   }
 
   return (
-    <>
+    <FadeIn key="ready">
       <Dashboard
         measures={displayMeasures}
         history={history}
@@ -125,6 +128,6 @@ export function DashboardShell() {
         banner={<StaleBanner lastUpdated={displayLastUpdated} error={error} stale={old} />}
         devControls={DEV ? { onSimulate: simulateAlerts, onClear: clearAlerts, hasDevEvents: simulating } : undefined}
       />
-    </>
+    </FadeIn>
   )
 }

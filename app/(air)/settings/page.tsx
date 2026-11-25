@@ -7,6 +7,7 @@ import { PM_BATCHES, calibratePm25 } from '@/lib/pmCalibration'
 import { usePolling } from '@/app/_components/PollingProvider'
 import { HueBridgeSection } from '@/app/_components/HueBridgeSection'
 import { Page, PageHeader, Segmented, btnCls, btnPrimaryCls, cardCls, inputCls } from '@/app/_components/air/ui'
+import { FadeIn } from '@/app/_components/air/motion'
 
 interface DeviceConfig {
   country: string
@@ -219,13 +220,15 @@ export default function SettingsPage() {
     return (
       <Page width="narrow">
         <PageHeader title="Settings" />
-        {[...Array(4)].map((_, i) => (
-          <div key={i} className={`${cardCls} space-y-3 p-5`}>
-            <div className="h-4 w-28 animate-pulse rounded bg-air-active" />
-            <div className="h-10 animate-pulse rounded-xl bg-air-raised" />
-            <div className="h-10 animate-pulse rounded-xl bg-air-raised" />
-          </div>
-        ))}
+        <FadeIn key="loading" className="flex flex-col gap-4">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className={`${cardCls} space-y-3 p-5`}>
+              <div className="h-4 w-28 animate-pulse rounded bg-air-active" />
+              <div className="h-10 animate-pulse rounded-xl bg-air-raised" />
+              <div className="h-10 animate-pulse rounded-xl bg-air-raised" />
+            </div>
+          ))}
+        </FadeIn>
       </Page>
     )
   }
@@ -234,11 +237,13 @@ export default function SettingsPage() {
     return (
       <Page width="narrow">
         <PageHeader title="Settings" subtitle="No air sensor is connected yet." />
-        <div className={`${cardCls} flex flex-wrap items-center justify-between gap-3 px-5 py-5`}>
-          <p className="text-sm text-zinc-300">Sensor settings appear here once a device is set up.</p>
-          <Link href="/" className="text-sm font-medium text-emerald-400 transition-colors hover:text-emerald-300">Set up on Overview</Link>
-        </div>
-        <HueBridgeSection />
+        <FadeIn key="no-device" className="flex flex-col gap-4">
+          <div className={`${cardCls} flex flex-wrap items-center justify-between gap-3 px-5 py-5`}>
+            <p className="text-sm text-zinc-300">Sensor settings appear here once a device is set up.</p>
+            <Link href="/" className="text-sm font-medium text-emerald-400 transition-colors hover:text-emerald-300">Set up on Overview</Link>
+          </div>
+          <HueBridgeSection />
+        </FadeIn>
       </Page>
     )
   }
@@ -247,11 +252,13 @@ export default function SettingsPage() {
     return (
       <Page width="narrow">
         <PageHeader title="Settings" />
-        <div role="alert" className={`${cardCls} px-5 py-5`}>
-          <p className="text-sm text-zinc-200">{fetchError ?? 'Could not load the sensor configuration'}</p>
-          <p className="mt-1 text-sm text-zinc-400">The sensor did not answer. Reload the page once it is back online.</p>
-        </div>
-        <HueBridgeSection />
+        <FadeIn key="error" className="flex flex-col gap-4">
+          <div role="alert" className={`${cardCls} px-5 py-5`}>
+            <p className="text-sm text-zinc-200">{fetchError ?? 'Could not load the sensor configuration'}</p>
+            <p className="mt-1 text-sm text-zinc-400">The sensor did not answer. Reload the page once it is back online.</p>
+          </div>
+          <HueBridgeSection />
+        </FadeIn>
       </Page>
     )
   }
@@ -262,240 +269,242 @@ export default function SettingsPage() {
     <>
       <Page width="narrow">
         <PageHeader title="Settings" subtitle="The air sensor, outdoor comparison, calibration and the Hue bridge." />
+        <FadeIn key="ready" className="flex flex-col gap-4">
 
-        <Section title="Display">
-          <FieldStack label="Display brightness">
-            <div className="flex items-center gap-3">
-              <input
-                type="range" min={0} max={100} step={1}
-                value={draft.displayBrightness}
-                onChange={e => update('displayBrightness', Number(e.target.value))}
+          <Section title="Display">
+            <FieldStack label="Display brightness">
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min={0} max={100} step={1}
+                  value={draft.displayBrightness}
+                  onChange={e => update('displayBrightness', Number(e.target.value))}
+                  disabled={saving}
+                  className="h-10 flex-1 accent-emerald-500 disabled:opacity-50"
+                />
+                <span className="w-10 text-right text-sm tabular-nums text-zinc-300">{draft.displayBrightness}%</span>
+              </div>
+            </FieldStack>
+
+            <FieldStack label="LED bar brightness">
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min={0} max={100} step={1}
+                  value={draft.ledBarBrightness}
+                  onChange={e => update('ledBarBrightness', Number(e.target.value))}
+                  disabled={saving}
+                  className="h-10 flex-1 accent-emerald-500 disabled:opacity-50"
+                />
+                <span className="w-10 text-right text-sm tabular-nums text-zinc-300">{draft.ledBarBrightness}%</span>
+              </div>
+            </FieldStack>
+
+            <FieldRow label="LED bar mode" description="Which metric drives the LED color bar">
+              <select
+                value={draft.ledBarMode}
+                onChange={e => update('ledBarMode', e.target.value)}
                 disabled={saving}
-                className="h-10 flex-1 accent-emerald-500 disabled:opacity-50"
-              />
-              <span className="w-10 text-right text-sm tabular-nums text-zinc-300">{draft.displayBrightness}%</span>
-            </div>
-          </FieldStack>
+                className={`${inputCls} pr-8`}
+              >
+                <option value="co2">CO₂</option>
+                <option value="pm">PM2.5</option>
+                <option value="off">Off</option>
+              </select>
+            </FieldRow>
 
-          <FieldStack label="LED bar brightness">
-            <div className="flex items-center gap-3">
-              <input
-                type="range" min={0} max={100} step={1}
-                value={draft.ledBarBrightness}
-                onChange={e => update('ledBarBrightness', Number(e.target.value))}
+            <FieldRow label="Temperature unit" description="The unit shown on the device display">
+              <Segmented
+                options={TEMP_OPTIONS}
+                value={draft.temperatureUnit === 'f' ? 'f' : 'c'}
+                onChange={v => update('temperatureUnit', v)}
+                label="Temperature unit"
                 disabled={saving}
-                className="h-10 flex-1 accent-emerald-500 disabled:opacity-50"
               />
-              <span className="w-10 text-right text-sm tabular-nums text-zinc-300">{draft.ledBarBrightness}%</span>
-            </div>
-          </FieldStack>
+            </FieldRow>
 
-          <FieldRow label="LED bar mode" description="Which metric drives the LED color bar">
-            <select
-              value={draft.ledBarMode}
-              onChange={e => update('ledBarMode', e.target.value)}
-              disabled={saving}
-              className={`${inputCls} pr-8`}
-            >
-              <option value="co2">CO₂</option>
-              <option value="pm">PM2.5</option>
-              <option value="off">Off</option>
-            </select>
-          </FieldRow>
+            <FieldRow label="Compensated values" description="Show corrected readings on the device display">
+              <Toggle
+                label="Compensated values"
+                checked={draft.monitorDisplayCompensatedValues}
+                onChange={v => update('monitorDisplayCompensatedValues', v)}
+                disabled={saving}
+              />
+            </FieldRow>
+          </Section>
 
-          <FieldRow label="Temperature unit" description="The unit shown on the device display">
-            <Segmented
-              options={TEMP_OPTIONS}
-              value={draft.temperatureUnit === 'f' ? 'f' : 'c'}
-              onChange={v => update('temperatureUnit', v)}
-              label="Temperature unit"
-              disabled={saving}
-            />
-          </FieldRow>
+          <Section title="Connectivity">
+            <FieldRow label="Disable cloud connection" description="Stop sending data to AirGradient servers">
+              <Toggle
+                label="Disable cloud connection"
+                checked={draft.disableCloudConnection}
+                onChange={v => update('disableCloudConnection', v)}
+                disabled={saving}
+              />
+            </FieldRow>
 
-          <FieldRow label="Compensated values" description="Show corrected readings on the device display">
-            <Toggle
-              label="Compensated values"
-              checked={draft.monitorDisplayCompensatedValues}
-              onChange={v => update('monitorDisplayCompensatedValues', v)}
-              disabled={saving}
-            />
-          </FieldRow>
-        </Section>
+            <FieldRow label="Post data to AirGradient" description="Share readings with the AirGradient network">
+              <Toggle
+                label="Post data to AirGradient"
+                checked={draft.postDataToAirGradient}
+                onChange={v => update('postDataToAirGradient', v)}
+                disabled={saving}
+              />
+            </FieldRow>
 
-        <Section title="Connectivity">
-          <FieldRow label="Disable cloud connection" description="Stop sending data to AirGradient servers">
-            <Toggle
-              label="Disable cloud connection"
-              checked={draft.disableCloudConnection}
-              onChange={v => update('disableCloudConnection', v)}
-              disabled={saving}
-            />
-          </FieldRow>
+            <FieldRow label="Offline mode" description="Disable all network communication">
+              <Toggle
+                label="Offline mode"
+                checked={draft.offlineMode}
+                onChange={v => update('offlineMode', v)}
+                disabled={saving}
+              />
+            </FieldRow>
 
-          <FieldRow label="Post data to AirGradient" description="Share readings with the AirGradient network">
-            <Toggle
-              label="Post data to AirGradient"
-              checked={draft.postDataToAirGradient}
-              onChange={v => update('postDataToAirGradient', v)}
-              disabled={saving}
-            />
-          </FieldRow>
+            <FieldStack label="MQTT broker URL">
+              <input
+                type="text"
+                value={draft.mqttBrokerUrl}
+                onChange={e => update('mqttBrokerUrl', e.target.value)}
+                disabled={saving}
+                placeholder="mqtt://192.168.1.x:1883"
+                className={`w-full ${inputCls}`}
+              />
+            </FieldStack>
 
-          <FieldRow label="Offline mode" description="Disable all network communication">
-            <Toggle
-              label="Offline mode"
-              checked={draft.offlineMode}
-              onChange={v => update('offlineMode', v)}
-              disabled={saving}
-            />
-          </FieldRow>
+            <FieldStack label="HTTP domain">
+              <input
+                type="text"
+                value={draft.httpDomain}
+                onChange={e => update('httpDomain', e.target.value)}
+                disabled={saving}
+                placeholder="https://your-server.example.com"
+                className={`w-full ${inputCls}`}
+              />
+            </FieldStack>
+          </Section>
 
-          <FieldStack label="MQTT broker URL">
-            <input
-              type="text"
-              value={draft.mqttBrokerUrl}
-              onChange={e => update('mqttBrokerUrl', e.target.value)}
-              disabled={saving}
-              placeholder="mqtt://192.168.1.x:1883"
-              className={`w-full ${inputCls}`}
-            />
-          </FieldStack>
+          <Section title="Sensors">
+            <FieldRow label="PM standard">
+              <Segmented
+                options={PM_OPTIONS}
+                value={draft.pmStandard === 'usaqi' ? 'usaqi' : 'ugm3'}
+                onChange={v => update('pmStandard', v)}
+                label="PM standard"
+                disabled={saving}
+              />
+            </FieldRow>
 
-          <FieldStack label="HTTP domain">
-            <input
-              type="text"
-              value={draft.httpDomain}
-              onChange={e => update('httpDomain', e.target.value)}
-              disabled={saving}
-              placeholder="https://your-server.example.com"
-              className={`w-full ${inputCls}`}
-            />
-          </FieldStack>
-        </Section>
+            <FieldRow label="Extended PM measures" description="Enable additional particulate size measurements">
+              <Toggle
+                label="Extended PM measures"
+                checked={draft.extendedPmMeasures}
+                onChange={v => update('extendedPmMeasures', v)}
+                disabled={saving}
+              />
+            </FieldRow>
 
-        <Section title="Sensors">
-          <FieldRow label="PM standard">
-            <Segmented
-              options={PM_OPTIONS}
-              value={draft.pmStandard === 'usaqi' ? 'usaqi' : 'ugm3'}
-              onChange={v => update('pmStandard', v)}
-              label="PM standard"
-              disabled={saving}
-            />
-          </FieldRow>
+            <FieldStack label="Country">
+              <input
+                type="text"
+                value={draft.country}
+                onChange={e => update('country', e.target.value)}
+                disabled={saving}
+                placeholder="TH"
+                className={`w-24 ${inputCls}`}
+              />
+            </FieldStack>
+          </Section>
 
-          <FieldRow label="Extended PM measures" description="Enable additional particulate size measurements">
-            <Toggle
-              label="Extended PM measures"
-              checked={draft.extendedPmMeasures}
-              onChange={v => update('extendedPmMeasures', v)}
-              disabled={saving}
-            />
-          </FieldRow>
-
-          <FieldStack label="Country">
-            <input
-              type="text"
-              value={draft.country}
-              onChange={e => update('country', e.target.value)}
-              disabled={saving}
-              placeholder="TH"
-              className={`w-24 ${inputCls}`}
-            />
-          </FieldStack>
-        </Section>
-
-        <Section title="Location">
-          <p className="max-w-[70ch] text-sm leading-relaxed text-zinc-400">
-            Set your location to compare indoor air quality against outdoor conditions.
-            Used for outdoor AQI display only — not sent to the device.
-          </p>
-          <LocationFields
-            key={`${outdoorLocation?.lat ?? ''}|${outdoorLocation?.lon ?? ''}`}
-            initial={outdoorLocation}
-            onCommit={setOutdoorLocation}
-          />
-        </Section>
-
-        <Section title="Calibration">
-          <FieldStack label="PM2.5 batch correction">
+          <Section title="Location">
             <p className="max-w-[70ch] text-sm leading-relaxed text-zinc-400">
-              Select your PMS5003 sensor batch to recalculate PM2.5 from the raw particle count.
-              Check the sticker on the sensor inside your device for the batch date. Applied client-side only — does not change device firmware.
+              Set your location to compare indoor air quality against outdoor conditions.
+              Used for outdoor AQI display only — not sent to the device.
             </p>
-            <select
-              value={pmBatchId ?? ''}
-              onChange={e => setPmBatchId(e.target.value || null)}
-              className={`w-full ${inputCls}`}
-            >
-              <option value="">None — use raw device value</option>
-              {PM_BATCHES.map(b => (
-                <option key={b.id} value={b.id}>
-                  {b.id} (×{b.factor})
-                </option>
-              ))}
-            </select>
-            {pmBatchId && latestPm003Count !== null && (() => {
-              const batch = PM_BATCHES.find(b => b.id === pmBatchId)!
-              const calibrated = calibratePm25(latestPm003Count, batch)
-              return (
-                <p className="text-sm tabular-nums text-zinc-400">
-                  Latest reading: pm003Count = {latestPm003Count.toLocaleString()} →{' '}
-                  <span className="text-emerald-400">{calibrated.toFixed(1)} μg/m³</span>
-                </p>
-              )
-            })()}
-          </FieldStack>
-
-          <FieldRow label="CO₂ ABC period" description="Days between automatic baseline corrections">
-            <input
-              type="number"
-              min={0}
-              value={draft.abcDays}
-              onChange={e => update('abcDays', Number(e.target.value))}
-              disabled={saving}
-              className={`w-20 text-right ${inputCls}`}
+            <LocationFields
+              key={`${outdoorLocation?.lat ?? ''}|${outdoorLocation?.lon ?? ''}`}
+              initial={outdoorLocation}
+              onCommit={setOutdoorLocation}
             />
-          </FieldRow>
+          </Section>
 
-          <FieldRow label="TVOC learning offset" description="Hours for the VOC baseline algorithm">
-            <input
-              type="number"
-              min={0}
-              value={draft.tvocLearningOffset}
-              onChange={e => update('tvocLearningOffset', Number(e.target.value))}
-              disabled={saving}
-              className={`w-20 text-right ${inputCls}`}
-            />
-          </FieldRow>
+          <Section title="Calibration">
+            <FieldStack label="PM2.5 batch correction">
+              <p className="max-w-[70ch] text-sm leading-relaxed text-zinc-400">
+                Select your PMS5003 sensor batch to recalculate PM2.5 from the raw particle count.
+                Check the sticker on the sensor inside your device for the batch date. Applied client-side only — does not change device firmware.
+              </p>
+              <select
+                value={pmBatchId ?? ''}
+                onChange={e => setPmBatchId(e.target.value || null)}
+                className={`w-full ${inputCls}`}
+              >
+                <option value="">None — use raw device value</option>
+                {PM_BATCHES.map(b => (
+                  <option key={b.id} value={b.id}>
+                    {b.id} (×{b.factor})
+                  </option>
+                ))}
+              </select>
+              {pmBatchId && latestPm003Count !== null && (() => {
+                const batch = PM_BATCHES.find(b => b.id === pmBatchId)!
+                const calibrated = calibratePm25(latestPm003Count, batch)
+                return (
+                  <p className="text-sm tabular-nums text-zinc-400">
+                    Latest reading: pm003Count = {latestPm003Count.toLocaleString()} →{' '}
+                    <span className="text-emerald-400">{calibrated.toFixed(1)} μg/m³</span>
+                  </p>
+                )
+              })()}
+            </FieldStack>
 
-          <FieldRow label="NOx learning offset" description="Hours for the NOx baseline algorithm">
-            <input
-              type="number"
-              min={0}
-              value={draft.noxLearningOffset}
-              onChange={e => update('noxLearningOffset', Number(e.target.value))}
-              disabled={saving}
-              className={`w-20 text-right ${inputCls}`}
-            />
-          </FieldRow>
-        </Section>
+            <FieldRow label="CO₂ ABC period" description="Days between automatic baseline corrections">
+              <input
+                type="number"
+                min={0}
+                value={draft.abcDays}
+                onChange={e => update('abcDays', Number(e.target.value))}
+                disabled={saving}
+                className={`w-20 text-right ${inputCls}`}
+              />
+            </FieldRow>
 
-        <HueBridgeSection />
+            <FieldRow label="TVOC learning offset" description="Hours for the VOC baseline algorithm">
+              <input
+                type="number"
+                min={0}
+                value={draft.tvocLearningOffset}
+                onChange={e => update('tvocLearningOffset', Number(e.target.value))}
+                disabled={saving}
+                className={`w-20 text-right ${inputCls}`}
+              />
+            </FieldRow>
 
-        {/* Save bar: stays in view above the phone tab bar while there are unsaved changes. */}
-        <div className={`sticky bottom-[calc(72px+env(safe-area-inset-bottom))] z-10 flex flex-wrap items-center justify-end gap-3 rounded-2xl border px-4 py-3 transition-colors md:bottom-4 ${
-          dirty ? 'border-emerald-500/40 bg-air-raised shadow-[0_12px_30px_rgba(0,0,0,0.5)]' : 'border-transparent'
-        }`}>
-          {dirty && <p className="mr-auto text-sm text-zinc-300">Unsaved changes to the sensor</p>}
-          {dirty && (
-            <button type="button" onClick={() => setDraft(config)} disabled={saving} className={btnCls}>Discard</button>
-          )}
-          <button type="button" onClick={handleSave} disabled={saving || !dirty} className={btnPrimaryCls}>
-            {saving ? 'Saving…' : 'Save changes'}
-          </button>
-        </div>
+            <FieldRow label="NOx learning offset" description="Hours for the NOx baseline algorithm">
+              <input
+                type="number"
+                min={0}
+                value={draft.noxLearningOffset}
+                onChange={e => update('noxLearningOffset', Number(e.target.value))}
+                disabled={saving}
+                className={`w-20 text-right ${inputCls}`}
+              />
+            </FieldRow>
+          </Section>
+
+          <HueBridgeSection />
+
+          {/* Save bar: stays in view above the phone tab bar while there are unsaved changes. */}
+          <div className={`sticky bottom-[calc(72px+env(safe-area-inset-bottom))] z-10 flex flex-wrap items-center justify-end gap-3 rounded-2xl border px-4 py-3 transition-colors md:bottom-4 ${
+            dirty ? 'border-emerald-500/40 bg-air-raised shadow-[0_12px_30px_rgba(0,0,0,0.5)]' : 'border-transparent'
+          }`}>
+            {dirty && <p className="mr-auto text-sm text-zinc-300">Unsaved changes to the sensor</p>}
+            {dirty && (
+              <button type="button" onClick={() => setDraft(config)} disabled={saving} className={btnCls}>Discard</button>
+            )}
+            <button type="button" onClick={handleSave} disabled={saving || !dirty} className={btnPrimaryCls}>
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+          </div>
+        </FadeIn>
       </Page>
 
       <Toast toast={toast} onDismiss={dismissToast} />

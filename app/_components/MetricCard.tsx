@@ -47,7 +47,8 @@ export interface MetricReading {
   /** Metric slug: the tile links to `/measurement/<slug>`. */
   slug: string
   label: string
-  value: number | string
+  /** Already formatted (`fmtReading`): the device's averages would otherwise show their decimals. */
+  value: string
   unit: string
   status: StatusColor
   /** Word shown next to the value so status isn't conveyed by colour alone. Defaults to the generic label. */
@@ -59,13 +60,9 @@ export interface MetricReading {
 
 /** One reading for a tile or strip, with the status word taken from that metric's own ranges. */
 export function metricReading(
-  slug: string, label: string, value: number | string, unit: string, status: StatusColor, history: number[], timestamps?: number[],
+  slug: string, label: string, value: string, unit: string, status: StatusColor, history: number[], timestamps?: number[],
 ): MetricReading {
   return { slug, label, value, unit, status, statusLabel: metricStatusLabel(slug, status), history, timestamps }
-}
-
-function display(value: number | string): string {
-  return typeof value === 'number' ? value.toLocaleString() : value
 }
 
 /**
@@ -90,15 +87,18 @@ export const MetricCard = memo(function MetricCard({ slug, label, value, unit, s
         <span className="truncate">{label}</span>
         <span className="shrink-0">{TREND_WORD[trend]}</span>
       </div>
-      <div className="flex items-end justify-between gap-3">
-        <div className="flex min-w-0 items-baseline gap-1.5">
-          <span className={`text-[30px] font-semibold leading-none tracking-[-0.02em] tabular-nums md:text-4xl ${stale ? 'text-zinc-500' : 'text-zinc-50'}`}>
-            {display(value)}
+      {/* The number never gives way: the sparkline takes what is left (at most 96px) and hides below 40px. */}
+      <div className="flex items-end gap-3">
+        <div className="flex shrink-0 items-baseline gap-1.5">
+          <span className={`whitespace-nowrap text-[30px] font-semibold leading-none tracking-[-0.02em] tabular-nums md:text-4xl ${stale ? 'text-zinc-500' : 'text-zinc-50'}`}>
+            {value}
           </span>
-          <span className="text-sm text-zinc-400">{unit}</span>
+          <span className="whitespace-nowrap text-sm text-zinc-400">{unit}</span>
         </div>
-        <div className="hidden w-24 shrink-0 sm:block">
-          <Sparkline values={history} timestamps={timestamps} status={status} muted={stale} width={120} height={32} />
+        <div className="@container ml-auto hidden min-w-0 max-w-24 flex-1 sm:block">
+          <div className="hidden @min-[40px]:block">
+            <Sparkline values={history} timestamps={timestamps} status={status} muted={stale} width={120} height={32} />
+          </div>
         </div>
       </div>
       <div className={`flex items-center gap-2 text-sm font-medium ${stale ? 'text-zinc-400' : style.textClass}`}>
@@ -127,10 +127,10 @@ export const MetricStrip = memo(function MetricStrip({ items, stale = false }: {
           >
             <span className="text-[15px] text-zinc-400 transition-colors group-hover:text-zinc-200">{m.label}</span>
             <span className="flex items-baseline gap-1.5">
-              <span className={`text-[32px] font-semibold leading-none tracking-[-0.03em] tabular-nums md:text-[44px] ${stale ? 'text-zinc-500' : off ? style.textClass : 'text-zinc-50'}`}>
-                {display(m.value)}
+              <span className={`whitespace-nowrap text-[32px] font-semibold leading-none tracking-[-0.03em] tabular-nums md:text-[44px] ${stale ? 'text-zinc-500' : off ? style.textClass : 'text-zinc-50'}`}>
+                {m.value}
               </span>
-              <span className="text-sm text-zinc-400">{m.unit}</span>
+              <span className="whitespace-nowrap text-sm text-zinc-400">{m.unit}</span>
             </span>
             <span className={`flex items-center gap-2 text-sm ${stale ? 'text-zinc-400' : style.textClass}`}>
               <StatusDot status={m.status} muted={stale} />
